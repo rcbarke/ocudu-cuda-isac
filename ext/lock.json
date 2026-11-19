@@ -2,7 +2,7 @@
   "format": 2,
   "dependencies": [
     {
-      "path": "ext/ocudu",
+      "path": "ext/ocudu-deepsig-cuda-inline",
       "url": "https://gitlab.com/ocudu/work_groups/wg1_hw_accel/cuda_accelerated_ocudu.git",
       "commit": "27e84cb3da65205b55dbd56ace6fac93a035331e",
       "source_ref": "nvcuda_accel_02",
