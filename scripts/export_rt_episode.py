@@ -4,12 +4,14 @@
 import argparse
 import hashlib
 import json
+import math
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 RT_VERSION = "2.2.0"
+SPEED_OF_LIGHT_M_S = 299_792_458.0
 CARRIER_HZ = 3_500_000_000
 TIME_STEP_NS = 500_000
 TIME_COUNT = 4
@@ -54,6 +56,37 @@ def store_cfr(directory, filename, raw):
     return {"file": filename, "sha256": sha256(path), "axes": AXES,
             "shape": list(channel.shape), "dtype": channel.dtype.str,
             "units": "linear complex baseband amplitude gain", "order": "C"}
+
+
+def direct_path_reference():
+    """Free-space amplitude gain and delay of the unobstructed UE-to-gNB link in this geometry."""
+    distance = math.dist(TX_POSITION_M, RX_POSITION_M)
+    wavelength = SPEED_OF_LIGHT_M_S / CARRIER_HZ
+    return {"amplitude": wavelength / (4 * math.pi * distance),
+            "delay_ns": 1e9 * distance / SPEED_OF_LIGHT_M_S}
+
+
+def check_direct_path(raw, amplitude_tolerance=1e-4, delay_tolerance_ns=0.05):
+    """Compare a target-free CFR with the free-space answer and return the measured values."""
+    import numpy as np
+
+    expected = (1, 4, 1, 1, TIME_COUNT, len(OFFSETS_HZ))
+    if raw.shape != expected or not np.iscomplexobj(raw) or not np.isfinite(raw).all():
+        raise ValueError(f"Expected a finite complex direct-link CFR of shape {expected}, got {raw.shape} {raw.dtype}")
+    reference = direct_path_reference()
+    amplitude_error = float(np.max(np.abs(np.abs(raw) - reference["amplitude"])) / reference["amplitude"])
+    if amplitude_error > amplitude_tolerance:
+        raise ValueError(f"Direct-path gain differs from free space by a relative {amplitude_error:.3g}")
+    # H(f) = a exp(-j 2 pi f tau): each tone step lowers the phase by 2 pi tau times the spacing.
+    spacing = OFFSETS_HZ[1] - OFFSETS_HZ[0]
+    steps = np.angle(raw[..., 1:] * np.conj(raw[..., :-1]))
+    delays_ns = -1e9 * steps / (2 * math.pi * spacing)
+    delay_error = float(np.max(np.abs(delays_ns - reference["delay_ns"])))
+    if delay_error > delay_tolerance_ns:
+        raise ValueError(f"Direct-path delay differs from free space by {delay_error:.3g} ns")
+    return {"amplitude_expected": reference["amplitude"], "amplitude_relative_error": amplitude_error,
+            "delay_ns_expected": reference["delay_ns"], "delay_ns_observed": float(np.mean(delays_ns)),
+            "delay_ns_max_error": delay_error}
 
 
 def trace_scene(present):

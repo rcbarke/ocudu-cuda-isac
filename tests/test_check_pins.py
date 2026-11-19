@@ -76,6 +76,9 @@ class PinGateTests(unittest.TestCase):
         self.assertEqual(self.lines(), [line + " (parent gitlink)" for line in expected])
         self.assertEqual(self.lines(worktrees=True), [line + " (Git worktree)" for line in expected])
         self.assertEqual(self.lines(worktrees=True, only="ocudu"), [expected[0] + " (Git worktree)"])
+        self.assertEqual(list(pins.verify_sources(self.root, worktrees=True, only="sionna-rt")),
+                         [{"name": "sionna-rt", "path": "ext/sionna-rt", "url": URLS["sionna-rt"],
+                           "commit": self.commits["sionna-rt"], "kind": "Git worktree"}])
         with contextlib.redirect_stdout(io.StringIO()) as output:
             pins.main(["--path", "ocudu"], root=self.root)
         self.assertEqual(output.getvalue().strip(), str(self.root / "ext/ocudu-deepsig-cuda-inline"))

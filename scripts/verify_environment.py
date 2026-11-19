@@ -128,15 +128,79 @@ def locked_sources():
     return {item["name"]: item for item in items}
 
 
+def pinned_sources():
+    """Verify every locked checkout against its pin and return the three source identities."""
+    from check_pins import verify_sources  # sibling script, importable when run from scripts/
+
+    return {source["name"]: source for source in verify_sources(ROOT, worktrees=True)}
+
+
+def file_digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").digest()
+
+
+def matches_pinned_source(name, source, claimed=()):
+    """Require the installed files of a distribution to equal the pinned source tree.
+
+    Two commits can carry one version number, so the version alone cannot expose a stale install.
+    Files in ``claimed`` belong to a distribution installed later and are checked there.
+    """
+    dist = metadata.distribution(name)
+    remedy = f"Reinstall {name} from {source} with 'make env-full'."
+    matched = set()
+    for entry in dist.files or ():
+        relative = entry.as_posix()
+        if (relative.startswith("../") or ".dist-info/" in relative or relative.endswith(".pyc")
+                or relative in claimed):
+            continue
+        original, installed = source / "src" / relative, Path(dist.locate_file(entry))
+        if (not original.is_file() or not installed.is_file()
+                or file_digest(original) != file_digest(installed)):
+            raise ValueError(f"{name}: installed {relative} differs from the pinned source. {remedy}")
+        matched.add(relative)
+    if not matched:
+        raise ValueError(f"{name}: pip recorded no installed source files. {remedy}")
+    # Walk without following links: the Sionna tree reaches the RT package through a symlink.
+    for package in sorted({relative.split("/", 1)[0] for relative in matched}):
+        for folder, _, files in os.walk(source / "src" / package):
+            for file in files:
+                relative = (Path(folder) / file).relative_to(source / "src").as_posix()
+                if file.endswith(".py") and relative not in matched and relative not in claimed:
+                    raise ValueError(f"{name}: pinned source file {relative} is not installed. {remedy}")
+    return matched
+
+
+def loaded_libraries():
+    """LLVM, CUDA driver and OptiX libraries mapped into this process (Linux)."""
+    try:
+        lines = Path("/proc/self/maps").read_text().splitlines()
+    except OSError:
+        return []
+    paths = {fields[5] for fields in (line.split(None, 5) for line in lines) if len(fields) == 6}
+    return sorted(path for path in paths if re.search(r"/(libLLVM|libnvoptix|libcuda\.so)[^/]*$", path))
+
+
+BACKEND_HELP = {
+    "cpu": "Dr.Jit could not start its LLVM backend. Install LLVM 15 or newer "
+           "(sudo apt-get install llvm) or set DRJIT_LIBLLVM_PATH to the libLLVM shared library.",
+    "cuda": "Dr.Jit could not start its CUDA backend. It needs libcuda.so and libnvoptix.so.1 from an "
+            "NVIDIA driver R535 or newer; DRJIT_LIBCUDA_PATH and DRJIT_LIBOPTIX_PATH override the search.",
+}
+
+
 def check_simulation(backend):
+    import drjit as dr
     import mitsuba as mi
 
     variant = {"cpu": "llvm_ad_mono_polarized", "cuda": "cuda_ad_mono_polarized"}[backend]
+    if not dr.has_backend(dr.JitBackend.CUDA if backend == "cuda" else dr.JitBackend.LLVM):
+        raise RuntimeError(BACKEND_HELP[backend])
     mi.set_variant(variant)
     import numpy as np
     import torch
     from sionna.phy.channel import AWGN
-    from export_rt_episode import trace_scene
+    from export_rt_episode import check_direct_path, trace_scene
 
     if backend == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("PyTorch cannot use CUDA in this venv")
@@ -146,16 +210,20 @@ def check_simulation(backend):
         raise ValueError("Zero-noise Sionna PHY reference lost the input symbol or device")
     # Exercise the same LOS/array/Paths.cfr path consumed by the real offline exporter.
     cfr = trace_scene(False)
-    if (cfr.shape != (1, 4, 1, 1, 4, 12) or not np.iscomplexobj(cfr)
-            or not np.isfinite(cfr).all() or not np.any(cfr)):
-        raise ValueError(f"Unexpected Sionna RT direct-link response, shape {cfr.shape}")
+    # The geometry is fixed, so the traced link has an independent free-space answer.
+    direct_path = check_direct_path(cfr)
     active_variant = mi.variant()
     if active_variant != variant:
         raise RuntimeError(f"Requested Mitsuba {variant}, but the path solver used {active_variant}")
+    gpu = backend == "cuda"
     return {"phy_device": str(y.device), "awgn_zero_noise_equal": True,
-            "gpu": torch.cuda.get_device_name() if backend == "cuda" else None,
-            "torch_cuda_build": torch.version.cuda, "rt_variant": active_variant,
-            "cfr_shape": list(cfr.shape), "cfr_peak": float(np.abs(cfr).max())}
+            "gpu": torch.cuda.get_device_name() if gpu else None,
+            "gpu_capability": ".".join(map(str, torch.cuda.get_device_capability())) if gpu else None,
+            "torch_build": torch.__version__, "torch_cuda_build": torch.version.cuda,
+            "torch_cuda_archs": torch.cuda.get_arch_list() if gpu else None,
+            "rt_variant": active_variant, "cfr_shape": list(cfr.shape),
+            "cfr_peak": float(np.abs(cfr).max()), "direct_path": direct_path,
+            "native_libraries": loaded_libraries()}
 
 
 def check_native(venv, expected_commit):
@@ -210,9 +278,15 @@ def run_checks(args, report):
     if check.returncode:
         raise RuntimeError((check.stdout + check.stderr).strip() or "pip check failed")
     if args.profile == "simulation":
-        sources = locked_sources()
+        sources = report["sources"] = pinned_sources()
+        owned = set()
         for name in ("sionna", "sionna-rt"):
-            distributions[name] = require_local_install(name, ROOT / sources[name]["path"])
+            checkout = ROOT / sources[name]["path"]
+            distributions[name] = require_local_install(name, checkout)
+            # Sionna is installed last and owns the package file both distributions ship.
+            matched = matches_pinned_source(name, checkout, owned)
+            distributions[name].update(commit=sources[name]["commit"], files_matching_source=len(matched))
+            owned = owned | matched
         versions = {"sionna": "2.2.0", "sionna-rt": "2.2.0",
                     "mitsuba": "3.9.1", "drjit": "1.5.0"}
         for name in ("mitsuba", "drjit", "torch", "numpy", "scipy"):

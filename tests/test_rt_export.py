@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +69,42 @@ class RTExportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     exporter.store_cfr(self.root, "h.npy", data)
                 self.assertFalse((self.root / "h.npy").exists())
+
+
+class DirectPathReferenceTests(unittest.TestCase):
+    def test_free_space_reference_matches_the_hand_calculation(self):
+        # 20 m ground range and 1.5 m height difference at 3.5 GHz, isotropic antennas.
+        reference = exporter.direct_path_reference()
+        self.assertAlmostEqual(reference["amplitude"], 3.398558642879076e-4, places=15)
+        self.assertAlmostEqual(reference["delay_ns"], 66.90018572825998, places=9)
+
+    @unittest.skipIf(np is None, "optional NumPy runtime required for RT array checks")
+    def test_direct_path_check_accepts_free_space_and_rejects_wrong_physics(self):
+        reference = exporter.direct_path_reference()
+        offsets = np.array(exporter.OFFSETS_HZ, dtype=np.float64)
+
+        def channel(amplitude=reference["amplitude"], delay_ns=reference["delay_ns"]):
+            tones = amplitude * np.exp(-2j * math.pi * offsets * delay_ns * 1e-9)
+            shape = (1, 4, 1, 1, exporter.TIME_COUNT, len(offsets))
+            return np.broadcast_to(tones, shape).astype(np.complex64)
+
+        measured = exporter.check_direct_path(channel())
+        self.assertLess(measured["amplitude_relative_error"], 1e-6)
+        self.assertLess(measured["delay_ns_max_error"], 0.01)
+        self.assertAlmostEqual(measured["delay_ns_observed"], reference["delay_ns"], places=2)
+        nonfinite = channel().copy()
+        nonfinite.flat[0] = complex(float("inf"), 0)
+        cases = ((channel(amplitude=1.001 * reference["amplitude"]), "gain differs"),
+                 (channel(amplitude=0.0), "gain differs"),
+                 (np.conj(channel()), "delay differs"),
+                 (channel(delay_ns=reference["delay_ns"] + 1.0), "delay differs"),
+                 (channel(delay_ns=0.0), "delay differs"),
+                 (nonfinite, "finite complex"),
+                 (channel()[0], "finite complex"),
+                 (channel().real, "finite complex"))
+        for data, message in cases:
+            with self.subTest(message=message, shape=data.shape), self.assertRaisesRegex(ValueError, message):
+                exporter.check_direct_path(data)
 
 
 if __name__ == "__main__":

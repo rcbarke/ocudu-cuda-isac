@@ -220,22 +220,28 @@ class EnvironmentGateTests(unittest.TestCase):
             self.assertEqual(data["status"], "failed")
             self.assertIn("requires numpy", data["error"])
 
-    def test_simulation_and_native_sources_follow_the_lock(self):
-        lock = {"dependencies": [
-            {"name": "ocudu", "path": "ext/ocudu-deepsig-cuda-inline", "commit": "c" * 40},
-            {"name": "sionna", "path": "ext/phy"}, {"name": "sionna-rt", "path": "ext/rt"}]}
-        versions = {"mitsuba": "3.9.1", "drjit": "1.5.0", "torch": "2.9.1", "numpy": "2.2.6",
-                    "scipy": "1.15.3"}
+    def test_simulation_report_binds_installs_to_the_verified_pins(self):
+        pins = {"ocudu": {"name": "ocudu", "path": "ext/ocudu-deepsig-cuda-inline", "commit": "c" * 40,
+                          "kind": "Git worktree"},
+                "sionna": {"name": "sionna", "path": "ext/phy", "commit": "a" * 40, "kind": "Git worktree"},
+                "sionna-rt": {"name": "sionna-rt", "path": "ext/rt", "commit": "b" * 40,
+                              "kind": "Git worktree"}}
+        versions = {"mitsuba": "3.9.1", "drjit": "1.5.0", "torch": "2.15.0", "numpy": "2.5.5",
+                    "scipy": "1.18.1"}
         with contextlib.ExitStack() as stack:
             root = Path(stack.enter_context(tempfile.TemporaryDirectory())).resolve()
             (root / "ext").mkdir()
-            (root / "ext/lock.json").write_text(json.dumps(lock))
+            (root / "ext/lock.json").write_text(json.dumps({"dependencies": list(pins.values())}))
             stack.enter_context(mock.patch.object(environment, "ROOT", root))
             for name in ("check_isolation", "check_search_path", "project_import",
                          "installed_distributions", "check_simulation"):
                 stack.enter_context(mock.patch.object(environment, name, return_value={}))
+            stack.enter_context(mock.patch.object(environment, "pinned_sources", return_value=pins))
             local = stack.enter_context(mock.patch.object(
-                environment, "require_local_install", return_value={"version": "2.2.0"}))
+                environment, "require_local_install", side_effect=lambda *a, **k: {"version": "2.2.0"}))
+            match = stack.enter_context(mock.patch.object(
+                environment, "matches_pinned_source",
+                side_effect=[{"sionna/__init__.py", "sionna/phy.py"}, {"sionna/rt/paths.py"}]))
             native = stack.enter_context(mock.patch.object(environment, "check_native", return_value={}))
             stack.enter_context(mock.patch.object(environment.metadata, "version",
                                                   side_effect=versions.__getitem__))
@@ -243,14 +249,78 @@ class EnvironmentGateTests(unittest.TestCase):
                 environment.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")))
             output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             self.assertEqual(environment.main(["--profile", "simulation", "--with-native"]), 0)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["sources"], pins)
             self.assertEqual([call.args for call in local.call_args_list[1:]],
                              [("sionna", root / "ext/phy"), ("sionna-rt", root / "ext/rt")])
+            # Sionna is checked first; the files it owns are not re-attributed to Sionna RT.
+            self.assertEqual([call.args for call in match.call_args_list],
+                             [("sionna", root / "ext/phy", set()),
+                              ("sionna-rt", root / "ext/rt", {"sionna/__init__.py", "sionna/phy.py"})])
+            self.assertEqual(report["distributions"]["sionna-rt"],
+                             {"version": "2.2.0", "commit": "b" * 40, "files_matching_source": 1})
             native.assert_called_once_with(root / "isac", "c" * 40)
             (root / "ext/lock.json").write_text(json.dumps({"dependencies": [{"path": "ext/ocudu"}]}))
             output.seek(0)
             output.truncate()
-            self.assertEqual(environment.main(["--profile", "simulation"]), 1)
+            self.assertEqual(environment.main(["--profile", "core", "--with-native"]), 1)
             self.assertIn("must name every dependency", json.loads(output.getvalue())["error"])
+
+    def test_installed_files_must_equal_the_pinned_source_tree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            source, site = base / "checkout", base / "site-packages"
+            files = {"pkg/__init__.py": "shared = 1\n", "pkg/solver.py": "paths = 2\n",
+                     "pkg/data/scene.xml": "<scene/>\n"}
+            for relative, text in files.items():
+                for tree in (source / "src", site):
+                    (tree / relative).parent.mkdir(parents=True, exist_ok=True)
+                    (tree / relative).write_text(text)
+            (base / "elsewhere").mkdir()
+            (base / "elsewhere/linked.py").write_text("not part of this package\n")
+            (source / "src/pkg/rt").symlink_to(base / "elsewhere")
+            recorded = [*files, "pkg-1.0.dist-info/RECORD", "pkg/__pycache__/solver.cpython-312.pyc",
+                        "../../bin/tool"]
+            dist = mock.Mock(files=[environment.metadata.PackagePath(name) for name in recorded],
+                             locate_file=lambda entry: site / entry)
+            with mock.patch.object(environment.metadata, "distribution", return_value=dist):
+                self.assertEqual(environment.matches_pinned_source("pkg", source), set(files))
+                installed = site / "pkg/solver.py"
+                installed.write_text("paths = 3  # built from another commit with the same version\n")
+                with self.assertRaisesRegex(ValueError, "installed pkg/solver.py differs"):
+                    environment.matches_pinned_source("pkg", source)
+                self.assertEqual(environment.matches_pinned_source("pkg", source, {"pkg/solver.py"}),
+                                 set(files) - {"pkg/solver.py"})
+                installed.write_text(files["pkg/solver.py"])
+                (source / "src/pkg/added.py").write_text("new upstream module\n")
+                with self.assertRaisesRegex(ValueError, "pinned source file pkg/added.py is not installed"):
+                    environment.matches_pinned_source("pkg", source)
+                (source / "src/pkg/added.py").unlink()
+                (source / "src/pkg/data/scene.xml").unlink()
+                with self.assertRaisesRegex(ValueError, "installed pkg/data/scene.xml differs"):
+                    environment.matches_pinned_source("pkg", source)
+                dist.files = [environment.metadata.PackagePath("__editable__.pkg-1.0.pth")]
+                with self.assertRaisesRegex(ValueError, "make env-full"):
+                    environment.matches_pinned_source("pkg", source)
+                dist.files = None
+                with self.assertRaisesRegex(ValueError, "no installed source files"):
+                    environment.matches_pinned_source("pkg", source)
+
+    def test_loaded_backend_libraries_are_listed_once(self):
+        maps = ("ffff80000000-ffff80200000 r-xp 00000000 103:02 11  /usr/lib/aarch64-linux-gnu/libc.so.6\n"
+                "ffff81000000-ffff82000000 r-xp 00000000 103:02 12  /usr/lib/aarch64-linux-gnu/libLLVM.so.20.1\n"
+                "ffff82000000-ffff83000000 r--p 00100000 103:02 12  /usr/lib/aarch64-linux-gnu/libLLVM.so.20.1\n"
+                "ffff84000000-ffff85000000 r-xp 00000000 103:02 13  /usr/lib/aarch64-linux-gnu/libnvoptix.so.580.178.04\n"
+                "ffff86000000-ffff87000000 r-xp 00000000 103:02 14  /usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04\n"
+                "ffff88000000-ffff89000000 rw-p 00000000 00:00 0\n"
+                "ffff8a000000-ffff8b000000 rw-p 00000000 00:00 0  [heap]\n")
+        with mock.patch.object(environment.Path, "read_text", return_value=maps):
+            self.assertEqual(environment.loaded_libraries(),
+                             ["/usr/lib/aarch64-linux-gnu/libLLVM.so.20.1",
+                              "/usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04",
+                              "/usr/lib/aarch64-linux-gnu/libnvoptix.so.580.178.04"])
+        with mock.patch.object(environment.Path, "read_text", side_effect=OSError("no procfs")):
+            self.assertEqual(environment.loaded_libraries(), [])
 
     def test_report_records_the_host_and_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temp, \

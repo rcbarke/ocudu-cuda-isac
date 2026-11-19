@@ -67,8 +67,8 @@ def declared_submodules(root):
     return {entry.get("path"): entry.get("url") for entry in settings.values()}
 
 
-def check(root, worktrees=False, only=None):
-    """Yield one summary line per verified dependency. Raise ValueError on the first mismatch."""
+def verify_sources(root, worktrees=False, only=None):
+    """Yield the verified identity of each dependency. Raise ValueError on the first mismatch."""
     entries = load_lock(root)
     paths = sorted(item["path"] for item in entries.values())
     declared = declared_submodules(root)
@@ -103,7 +103,13 @@ def check(root, worktrees=False, only=None):
             else:
                 verify_snapshot(root, item)
                 kind = "verified archive"
-        yield f"{path} {sha} ({kind})"
+        yield {"name": name, "path": path, "url": item["url"], "commit": sha, "kind": kind}
+
+
+def check(root, worktrees=False, only=None):
+    """Yield one summary line per verified dependency."""
+    for source in verify_sources(root, worktrees, only):
+        yield f"{source['path']} {source['commit']} ({source['kind']})"
 
 
 def main(argv=None, root=ROOT):
