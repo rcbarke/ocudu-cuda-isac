@@ -1,0 +1,10 @@
+[submodule "ext/ocudu-deepsig-cuda-inline"]
+	path = ext/ocudu-deepsig-cuda-inline
+	url = https://gitlab.com/ocudu/work_groups/wg1_hw_accel/cuda_accelerated_ocudu.git
+	branch = nvcuda_accel_02
+[submodule "ext/sionna"]
+	path = ext/sionna
+	url = https://github.com/NVlabs/sionna.git
+[submodule "ext/sionna-rt"]
+	path = ext/sionna-rt
+	url = https://github.com/NVlabs/sionna-rt.git
