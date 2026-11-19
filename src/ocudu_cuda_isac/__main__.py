@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .replay import join_timing, materialize
+from .replay import join_timing, load_json, materialize
 
 
 def write_jsonl(path, rows):
@@ -20,8 +20,8 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     try:
-        episode = json.loads(args.episode.read_text(encoding="utf-8"))
-        trace = json.loads(args.trace.read_text(encoding="utf-8"))
+        episode = load_json(args.episode)
+        trace = load_json(args.trace)
         ingress, oracle = materialize(episode)
         summary = join_timing(ingress, trace)
     except (OSError, ValueError, OverflowError) as exc:

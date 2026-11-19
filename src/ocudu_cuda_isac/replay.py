@@ -1,6 +1,11 @@
 """Small scalar reference for validating a recorded channel-to-grid handoff."""
 
+from copy import deepcopy
+import json
 from math import isfinite, prod
+
+# Times, identifiers and offsets must survive a signed 64-bit native consumer unchanged.
+INT64_MAX = 2**63 - 1
 
 
 class ContractError(ValueError):
@@ -8,9 +13,27 @@ class ContractError(ValueError):
 
 
 def integer(value, name, minimum=0):
-    if type(value) is not int or value < minimum:
-        raise ContractError(f"{name} must be an integer >= {minimum}")
+    if type(value) is not int or not minimum <= value <= INT64_MAX:
+        raise ContractError(f"{name} must be an integer from {minimum} to 2**63 - 1")
     return value
+
+
+def load_json(path):
+    """Read one fixture file. A repeated key or a nonfinite constant makes the document ambiguous."""
+    def unique(pairs):
+        keys = [key for key, _ in pairs]
+        repeated = sorted({key for key in keys if keys.count(key) > 1})
+        if repeated:
+            raise ContractError(f"{path}: repeated key {repeated[0]!r}")
+        return dict(pairs)
+
+    def constant(name):
+        raise ContractError(f"{path}: nonfinite constant {name}")
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique, parse_constant=constant)
+    except json.JSONDecodeError as error:
+        raise ContractError(f"{path}: {error}") from error
 
 
 def object_fields(obj, fields, name):
@@ -29,10 +52,15 @@ def complex_values(value, length, name):
     result = []
     for item in array(value, length, name):
         real, imag = array(item, 2, name)
-        for component in (real, imag):
-            if type(component) not in (int, float) or not isfinite(component):
-                raise ContractError(f"{name} requires finite real/imaginary pairs")
-        result.append(complex(real, imag))
+        try:
+            # An integer too large for a double raises instead of becoming infinite.
+            valid = all(type(part) in (int, float) and isfinite(part) for part in (real, imag))
+            number = complex(real, imag) if valid else None
+        except OverflowError:
+            number = None
+        if number is None:
+            raise ContractError(f"{name} requires finite real/imaginary pairs")
+        result.append(number)
     return result
 
 
@@ -63,8 +91,9 @@ def materialize(episode):
     shape = [integer(x, "shape dimension", 1) for x in array(episode["shape"], 4, "shape")]
     nr, nt, nm, nk = shape
     frequencies = array(episode["subcarrier_offsets_hz"], nk, "subcarrier_offsets_hz")
-    if any(type(f) is not int for f in frequencies) or len(set(frequencies)) != nk:
-        raise ContractError("subcarrier offsets must be unique integer Hz values")
+    if (any(type(f) is not int or abs(f) > INT64_MAX for f in frequencies)
+            or any(low >= high for low, high in zip(frequencies, frequencies[1:]))):
+        raise ContractError("subcarrier offsets must be strictly increasing integer Hz values")
     records = episode["records"]
     if not isinstance(records, list) or not records:
         raise ContractError("records must be a nonempty array")
@@ -90,11 +119,12 @@ def materialize(episode):
         identity = {"episode_id": eid, "seq": seq}
         ingress.append({
             **identity, "clock_domain": clock, "symbol_times_ns": times, "ready_ns": ready,
-            "shape_rx_symbol_subcarrier": [nr, nm, nk], "subcarrier_offsets_hz": frequencies,
-            "pilot_mask": pilot_mask, "y": received_grid(shape, x, h, w),
+            "shape_rx_symbol_subcarrier": [nr, nm, nk], "subcarrier_offsets_hz": list(frequencies),
+            "pilot_mask": list(pilot_mask), "y": received_grid(shape, x, h, w),
         })
-        oracle.append({**identity, "synthetic_case": record["case"], "shape_rx_tx_symbol_subcarrier": shape,
-                       "h": record["h"], "x": record["x"], "w": record["w"]})
+        # Each record owns its arrays: a consumer that edits one cannot alter another or the source.
+        oracle.append({**identity, "synthetic_case": record["case"], "shape_rx_tx_symbol_subcarrier": list(shape),
+                       "h": deepcopy(record["h"]), "x": deepcopy(record["x"]), "w": deepcopy(record["w"])})
         last_seq, previous_first = seq, times[0]
     return ingress, oracle
 

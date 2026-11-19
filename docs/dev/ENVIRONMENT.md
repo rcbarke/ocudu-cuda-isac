@@ -109,3 +109,14 @@ python scripts/verify_environment.py --profile simulation --backend cuda --with-
   --report "$run_dir/collocated.json"
 bash scripts/run_spark_baseline.sh --profile paper --skip-build
 ```
+
+## Sprint 0 acceptance on one host
+
+`scripts/accept_s0.sh` runs the S0.1, S0.2 and S0.3 gates in one pass and writes the evidence to a new directory under the ignored `results/runs/`. It only runs the commands above, saves their output and prints one verdict. Name the simulation backends the host must pass. With none, it accepts a development host on the core gates alone and says that the simulation check still needs a provisioned scene host.
+
+```bash
+make accept-s0 BACKENDS="cpu cuda"      # collocated Spark: core, sources, both simulation backends, replay
+make accept-s0                           # component developer or CPU CI host
+```
+
+The run directory holds `summary.txt`, the commit and `git-status.txt`, `core-env.json`, `sources.txt`, `python-packages.txt`, one `simulation-<backend>.json` per backend, the two replay outputs with `smoke-sha256.txt`, and `unit-tests.log`. The verdict is `ACCEPTED` only when the tree is committed, every gate exits zero, the replay shows four scheduled updates with one on time, one late, one dropped and one missing, its three files repeat byte for byte, and the unit suite ran with no failure. On a simulation host a skipped test also fails the gate. An existing run directory is never reused.

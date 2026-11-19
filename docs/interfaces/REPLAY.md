@@ -11,7 +11,7 @@ From the repository root:
 python3 -m unittest discover -s tests -p 'test_replay.py' -v
 ```
 
-The wrapper writes to `build/smoke/`. Use `--output-dir PATH` to choose another directory. Repeating the command overwrites the three fixture outputs. For different input files, the underlying entry point is:
+The wrapper writes to `build/smoke/`. Use `--output-dir PATH` to choose another directory. Repeating the command overwrites the three fixture outputs with the same bytes. The fixture arithmetic is exact in binary floating point, so every host produces identical files. `tests/test_replay.py` records their SHA-256 digests. To compare a repeat by hand, run `./scripts/run_smoke.sh --output-dir build/smoke-repeat` and `diff -r build/smoke build/smoke-repeat`. For different input files, the underlying entry point is:
 
 ```bash
 PYTHONPATH=src python3 -m ocudu_cuda_isac \
@@ -30,7 +30,7 @@ The expected counts are four scheduled updates, one on time, one late, one dropp
 
 ## Grid contract
 
-The fixture schema `fixture-grid/v1` uses an opaque `episode_id`, ordered integer `seq` keys, and one declared `clock_domain`. A record carries `symbol_times_ns`, its earliest completed-grid `ready_ns`, and a common synthetic `pilot_mask[m,k]`. Frequency offsets are ordered relative to the carrier in Hz. Complex values are JSON pairs `[real, imaginary]`. Arrays are flat, with the last axis varying fastest.
+The fixture schema `fixture-grid/v1` uses an opaque `episode_id`, ordered integer `seq` keys, and one declared `clock_domain`. A record carries `symbol_times_ns`, its earliest completed-grid `ready_ns`, and a common synthetic `pilot_mask[m,k]`. Frequency offsets are strictly increasing integers in Hz relative to the carrier. Identifiers, times and offsets must fit a signed 64-bit integer. A file with a repeated key or a nonfinite constant is rejected when it is loaded. Every emitted record owns its arrays, so a consumer that edits one record cannot change another record or the source episode. Complex values are JSON pairs `[real, imaginary]`. Arrays are flat, with the last axis varying fastest.
 
 | Field | Axes | Purpose |
 |---|---|---|
