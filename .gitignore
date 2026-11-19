@@ -1,0 +1,12 @@
+# Host-local products. Recreate them on each machine; never commit them.
+/isac/
+/build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Measured runs, environment reports and generated or downloaded data stay local until promoted.
+/results/runs/
+/results/environment.*/
+/data/episodes/
+/data/external/

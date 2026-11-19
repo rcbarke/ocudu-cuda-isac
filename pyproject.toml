@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ocudu-cuda-isac"
 version = "0.1.0"
 description = "Reference replay fixtures for the OCUDU CUDA ISAC research scaffold"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]

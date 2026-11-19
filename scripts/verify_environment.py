@@ -15,31 +15,109 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_DIRS = frozenset(("site-packages", "dist-packages"))
+RECREATE = "Remove isac/ and run 'make env' on this host."
+
+
+def created_here(command, venv):
+    """Return whether the creation command stored in pyvenv.cfg targets this directory."""
+    # venv writes the absolute target last and unquoted, so try each suffix to keep spaces intact.
+    starts = (index + 1 for index, char in enumerate(command) if char == " ")
+    targets = (Path(command[start:]) for start in starts)
+    return any(target.is_absolute() and target.resolve() == venv for target in targets)
 
 
 def check_isolation(venv):
     if sys.version_info < (3, 11):
         raise ValueError("Python 3.11+ required for the shared research environment")
     if sys.prefix == sys.base_prefix or Path(sys.prefix).resolve() != venv:
-        raise ValueError("Use this checkout's isac/bin/python or source isac/bin/activate")
+        message = "Use this checkout's isac/bin/python or source isac/bin/activate"
+        active = os.environ.get("VIRTUAL_ENV")
+        if active and Path(active).resolve() != venv:
+            message += (f". VIRTUAL_ENV is {active}, expected {venv}. Deactivate the other "
+                        f"environment, or if isac/ was created at a different path: {RECREATE}")
+        raise ValueError(message)
     settings = dict(line.split("=", 1) for line in (venv / "pyvenv.cfg").read_text().splitlines()
                     if "=" in line)
-    settings = {key.strip().lower(): value.strip().lower() for key, value in settings.items()}
-    if settings.get("include-system-site-packages") != "false":
+    settings = {key.strip().lower(): value.strip() for key, value in settings.items()}
+    if settings.get("include-system-site-packages", "").lower() != "false":
         raise ValueError("Create isac without --system-site-packages")
+    command = settings.get("command")
+    if command and not created_here(command, venv):
+        raise ValueError(f"{venv} was created at another path and a virtual environment "
+                         f"cannot be relocated. {RECREATE}")
 
 
-def require_local_install(name, path):
+def check_search_path(venv, root, entries=None, stdlib=None):
+    """Reject import roots outside the standard library, this venv and this checkout."""
+    entries = sys.path if entries is None else entries
+    stdlib = Path(os.__file__).resolve().parent if stdlib is None else stdlib
+    archive = stdlib.with_name(f"python{sys.version_info[0]}{sys.version_info[1]}.zip")
+    foreign = []
+    for entry in entries:
+        path = Path(entry or ".").resolve()
+        if not path.exists() or path == archive:
+            continue
+        if path.is_relative_to(venv) or path.is_relative_to(root):
+            continue
+        if path.is_relative_to(stdlib) and not PACKAGE_DIRS.intersection(path.relative_to(stdlib).parts):
+            continue
+        foreign.append(str(path))
+    if foreign:
+        hint = " Unset PYTHONPATH and retry." if os.environ.get("PYTHONPATH") else ""
+        raise ValueError("Packages outside the isac environment are importable from: "
+                         + ", ".join(foreign) + "." + hint)
+
+
+def require_local_install(name, path, editable=False):
     """Read pip's PEP 610 receipt to distinguish the selected source from a registry wheel."""
     dist = metadata.distribution(name)
     origin = json.loads(dist.read_text("direct_url.json") or "{}")
     url = urlsplit(origin.get("url", ""))
     if url.scheme != "file" or url.netloc not in ("", "localhost") or "dir_info" not in origin:
-        raise ValueError(f"{name} must be installed from the local source at {path}")
+        hint = " (PYTHONPATH is set and can shadow pip's record)" if os.environ.get("PYTHONPATH") else ""
+        raise ValueError(f"{name} must be installed from the local source at {path}{hint}")
     actual = Path(url2pathname(url.path)).resolve()
     if actual != path.resolve():
         raise ValueError(f"{name} came from {actual}, expected {path}")
-    return {"version": dist.version, "source": str(actual)}
+    record = {"version": dist.version, "source": str(actual)}
+    if editable:
+        details = origin["dir_info"]
+        if not isinstance(details, dict) or details.get("editable") is not True:
+            raise ValueError(f"{name} must be an editable install of {path}. Run 'make env'.")
+        record["editable"] = True
+    return record
+
+
+def project_import(root):
+    """Import the project and require the module that executes to be the editable source."""
+    import ocudu_cuda_isac
+
+    module = Path(ocudu_cuda_isac.__file__).resolve()
+    if not module.is_relative_to(root / "src"):
+        raise ValueError(f"ocudu_cuda_isac resolves to {module}, expected the source under {root / 'src'}")
+    return str(module)
+
+
+def installed_distributions():
+    """Name and version of every distribution this interpreter resolves, first match per name."""
+    found = {}
+    for dist in metadata.distributions():
+        name = dist.metadata["Name"]
+        if name:
+            found.setdefault(re.sub(r"[-_.]+", "-", name).lower(), dist.version)
+    return dict(sorted(found.items()))
+
+
+def describe_host():
+    """Host identity recorded with every report, including a failed one."""
+    try:
+        release = platform.freedesktop_os_release()
+    except (AttributeError, OSError):
+        release = {}
+    return {"os": {key.lower(): release.get(key) for key in ("ID", "VERSION_ID", "PRETTY_NAME")},
+            "node": platform.node(), "prefix": sys.prefix, "base_prefix": sys.base_prefix,
+            "project_root": str(ROOT)}
 
 
 def check_simulation(backend):
@@ -112,13 +190,15 @@ def check_native(venv, expected_commit):
 def run_checks(args, report):
     venv = ROOT / "isac"
     check_isolation(venv)
+    check_search_path(venv, ROOT)
+    report["venv"] = str(venv)
     distributions = report["distributions"]
-    distributions["ocudu-cuda-isac"] = require_local_install("ocudu-cuda-isac", ROOT)
-    import ocudu_cuda_isac
-
-    report["project_import"] = str(Path(ocudu_cuda_isac.__file__).resolve())
-    check = subprocess.run([sys.executable, "-m", "pip", "check"],
+    distributions["ocudu-cuda-isac"] = require_local_install("ocudu-cuda-isac", ROOT, editable=True)
+    report["project_import"] = project_import(ROOT)
+    report["installed"] = installed_distributions()
+    check = subprocess.run([sys.executable, "-m", "pip", "--disable-pip-version-check", "check"],
                            capture_output=True, text=True, check=False)
+    report["pip_check"] = check.stdout.strip()
     if check.returncode:
         raise RuntimeError((check.stdout + check.stderr).strip() or "pip check failed")
     if args.profile == "simulation":
@@ -150,10 +230,13 @@ def main(argv=None):
         parser.error("--backend applies to --profile simulation")
     if args.profile == "simulation" and not args.backend:
         args.backend = "cpu"
+    if args.report and args.report.exists():
+        parser.exit(2, f"Report already exists: {args.report}\n")
     report = {"schema": "isac-environment/v1", "profile": args.profile,
               "backend_requested": args.backend, "native_requested": args.with_native,
               "interpreter": sys.executable, "python": platform.python_version(),
-              "platform": platform.platform(), "machine": platform.machine(), "distributions": {}}
+              "platform": platform.platform(), "machine": platform.machine(),
+              **describe_host(), "distributions": {}}
     try:
         run_checks(args, report)
         report["status"] = "pass"
