@@ -1,12 +1,12 @@
 # Upstream reuse and integration boundaries
 
-Use the three source checkouts below. The parent Git commit and [dependency lock](../../deps/lock.json) identify the exact inputs. `make pins` checks the Git entries offline and `make hydrate` fetches their source. Comparators and measured data are optional external inputs. The portable smoke test uses its own small fixture and runs without these downloads.
+Use the three source checkouts below. The parent Git commit and [dependency lock](../../ext/lock.json) identify the exact inputs. `make pins` checks the Git entries offline and `make hydrate` fetches their source. Comparators and measured data are optional external inputs. The portable smoke test uses its own small fixture and runs without these downloads.
 
 | Checkout | Source revision | Responsibility |
 |---|---|---|
-| `deps/ocudu` | WG1 `nvcuda_accel_02` at `27e84cb3da65205b55dbd56ace6fac93a035331e` | Native CU/DU, scheduler, CPU and CUDA PHY paths, GPU-aware grid, accelerator build and benchmark tools. [WG1 revision](https://gitlab.com/ocudu/work_groups/wg1_hw_accel/cuda_accelerated_ocudu/-/tree/27e84cb3da65205b55dbd56ace6fac93a035331e) |
-| `deps/sionna` | `v2.2.0` at `2f0a3820269b53fd022780a6f2f5f720f7ceb9b4` | Offline PHY references for NR PUSCH/DMRS, channel processing and ISAC delay, Doppler and angular utilities. [Pinned source](https://github.com/NVlabs/sionna/commit/2f0a3820269b53fd022780a6f2f5f720f7ceb9b4) |
-| `deps/sionna-rt` | `v2.2.0` at `15b5ee036917a4c2a9b6420e05570b77717e2fcc` | Offline geometry, mobility, multipath background, radar cross section (RCS), and complex channel-response generation. [Pinned source](https://github.com/NVlabs/sionna-rt/commit/15b5ee036917a4c2a9b6420e05570b77717e2fcc) |
+| `ext/ocudu` | WG1 `nvcuda_accel_02` at `27e84cb3da65205b55dbd56ace6fac93a035331e` | Native CU/DU, scheduler, CPU and CUDA PHY paths, GPU-aware grid, accelerator build and benchmark tools. [WG1 revision](https://gitlab.com/ocudu/work_groups/wg1_hw_accel/cuda_accelerated_ocudu/-/tree/27e84cb3da65205b55dbd56ace6fac93a035331e) |
+| `ext/sionna` | `v2.2.0` at `2f0a3820269b53fd022780a6f2f5f720f7ceb9b4` | Offline PHY references for NR PUSCH/DMRS, channel processing and ISAC delay, Doppler and angular utilities. [Pinned source](https://github.com/NVlabs/sionna/commit/2f0a3820269b53fd022780a6f2f5f720f7ceb9b4) |
+| `ext/sionna-rt` | `v2.2.0` at `15b5ee036917a4c2a9b6420e05570b77717e2fcc` | Offline geometry, mobility, multipath background, radar cross section (RCS), and complex channel-response generation. [Pinned source](https://github.com/NVlabs/sionna-rt/commit/15b5ee036917a4c2a9b6420e05570b77717e2fcc) |
 
 ## Native receiver and observation hook
 

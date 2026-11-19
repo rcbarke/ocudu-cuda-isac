@@ -32,7 +32,9 @@
   },
   "paired_runs": {
     "repetitions": 3,
-    "duration_seconds": 60
+    "duration_seconds": 60,
+    "score_each_concurrent_repetition": true,
+    "held_out_episodes_reused_across_repetitions": true
   },
   "illustrative_demo_gates": {
     "held_out_present_episodes": 10,
@@ -40,7 +42,8 @@
     "scored_windows_per_episode": 1,
     "minimum_timely_positives": 8,
     "maximum_false_alarms": 2,
-    "minimum_fraction_phy_jobs_within_configured_allowance": 0.99
+    "minimum_fraction_phy_jobs_within_configured_allowance": 0.99,
+    "absent_missing_rule": "Report valid absent decisions. Mark inconclusive if unobserved alerts could change the false-alarm verdict."
   },
   "must_record": [
     "actual_legal_allocations",

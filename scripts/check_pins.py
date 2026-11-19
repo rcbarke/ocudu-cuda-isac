@@ -1,11 +1,15 @@
-"""Validate the three committed gitlinks, optionally including checked-out worktrees."""
+"""Check the source lock and submodule declarations; optionally check installed sources."""
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
+from source_archives import verify_snapshot
+
 ROOT = Path(__file__).resolve().parents[1]
+NAMES = ("ocudu", "sionna", "sionna-rt")
 
 
 def git(*args, cwd=ROOT):
@@ -14,34 +18,49 @@ def git(*args, cwd=ROOT):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worktrees", action="store_true")
+    parser.add_argument("--worktrees", action="store_true", help="verify the actual installed source trees")
+    parser.add_argument("--only", choices=NAMES, help="limit installed-source verification to one dependency")
     options = parser.parse_args()
-    deps = json.loads((ROOT / "deps/lock.json").read_text())["dependencies"]
-    locked_paths = {item["path"] for item in deps}
-    entries = git("ls-tree", "-r", "HEAD", "deps").splitlines()
-    gitlinks = {entry.split("\t", 1)[1] for entry in entries if entry.startswith("160000 commit ")}
-    if locked_paths != gitlinks or len(locked_paths) != len(deps):
-        raise ValueError("The committed dependency gitlinks differ from deps/lock.json")
-    for item in deps:
+    items = json.loads((ROOT / "ext/lock.json").read_text())["dependencies"]
+    paths = sorted(item["path"] for item in items)
+    if paths != sorted(f"ext/{name}" for name in NAMES):
+        raise ValueError("The source lock must identify exactly the three dependencies")
+    metadata = (ROOT / ".git").exists()
+    if metadata:
+        entries = git("ls-tree", "-r", "HEAD", "--", "ext").splitlines()
+        gitlinks = sorted(entry.split("\t", 1)[1] for entry in entries if entry.startswith("160000 commit "))
+        if gitlinks != paths:
+            raise ValueError("Committed gitlinks differ from the source lock")
+    for item in items:
         path, sha = item["path"], item["commit"]
-        entry = git("ls-tree", "HEAD", "--", path)
-        if entry != f"160000 commit {sha}\t{path}":
-            raise ValueError(f"{path}: expected gitlink {sha}, found {entry}")
-        url = git("config", "--file", ".gitmodules", "--get", f"submodule.{path}.url")
-        if url != item["url"]:
-            raise ValueError(f"{path}: URL differs from the dependency lock")
+        if not re.fullmatch("[0-9a-f]{40}", sha):
+            raise ValueError(f"{path}: invalid commit")
+        for key in ("archive_sha256", "snapshot_manifest_sha256"):
+            if not re.fullmatch("[0-9a-f]{64}", item[key]):
+                raise ValueError(f"{path}: invalid {key}")
+        for field in ("path", "url"):
+            if git("config", "--file", ".gitmodules", "--get", f"submodule.{path}.{field}") != item[field]:
+                raise ValueError(f"{path}: submodule {field} differs from lock")
+        if metadata and git("ls-tree", "HEAD", "--", path) != f"160000 commit {sha}\t{path}":
+            raise ValueError(f"{path}: gitlink differs from lock")
+        if options.only and path != f"ext/{options.only}":
+            continue
+        kind = "parent gitlink" if metadata else "source-export declaration"
         if options.worktrees:
-            directory = ROOT / path
-            if not (directory / ".git").exists():
-                raise ValueError(f"{path}: worktree is uninitialized")
-            if git("rev-parse", "HEAD", cwd=directory) != sha:
-                raise ValueError(f"{path}: worktree differs from committed gitlink")
-        print(f"{path} {sha}")
+            checkout = ROOT / path
+            if (checkout / ".git").exists():
+                if (git("rev-parse", "HEAD", cwd=checkout) != sha or
+                        git("status", "--porcelain", "--untracked-files=no", cwd=checkout)):
+                    raise ValueError(f"{path}: expected pristine checkout at {sha}")
+                kind = "Git worktree"
+            else:
+                verify_snapshot(ROOT, item)
+                kind = "verified archive"
+        print(f"{path} {sha} ({kind})")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(error, file=sys.stderr)
-        sys.exit(1)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))

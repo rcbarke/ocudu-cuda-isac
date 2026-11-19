@@ -3,6 +3,7 @@
 | Read this | Use it for |
 |---|---|
 | [Development plan](dev/DEVELOPMENT.md) | Sprint order, code ownership, unit/integration failures, gates and evidence |
+| [Environment](dev/ENVIRONMENT.md) and [native baseline](dev/NATIVE_BASELINE.md) | Install project and pinned sources, verify each runtime and reproduce the one-layer paper result |
 | [Advisor demonstration](demo/ADVISOR_DEMO.md) | Three-minute walkthrough, run order, decisions and exclusions from demo claims |
 | [DGX Spark runbook](demo/SPARK.md) | Reproduce upstream CUDA-OCUDU with versioned commands |
 | [Architecture](architecture/SYSTEM.md) and [deployment modes](architecture/DEPLOYMENTS.md) | Radio path, ownership, GPU partitions, link economics and core placement |

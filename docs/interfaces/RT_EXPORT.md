@@ -4,7 +4,7 @@ The exporter computes a paired bistatic channel for a single transmitting UE and
 
 ## Run on a provisioned RT host
 
-Use a Python environment with NumPy and the pinned Sionna RT 2.2.0 runtime, including its Mitsuba and Dr.Jit dependencies. The script uses procedural geometry and runs offline. Choose a fresh output directory.
+Activate this checkout’s `isac` environment, run the full profile and verify its simulation backend using [the environment runbook](../dev/ENVIRONMENT.md). The script uses procedural geometry and runs offline. Choose a fresh output directory.
 
 ```bash
 python3 scripts/export_rt_episode.py --output-dir build/rt-episode

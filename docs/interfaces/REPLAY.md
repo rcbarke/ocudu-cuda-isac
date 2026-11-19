@@ -1,6 +1,6 @@
 # Receiver-ingress replay
 
-The host fixture checks one boundary of the proposed experiment. It applies a supplied time-indexed channel to transmitted symbols, emits a received resource grid for each scheduled update, and reconciles a separate synthetic publication trace. It uses Python 3.10+ and the standard library.
+The host fixture checks one boundary of the proposed experiment. It applies a supplied time-indexed channel to transmitted symbols, emits a received resource grid for each scheduled update, and reconciles a separate synthetic publication trace. The replay fixture uses the standard library. Run it inside the local `isac` environment described in [S0](../dev/ENVIRONMENT.md).
 
 ## Run the four-update fixture
 
@@ -11,7 +11,7 @@ From the repository root:
 python3 -m unittest discover -s tests -p 'test_replay.py' -v
 ```
 
-The wrapper writes to `build/smoke/`. Use `--output-dir PATH` to choose another directory. Repeating the command overwrites the three fixture outputs. No package installation is required. For different input files, the underlying entry point is:
+The wrapper writes to `build/smoke/`. Use `--output-dir PATH` to choose another directory. Repeating the command overwrites the three fixture outputs. For different input files, the underlying entry point is:
 
 ```bash
 PYTHONPATH=src python3 -m ocudu_cuda_isac \
