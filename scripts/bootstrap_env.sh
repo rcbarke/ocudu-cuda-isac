@@ -57,8 +57,11 @@ except ValueError as error:
 
 if [[ "$profile" == full ]]; then
     "$python" scripts/check_pins.py --worktrees
-    # Pass both local projects to pip simultaneously so Sionna resolves this exact RT source.
-    "$python" -m pip install -e . ./ext/sionna ./ext/sionna-rt
+    # ext/lock.json owns both checkout paths. Pass both local projects to pip simultaneously
+    # so Sionna resolves this exact RT source.
+    sionna=$("$python" scripts/check_pins.py --path sionna)
+    sionna_rt=$("$python" scripts/check_pins.py --path sionna-rt)
+    "$python" -m pip install -e . "$sionna" "$sionna_rt"
 else
     "$python" -m pip install -e .
 fi

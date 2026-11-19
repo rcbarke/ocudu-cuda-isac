@@ -13,7 +13,7 @@ S1 is a laboratory gate before interpreting results from new receiver-linked ISA
 
 **Entry.** Complete S0 source materialization and the project `isac` venv. For the developer’s initial end-to-end installation, also exercise the pinned Sionna PHY and RT probes. The native CMake invocation itself consumes only the OCUDU source and host toolchain. Use the environment runbook for driver, toolkit, compiler, apt packages, PyTorch platform wheel and per-host setup. [Environment runbook](ENVIRONMENT.md)
 
-**Public interface.** Run from the repository root. The unpatched source is `ext/ocudu`. Build products are local to the selected host and path. The wrapper uses separate directories for Spark and other machines, validates the selected device and `nvcc` code-generation target, and locks the build directory while writing or measuring.
+**Public interface.** Run from the repository root. The unpatched source is `ext/ocudu-deepsig-cuda-inline`. Build products are local to the selected host and path. The wrapper uses separate directories for Spark and other machines, validates the selected device and `nvcc` code-generation target, and locks the build directory while writing or measuring.
 
 ```bash
 source isac/bin/activate
@@ -34,7 +34,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j8
 ```
 
-The wrapper sets `-S ext/ocudu -B build/ocudu-spark` using absolute paths, preserving the dependency tree. It adds `BUILD_TESTING=ON` for the upstream PUSCH target, keeps mbedTLS/SCTP available, and disables optional UHD, ZeroMQ and external plugin discovery for this radio-free upstream control. It builds the default **all** target using eight jobs. The Spark CPU flag is the upstream workaround for the host GCC’s target support. Local host drivers, headers and toolkit remain prerequisites for an activated venv. [Upstream recipe](../../ext/ocudu/docs/phy_cuda_acceleration.md) · [Integration target](../../ext/ocudu/tests/integrationtests/phy/upper/channel_processors/CMakeLists.txt)
+The wrapper sets `-S ext/ocudu-deepsig-cuda-inline -B build/ocudu-spark` using absolute paths, preserving the dependency tree. It adds `BUILD_TESTING=ON` for the upstream PUSCH target, keeps mbedTLS/SCTP available, and disables optional UHD, ZeroMQ and external plugin discovery for this radio-free upstream control. It builds the default **all** target using eight jobs. The Spark CPU flag is the upstream workaround for the host GCC’s target support. Local host drivers, headers and toolkit remain prerequisites for an activated venv. [Upstream recipe](../../ext/ocudu-deepsig-cuda-inline/docs/phy_cuda_acceleration.md) · [Integration target](../../ext/ocudu-deepsig-cuda-inline/tests/integrationtests/phy/upper/channel_processors/CMakeLists.txt)
 
 **Other build profiles.** Use `bash scripts/build_ocudu.sh --machine local` for a different supported GPU/CPU. The wrapper discovers compute capability through `nvidia-smi`, verifies matching `sm_*` support in `nvcc --list-gpu-code` and leaves the host CPU setting at upstream defaults. On AArch64, supply `--mcpu TARGET` when the compiler requires a host-specific setting. For multiple GPUs, export `CUDA_VISIBLE_DEVICES` as the full UUID of the intended physical GPU. Use `--build-dir DIR` for separate builds per hardware/toolchain and check the cache. The physical-device build does not allocate a MIG instance. A build on another architecture supplies a portability result on that machine. The DeepSig row is assigned to GB10.
 
@@ -58,7 +58,7 @@ python -m unittest discover -s tests/audit -p 'test_native_baseline.py' -v
 | Published row | 200 CRC successes on each backend, no CPU/GPU byte mismatches | Require this correctness result **and** 200 resident decodes/owned grids/immutable snapshots plus zero guard failures. |
 | Latency | Mean completed CPU work 334.0 µs, GPU work 183.9 µs, ratio 1.82× | Extract min/mean/max from the native totals, report actual means, speedup and deviations. Compare direction separately. The reference values do not serve as fixed timing thresholds across revisions. |
 
-The pinned harness uses a compatible PDSCH-side grid builder for this non-transform-precoded case and its random generator does not expose a seed switch. CPU and GPU receive the same generated realization within the experiment. The byte check compares the two decoded outputs. S2 adds the independent legal-PUSCH reference and checks each decoded output against retained TX bytes. [Pinned native fixture](../../ext/ocudu/tests/integrationtests/phy/upper/channel_processors/pusch_e2e_pipeline_test.cpp)
+The pinned harness uses a compatible PDSCH-side grid builder for this non-transform-precoded case and its random generator does not expose a seed switch. CPU and GPU receive the same generated realization within the experiment. The byte check compares the two decoded outputs. S2 adds the independent legal-PUSCH reference and checks each decoded output against retained TX bytes. [Pinned native fixture](../../ext/ocudu-deepsig-cuda-inline/tests/integrationtests/phy/upper/channel_processors/pusch_e2e_pipeline_test.cpp)
 
 ```bash
 source isac/bin/activate

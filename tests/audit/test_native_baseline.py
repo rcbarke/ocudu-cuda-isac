@@ -2,6 +2,7 @@
 
 from argparse import Namespace
 from contextlib import ExitStack
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -47,6 +48,22 @@ class PaperProfileTest(unittest.TestCase):
                 compare_table_ii(PAPER_LOG.replace(old, new))
         with self.assertRaises(ValueError):
             compare_table_ii(PAPER_LOG + PAPER_LOG)
+
+
+class LockedSourceTest(unittest.TestCase):
+    def test_native_source_directory_and_commit_follow_the_lock(self):
+        lock = {"dependencies": [
+            {"name": "sionna", "path": "ext/sionna", "commit": "a" * 40},
+            {"name": "ocudu", "path": "ext/ocudu-deepsig-cuda-inline", "commit": "c" * 40}]}
+        with tempfile.TemporaryDirectory() as temp, patch.object(native_ocudu, "ROOT", Path(temp)):
+            (Path(temp) / "ext").mkdir()
+            (Path(temp) / "ext/lock.json").write_text(json.dumps(lock))
+            entry = native_ocudu.locked_source("ocudu")
+            self.assertEqual((entry["path"], entry["commit"]), ("ext/ocudu-deepsig-cuda-inline", "c" * 40))
+            with self.assertRaisesRegex(ValueError, "no dependency named 'gnb'"):
+                native_ocudu.locked_source("gnb")
+        self.assertEqual(native_ocudu.SOURCE,
+                         native_ocudu.ROOT / native_ocudu.locked_source("ocudu")["path"])
 
 
 class BuildContractTest(unittest.TestCase):

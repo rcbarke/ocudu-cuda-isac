@@ -1,6 +1,6 @@
 # DGX Spark receiver bring-up
 
-Start from a clean, locked `ext/ocudu` and the repository-local `isac` environment. The first hardware result is the 20 MHz, one-layer correctness row from DeepSig Table II. The advisor demonstration later uses four RX ports, matched target-present/absent episodes and a trained detector linked to the actual receiver. [Environment setup](../dev/ENVIRONMENT.md) · [Native sprints, grading and troubleshooting](../dev/NATIVE_BASELINE.md)
+Start from a clean, locked `ext/ocudu-deepsig-cuda-inline` and the repository-local `isac` environment. The first hardware result is the 20 MHz, one-layer correctness row from DeepSig Table II. The advisor demonstration later uses four RX ports, matched target-present/absent episodes and a trained detector linked to the actual receiver. [Environment setup](../dev/ENVIRONMENT.md) · [Native sprints, grading and troubleshooting](../dev/NATIVE_BASELINE.md)
 
 ## 1. Build and verify the native environment
 

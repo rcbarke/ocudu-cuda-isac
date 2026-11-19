@@ -19,7 +19,7 @@ pins:
 	$(PYTHON) scripts/check_pins.py
 
 hydrate: pins
-	git submodule update --init --checkout -- ext/ocudu ext/sionna ext/sionna-rt
+	git submodule update --init --checkout
 	$(PYTHON) scripts/check_pins.py --worktrees
 
 test:

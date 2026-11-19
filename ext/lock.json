@@ -1,7 +1,8 @@
 {
-  "format": 2,
+  "format": 3,
   "dependencies": [
     {
+      "name": "ocudu",
       "path": "ext/ocudu-deepsig-cuda-inline",
       "url": "https://gitlab.com/ocudu/work_groups/wg1_hw_accel/cuda_accelerated_ocudu.git",
       "commit": "27e84cb3da65205b55dbd56ace6fac93a035331e",
@@ -11,6 +12,7 @@
       "snapshot_manifest_sha256": "b54dca8176335768f45b22b1842cb6eafe15b70465848f44dd93e3591b0ddee1"
     },
     {
+      "name": "sionna",
       "path": "ext/sionna",
       "url": "https://github.com/NVlabs/sionna.git",
       "commit": "2f0a3820269b53fd022780a6f2f5f720f7ceb9b4",
@@ -20,6 +22,7 @@
       "snapshot_manifest_sha256": "dabc333095491f33b17dab7b2788b20b12873eae85d6a95e1e423c324903a169"
     },
     {
+      "name": "sionna-rt",
       "path": "ext/sionna-rt",
       "url": "https://github.com/NVlabs/sionna-rt.git",
       "commit": "15b5ee036917a4c2a9b6420e05570b77717e2fcc",

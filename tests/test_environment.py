@@ -220,6 +220,38 @@ class EnvironmentGateTests(unittest.TestCase):
             self.assertEqual(data["status"], "failed")
             self.assertIn("requires numpy", data["error"])
 
+    def test_simulation_and_native_sources_follow_the_lock(self):
+        lock = {"dependencies": [
+            {"name": "ocudu", "path": "ext/ocudu-deepsig-cuda-inline", "commit": "c" * 40},
+            {"name": "sionna", "path": "ext/phy"}, {"name": "sionna-rt", "path": "ext/rt"}]}
+        versions = {"mitsuba": "3.9.1", "drjit": "1.5.0", "torch": "2.9.1", "numpy": "2.2.6",
+                    "scipy": "1.15.3"}
+        with contextlib.ExitStack() as stack:
+            root = Path(stack.enter_context(tempfile.TemporaryDirectory())).resolve()
+            (root / "ext").mkdir()
+            (root / "ext/lock.json").write_text(json.dumps(lock))
+            stack.enter_context(mock.patch.object(environment, "ROOT", root))
+            for name in ("check_isolation", "check_search_path", "project_import",
+                         "installed_distributions", "check_simulation"):
+                stack.enter_context(mock.patch.object(environment, name, return_value={}))
+            local = stack.enter_context(mock.patch.object(
+                environment, "require_local_install", return_value={"version": "2.2.0"}))
+            native = stack.enter_context(mock.patch.object(environment, "check_native", return_value={}))
+            stack.enter_context(mock.patch.object(environment.metadata, "version",
+                                                  side_effect=versions.__getitem__))
+            stack.enter_context(mock.patch.object(
+                environment.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")))
+            output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            self.assertEqual(environment.main(["--profile", "simulation", "--with-native"]), 0)
+            self.assertEqual([call.args for call in local.call_args_list[1:]],
+                             [("sionna", root / "ext/phy"), ("sionna-rt", root / "ext/rt")])
+            native.assert_called_once_with(root / "isac", "c" * 40)
+            (root / "ext/lock.json").write_text(json.dumps({"dependencies": [{"path": "ext/ocudu"}]}))
+            output.seek(0)
+            output.truncate()
+            self.assertEqual(environment.main(["--profile", "simulation"]), 1)
+            self.assertIn("must name every dependency", json.loads(output.getvalue())["error"])
+
     def test_report_records_the_host_and_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temp, \
                 mock.patch.object(environment, "run_checks") as checks, \
@@ -359,6 +391,27 @@ class BootstrapScriptTests(unittest.TestCase):
         result = self.bootstrap("core")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("pip double: unexpected install -e .", result.stderr)
+
+    def test_full_profile_installs_the_source_directories_named_by_the_lock(self):
+        self.real_environment()
+        double = ('import sys\n'
+                  'paths = {"sionna": "/locked/custom-sionna", "sionna-rt": PATH}\n'
+                  'if sys.argv[1:] == ["--worktrees"]:\n'
+                  '    sys.exit(0)\n'
+                  'if len(sys.argv) == 3 and sys.argv[1] == "--path" and paths.get(sys.argv[2]):\n'
+                  '    print(paths[sys.argv[2]])\n'
+                  '    sys.exit(0)\n'
+                  'sys.exit("check_pins double: refused " + " ".join(sys.argv[1:]))\n')
+        pins = self.root / "scripts/check_pins.py"
+        pins.write_text(double.replace("PATH", '"/locked/custom-rt"'))
+        result = self.bootstrap("full")
+        self.assertIn("pip double: unexpected install -e . /locked/custom-sionna /locked/custom-rt",
+                      result.stderr)
+        pins.write_text(double.replace("PATH", "None"))
+        result = self.bootstrap("full")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("check_pins double: refused --path sionna-rt", result.stderr)
+        self.assertNotIn("pip double", result.stderr)
 
     def test_global_packages_on_the_search_path_stop_the_install(self):
         self.real_environment()

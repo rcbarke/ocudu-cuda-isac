@@ -17,7 +17,17 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "ext/ocudu"
+
+
+def locked_source(name):
+    """Return the lock entry for a logical dependency name. ext/lock.json owns its path."""
+    for item in json.loads((ROOT / "ext/lock.json").read_text())["dependencies"]:
+        if item.get("name") == name:
+            return item
+    raise ValueError(f"ext/lock.json has no dependency named {name!r}")
+
+
+SOURCE = ROOT / locked_source("ocudu")["path"]
 TEST = Path("tests/integrationtests/phy/upper/channel_processors/pusch_e2e_pipeline_test")
 AFFINITY = {5, 6, 7, 8, 9, 15, 16, 17, 18, 19}
 
@@ -249,8 +259,7 @@ def main():
                    overrides={k: v for k, v in os.environ.items() if k.startswith(("OCUDU_", "CUDA_"))}))
         stage["stage"] = "source"
         record_command([sys.executable, ROOT / "scripts/check_pins.py", "--worktrees", "--only", "ocudu"], run, "pins.txt")
-        pins = json.loads((ROOT / "ext/lock.json").read_text())["dependencies"]
-        pin = next(item["commit"] for item in pins if item["path"] == "ext/ocudu")
+        pin = locked_source("ocudu")["commit"]
         build.mkdir(parents=True, exist_ok=True)
         with (build / ".isac.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

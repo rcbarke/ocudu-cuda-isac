@@ -120,6 +120,14 @@ def describe_host():
             "project_root": str(ROOT)}
 
 
+def locked_sources():
+    """Lock entries keyed by logical name. ext/lock.json owns every checkout path."""
+    items = json.loads((ROOT / "ext/lock.json").read_text())["dependencies"]
+    if any("name" not in item for item in items):
+        raise ValueError("ext/lock.json must name every dependency. Run 'make pins'.")
+    return {item["name"]: item for item in items}
+
+
 def check_simulation(backend):
     import mitsuba as mi
 
@@ -202,8 +210,9 @@ def run_checks(args, report):
     if check.returncode:
         raise RuntimeError((check.stdout + check.stderr).strip() or "pip check failed")
     if args.profile == "simulation":
+        sources = locked_sources()
         for name in ("sionna", "sionna-rt"):
-            distributions[name] = require_local_install(name, ROOT / "ext" / name)
+            distributions[name] = require_local_install(name, ROOT / sources[name]["path"])
         versions = {"sionna": "2.2.0", "sionna-rt": "2.2.0",
                     "mitsuba": "3.9.1", "drjit": "1.5.0"}
         for name in ("mitsuba", "drjit", "torch", "numpy", "scipy"):
@@ -213,9 +222,7 @@ def run_checks(args, report):
                 raise ValueError(f"{name}: expected {expected}, found {distributions[name]['version']}")
         report["simulation"] = check_simulation(args.backend)
     if args.with_native:
-        pins = json.loads((ROOT / "ext/lock.json").read_text())["dependencies"]
-        commit = next(pin["commit"] for pin in pins if pin["path"] == "ext/ocudu")
-        report["native"] = check_native(venv, commit)
+        report["native"] = check_native(venv, locked_sources()["ocudu"]["commit"])
 
 
 def main(argv=None):

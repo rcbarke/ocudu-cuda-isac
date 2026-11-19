@@ -58,7 +58,7 @@ ocudu-isac-replay --help
 
 ## S0.2 — Install and exercise the pinned upstreams
 
-**Entry and outputs.** Use the active S0.1 interpreter. This sprint materializes the three pinned source trees and installs both simulation distributions. `ext/ocudu` supplies C++/CUDA source to the subsequent S1 build. The full S1 build exposes `gnb` and `pusch_e2e_pipeline_test` in `isac/bin/`. The simulation check returns a JSON report and a failure exit code if the requested CPU or CUDA backend cannot run.
+**Entry and outputs.** Use the active S0.1 interpreter. This sprint materializes the three pinned source trees and installs both simulation distributions. `ext/ocudu-deepsig-cuda-inline` supplies C++/CUDA source to the subsequent S1 build. The full S1 build exposes `gnb` and `pusch_e2e_pipeline_test` in `isac/bin/`. The simulation check returns a JSON report and a failure exit code if the requested CPU or CUDA backend cannot run.
 
 **Acquire the source.** Use one documented route, then verify actual file contents or checked-out commits. The direct `ext/sionna-rt` checkout supplies RT. Both 2.2.0 wheels were built from the supplied archives with the nested RT checkout empty. An isolated package-only install resolved `sionna.phy` from Sionna and `sionna.rt` from the direct RT wheel. The numerical runtime check below additionally exercises their binary dependencies. [Dependency acquisition and lock](../../ext/README.md)
 
