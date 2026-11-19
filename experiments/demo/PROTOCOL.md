@@ -1,0 +1,3 @@
+# Single-Spark protocol
+
+[profile.json](profile.json) contains the proposed demonstration settings and acceptance criteria. Freeze one cell, one fixed UE, one layer, four calibrated RX channels and one modest PUSCH allocation. Record the actual legal UL symbol/DMRS mask and replay cadence. Replay target-absent and target-present scenes through the same receiver stimulus and load. Show baseline DSP, isolated sensing on captured observations, and concurrent DSP+sensing with MPS. Run the three host allocations in a paired order, cache traces and model before warm-up, and repeat at least once in reverse order. See [S1–S4](../../docs/dev/DEVELOPMENT.md) for gates and [advisor runbook](../../docs/demo/ADVISOR_DEMO.md) for the live sequence.

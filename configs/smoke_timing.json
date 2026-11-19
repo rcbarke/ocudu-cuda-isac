@@ -1,0 +1,22 @@
+{
+  "episode_id": "e0001",
+  "clock_domain": "fixture-radio-clock",
+  "deadline_ns": 100000,
+  "events": [
+    {
+      "seq": 1,
+      "status": "published",
+      "publish_ns": 600001
+    },
+    {
+      "seq": 0,
+      "status": "published",
+      "publish_ns": 100000
+    },
+    {
+      "seq": 2,
+      "status": "dropped",
+      "reason": "fixture-observer-ring-full"
+    }
+  ]
+}

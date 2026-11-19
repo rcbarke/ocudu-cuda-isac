@@ -1,0 +1,3 @@
+# Episode manifest checklist
+
+Record a format version, opaque episode ID, software revisions, generator configuration and checksum of each binary array. Describe antenna and tensor axes, complex representation, endianness, strides, units, frequency grid, symbol times, phase convention and calibration. Preserve scene/mesh hash, seed, background settings, target state, normalization and geometry-update policy in evaluator-only metadata. Include a separate stimulus descriptor for legal grants, transmitted bits and noise. Treat a newly varied grant as a new stimulus. Label frozen Y fixtures separately from reusable H traces.

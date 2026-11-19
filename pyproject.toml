@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocudu-cuda-isac"
+version = "0.1.0"
+description = "Reference replay fixtures for the OCUDU CUDA ISAC research scaffold"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+ocudu-isac-replay = "ocudu_cuda_isac.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+# Project documentation
+
+| Read this | Use it for |
+|---|---|
+| [Development plan](dev/DEVELOPMENT.md) | Sprint order, code ownership, unit/integration failures, gates and evidence |
+| [Advisor demonstration](demo/ADVISOR_DEMO.md) | Three-minute walkthrough, run order, decisions and exclusions from demo claims |
+| [DGX Spark runbook](demo/SPARK.md) | Reproduce upstream CUDA-OCUDU with versioned commands |
+| [Architecture](architecture/SYSTEM.md) and [deployment modes](architecture/DEPLOYMENTS.md) | Radio path, ownership, GPU partitions, link economics and core placement |
+| [OCUDU integration](integration/OCUDU.md) and [upstream inventory](integration/UPSTREAM.md) | Source locations, capabilities, reusable open-source code, and missing seams |
+| [Replay contract](interfaces/REPLAY.md) | Runnable host fixture, tensor conventions and verification |
+| [Offline RT exporter](interfaces/RT_EXPORT.md) | Produce a paired bistatic CFR in a provisioned Sionna RT environment |
+| [Measurement protocol](research/EVALUATION.md) | Deadlines, denominators, splits, scientific controls and uncertainty |
+| [References](research/REFERENCES.md) | Primary papers, repositories, datasets and product documentation |
+| [Evidence and reproduction](dev/REPRODUCE.md) | Run manifest, artifacts, independent rerun and failure retention |

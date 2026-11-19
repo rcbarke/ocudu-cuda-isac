@@ -1,0 +1,55 @@
+{
+  "status": "proposed_advisor_acceptance_profile",
+  "mode": "one_spark_mps",
+  "radio": {
+    "ue_count": 1,
+    "cell_count": 1,
+    "bandwidth_mhz": 20,
+    "occupied_prbs": 51,
+    "subcarrier_spacing_khz": 30,
+    "tx_layers": 1,
+    "rx_channels": 4
+  },
+  "native_baseline": {
+    "target": "pusch_e2e_pipeline_test",
+    "mcs_table": "qam64",
+    "mcs_index": 10,
+    "sinr_db": 30,
+    "dmrs_type": "type1",
+    "dmrs_symbols_0_based": [
+      2,
+      11
+    ],
+    "warmup_iterations": 5,
+    "measured_iterations": 20
+  },
+  "sensing": {
+    "input": "observer-derived single-layer DMRS LS on executed receiver ingress (O2)",
+    "model": "one frozen batch-one presence head",
+    "history_observations": 8,
+    "nominal_update_period_ms": 5,
+    "deadline_from_first_contributing_sample_ms": 50
+  },
+  "paired_runs": {
+    "repetitions": 3,
+    "duration_seconds": 60
+  },
+  "illustrative_demo_gates": {
+    "held_out_present_episodes": 10,
+    "held_out_absent_episodes": 10,
+    "scored_windows_per_episode": 1,
+    "minimum_timely_positives": 8,
+    "maximum_false_alarms": 2,
+    "minimum_fraction_phy_jobs_within_configured_allowance": 0.99
+  },
+  "must_record": [
+    "actual_legal_allocations",
+    "actual_symbol_and_opportunity_times",
+    "radio_deadline_ns_and_derivation",
+    "separate_mps_client_ids",
+    "actual_model_hash_and_threshold",
+    "unique_tx_payloads",
+    "received_grid_hashes",
+    "wall_clock_deadline_misses"
+  ]
+}
