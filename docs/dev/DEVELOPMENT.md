@@ -54,7 +54,17 @@ For a minimal fake producer, use one epoch, one UE and two grants with distinct 
 
 ## Handoff status
 
-The delivered code covers environment setup, source verification, the S1 build and grading tools, the analytic replay and the diagnostic RT exporter. Portable tests include native transcript grading and replay checks. The supplied upstream archives were imported and verified, and both Sionna source distributions were built as wheels. A populated full simulation environment must still execute the numerical PHY/RT probe. A Spark must still produce the actual CUDA build and Table II measurement. S2–S9 name implementation deliverables and lab gates. The launchers and selectors in those cards become executable as their owning patches land.
+**Sprint 0 is accepted on one DGX Spark.** `make accept-s0 BACKENDS="cpu cuda"` passed every S0 gate on host `spark-ecf8` (aarch64, Ubuntu 24.04.5, Python 3.12.3, NVIDIA GB10 with driver 580.178.04) on 2026-11-19 at commit `49b6092`, run `s0-spark-ecf8-20261119T222041Z`. The run directory under the ignored `results/runs/` holds the reports and stays on that host. Run the same command on every further host before it produces evidence. Without `BACKENDS` it accepts a core-only development host and says that the simulation check still needs a provisioned scene host. [Environment runbook](ENVIRONMENT.md)
+
+The accepted state differs from the original delivery in five ways.
+
+- **Sources.** The three sources are Git submodules at the commits in `ext/lock.json`. The lock is the only place that names a checkout directory, and OCUDU lives in `ext/ocudu-deepsig-cuda-inline`. The ZIP import remains for a host without Git access and needs the three original archives named in the lock.
+- **Environment.** The full profile installs the PyPI CUDA 13.2 build of torch 2.15.0 with Mitsuba 3.9.1 and Dr.Jit 1.5.0. `environments/full-constraints.txt` records the complete third-party set.
+- **Simulation.** The numerical probe has run on the Spark with both backends: Sionna PHY on the CPU and on the GB10, and Sionna RT through LLVM and through CUDA with OptiX. Each traced channel matches the free-space gain and delay of the probe geometry, and every installed Sionna file equals the pinned tree.
+- **Replay.** The four-opportunity fixture writes byte-identical files on x86_64 and aarch64. The test suite records their digests.
+- **Hosted checks.** `.github/workflows/portable.yml` runs the core environment gate, the pin check, the unit suite and the replay fixture on a CPU runner for Python 3.11, 3.12 and 3.13.
+
+S1 is the next open gate. A Spark must still produce the actual CUDA build and the Table II measurement. The build and grading tools are delivered, and the native wrapper finds the OCUDU source through the lock. S2 to S9 name implementation deliverables and lab gates. The launchers and selectors in those cards become executable as their owning patches land.
 
 <a id="phase-s0"></a>
 
