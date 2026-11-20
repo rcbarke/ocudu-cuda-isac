@@ -13,6 +13,8 @@ The builder reads the compile flags (`flags.make`) and the link line (`link.txt`
 
 The import needs the `Unix Makefiles` generator of the accepted build, the default of `make native-build`. On a development host without a Sprint 1.1 receipt, pass `--ocudu-build-dir DIR --no-receipt`.
 
+The Spark built the adapter inside the accepted Sprint 2.1 run `s21-spark-ecf8-20261120T223232Z`. The import carried 17 compile options, among them `-mcpu=neoverse-v2`, the definition `ENABLE_CUDA`, 50 OCUDU archives and the CUDA 13.5 runtime libraries of the pinned link line. A CPU-only build of the same source has 48 archives and no CUDA library. The executable therefore needs the CUDA runtime to start, although the fixture requests host processors only. GCC 13.3.0 compiled `grant_fixture` without a warning, both CTest cases passed, and the receipt names the executable `7a0e1c8ec1a0` and the pinned test `e49b2b81e28a`, the one Sprint 1.1 accepted. Configure, compile, link and test finished within 20 seconds of the gate's start. Later native targets reuse this route, so a new adapter never rebuilds OCUDU and the accepted Sprint 1 build stays the control.
+
 ## Contents
 
 | Directory | Ticket | Contents |

@@ -17,7 +17,7 @@ The first entry on each axis is the one the demonstration uses.
 | `model` | `cusense_cnn` · `linear` · `gru` · `transformer` · `joint` · `none` | S3.4, S3.5, S6.5, S6.11 | `none` runs the classical chain alone. |
 | `heads` | `presence` · `location_grid` · `position` · `delay` · `doppler` · `angle` | S3.5, S6.5 | Each head has a registered loss with units. |
 | `training_domain` | `receiver_executed` · `observation_matched` · `ideal` | S6.7 | Hypothesis H2. |
-| `memory_path` | `pinned_host_ring` · `device_copy` · `shared_mapping`, with grid mode `auto`, `managed` or `pinned` and payload `o3_fp16`, `comb_c64` or `grid_c64` | S3.2, S5.5 | One factor per comparison. |
+| `memory_path` | `pinned_host_ring` · `device_copy` · `shared_mapping`, with grid mode `auto`, `managed` or `pinned` and payload `o3_fp16`, `comb_c64` or `grid_c64` | S3.2, S5.5 | One factor per comparison. The pinned receiver stores its grid as complex bf16, four bytes per value (S2.1), so `grid_c64` is a widened copy of it. |
 | `gpu_sharing` | `mps_default` · `mps_thread_pct` · `mps_static_sm` · `mps_priority` · `mps_mem_limit` · `time_slicing` · `mig` | S4.1, S5.5, S8, S9.1 | A control the host lacks is a planned cell with its reason. |
 | `placement` | `one_spark` · `two_sparks_cx7` · `gb300_instances` | S4, S7, S8 | M1, M2 and M3. |
 | `split` | `staged_harness` · `monolithic` · `split_8` · `split_7_2` | S2.4, S5.4 | One ingress adapter per boundary. The pin's split 6 is not deployed. |

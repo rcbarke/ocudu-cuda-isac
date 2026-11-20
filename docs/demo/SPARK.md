@@ -32,7 +32,13 @@ Each command prints a unique evidence directory. The gate writes `results/runs/s
 make accept-s2.1
 ```
 
-The gate builds the project's fixture adapter out of tree against the build that step 1 accepted, feeds one known transport block to the pinned OCUDU transmit chain and to Sionna NR for each grant in `configs/grants/`, compares the two grids and archives the grant, the bytes and both grids. It ends with `Sprint 2.1: ACCEPTED on this DGX Spark.` It runs on the CPU. [Grant record](../interfaces/GRANT.md)
+The gate builds the project's fixture adapter out of tree against the build that step 1 accepted, feeds one known transport block to the pinned OCUDU transmit chain and to Sionna NR for each grant in `configs/grants/`, compares the two grids and archives the grant, the bytes and both grids. It ends with `Sprint 2.1: ACCEPTED on this DGX Spark.` It runs on the CPU and takes under a minute. The Spark accepted it on 2026-11-20 in run `s21-spark-ecf8-20261120T223232Z`: three grants, 38 of 38 checks, and the original 48, 1,217 and 6,787 bytes back from the host receiver. [Grant record and accepted run](../interfaces/GRANT.md#accepted-run)
+
+```bash
+# Read the first archived record back
+run=$(ls -d results/runs/s21-* | tail -1)
+python -m ocudu_cuda_isac.episodes.grant show "$run/grant_fixture/two-prb-offset/store" --pilot 0 --data 0
+```
 
 ## 4. Demonstrate receiver-linked sensing after the native adapter is implemented
 

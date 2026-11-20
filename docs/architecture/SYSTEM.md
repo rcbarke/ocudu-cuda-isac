@@ -18,7 +18,7 @@ One fixed UE illuminates an environment with zero or one moving target. A calibr
 | Stage | Material | Legitimate use |
 |---|---|---|
 | O0 | Simulator paths/CFR, target pose, scattering component | Generate input and score output offline. An oracle gives an upper reference. |
-| O1 | Noisy received grid Y from the receiver ingress | Estimator checks, raw-grid comparisons and loss/copy accounting |
+| O1 | Noisy received grid Y from the receiver ingress. The pinned receiver stores it as complex bf16, eight significant bits per component (S2.1). | Estimator checks, raw-grid comparisons and loss/copy accounting |
 | O2 | LS channel estimate on the actual DMRS/pilot REs plus validity mask | Observer-side reference and fallback sensing input. Record whether estimated by a reference observer or a receiver estimator. |
 | O3 | Executed receiver's processed estimate with producer-completion evidence | The demonstration's cuSense-like input (S5.2 is built in the demonstration) and the publication comparison of filtering, interpolation and regularization. Decode outcomes are separate events. |
 
