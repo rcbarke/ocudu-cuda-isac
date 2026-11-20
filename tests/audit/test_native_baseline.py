@@ -432,7 +432,10 @@ class ToolOutputTest(unittest.TestCase):
             return error, (run / "tool.log").read_text(), output.getvalue(), (run / "commands.sh").read_text()
 
     def test_live_command_prints_while_it_runs_and_both_modes_keep_the_log(self):
-        script = "import sys; print('-- configuring'); sys.stderr.write('CMake Error at top\\n'); sys.exit(3)"
+        # The stand-in tool flushes each line, as CMake does. A tool that buffers one stream decides
+        # its own line order, and an interpreter setting such as PYTHONUNBUFFERED must not change it.
+        script = ("import sys; print('-- configuring', flush=True); "
+                  "sys.stderr.write('CMake Error at top\\n'); sys.stderr.flush(); sys.exit(3)")
         error, log, shown, history = self.run_tool(script, live=True)
         self.assertEqual(log, "-- configuring\nCMake Error at top\n")
         self.assertIn("-- configuring\nCMake Error at top\n", shown)
@@ -442,7 +445,7 @@ class ToolOutputTest(unittest.TestCase):
         error, log, shown, _ = self.run_tool(script, live=False)
         self.assertEqual((log, error.live), ("-- configuring\nCMake Error at top\n", False))
         self.assertNotIn("-- configuring\nCMake Error at top\n", shown)
-        error, log, shown, _ = self.run_tool("print('done')", live=True)
+        error, log, shown, _ = self.run_tool("print('done', flush=True)", live=True)
         self.assertEqual((error, log), (None, "done\n"))
         self.assertIn("done\n", shown)
         error, _, _, _ = self.run_tool("import os, signal; os.kill(os.getpid(), signal.SIGKILL)", live=True)
