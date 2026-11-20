@@ -68,7 +68,7 @@ Three rules keep an entry from leaking into another axis.
 
 1. **The sensing core has no host.** It receives the observation record of S3.2 and returns decision records. `tests/unit/test_core_imports.py` fails if the core imports an adapter, an OCUDU binding or a Sionna package.
 2. **A host is an adapter.** An adapter produces the same observation record and accepts the same decision record as every other adapter. Fields that only one host has live under a `host` key and are never read by the core.
-3. **Simulation stays offline.** Episodes are generated and stored before a run. No slot loop calls the simulator.
+3. **Simulation generation stays offline.** Episodes are generated and stored before a run, then replayed through the receiver. No slot loop calls the simulator.
 
 ## Add an entry
 
