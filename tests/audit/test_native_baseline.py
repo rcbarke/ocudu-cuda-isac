@@ -865,7 +865,16 @@ class CommandLineTest(unittest.TestCase):
             self.assertEqual((report["profile"], report["facts"]["gpu"]), ("spark", SPARK_GPU))
             self.assertIn("cpu_affinity", json.loads((run / "platform.json").read_text()))
             self.assertEqual((run / "status.txt").read_text(), "stage=completed\nexit_code=0\n")
-            self.assertIn("pins.txt", [call.args[2] for call in recorded.call_args_list])
+            logs = [call.args[2] for call in recorded.call_args_list]
+            self.assertIn("pins.txt", logs)
+            # A build first installs the missing development libraries, shown while it runs, and only
+            # then observes the host, so the recorded package probe describes the host that is built on.
+            installer = recorded.call_args_list[logs.index("native-deps.log")]
+            self.assertEqual(installer.args[0], ["bash", root / "scripts/install_native_deps.sh"])
+            self.assertEqual(installer.kwargs, {"live": True})
+            self.assertLess(logs.index("c++.txt"), logs.index("native-deps.log"))
+            self.assertLess(logs.index("native-deps.log"), logs.index("pins.txt"))
+            self.assertTrue((Path(native_ocudu.__file__).parent / "install_native_deps.sh").is_file())
 
             gpu.return_value = rtx
             status, _, errors = self.run_main("build", "--run-dir", "evidence/other-gpu")
@@ -885,8 +894,25 @@ class CommandLineTest(unittest.TestCase):
             # The measured run reuses a verified build and never rebuilds when told to skip.
             which.side_effect = None
             gpu.return_value = dict(SPARK_GPU)
+            recorded.reset_mock()
             status, _, errors = self.run_main("run", "--profile", "paper", "--skip-build", "--run-dir", "evidence/paper")
             self.assertEqual((status, build.call_count, checked.call_count), (0, 1, 1), errors)
+            self.assertNotIn("native-deps.log", [call.args[2] for call in recorded.call_args_list])
+
+            # A failed package installation stops the build in its own stage, before the host is probed.
+            def refuse(command, run_dir, log_name, **options):
+                if log_name == "native-deps.log":
+                    (run_dir / log_name).write_text("E: Unable to locate package libgtest-dev\n")
+                    raise native_ocudu.CommandFailed(command, 1, run_dir / log_name, live=True)
+
+            recorded.side_effect = refuse
+            status, _, errors = self.run_main("build", "--run-dir", "evidence/no-apt")
+            self.assertEqual((status, build.call_count), (1, 1))
+            self.assertEqual((root / "evidence/no-apt/status.txt").read_text(), "stage=prerequisites\nexit_code=1\n")
+            self.assertEqual((root / "evidence/no-apt/error.txt").read_text().splitlines(), [
+                "bash exited with status 1 (see native-deps.log)", "  E: Unable to locate package libgtest-dev"])
+            self.assertIn("prerequisites: bash exited with status 1 (see native-deps.log)", errors)
+            self.assertFalse((root / "evidence/no-apt/reference-environment.json").exists())
             self.assertEqual(measured.call_args.args[:2], ("paper", root / "build/ocudu-spark"))
             self.assertTrue((root / "evidence/paper/reference-environment.json").is_file())
 

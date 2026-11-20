@@ -786,6 +786,11 @@ def main(argv=None):
         record_command(["nvidia-smi", "-q", "-i", gpu["uuid"]], run, "nvidia-smi.txt")
         for cmd in ["nvcc", "cmake", "c++"]:
             record_command([cmd, "--version"], run, cmd + ".txt")
+        if args.action == "build" or not args.skip_build:
+            # Idempotent: installs only the development libraries that dpkg reports missing.
+            stage["stage"] = "prerequisites"
+            record_command(["bash", ROOT / "scripts/install_native_deps.sh"], run, "native-deps.log", live=True)
+            stage["stage"] = "preflight"
         mcpu = cpu_target(args.machine, args.mcpu)
         report = compare_reference(args.machine, host_facts(gpu, mcpu), mcpu, locked_source("ocudu"))
         write_json(run / "reference-environment.json", report)
