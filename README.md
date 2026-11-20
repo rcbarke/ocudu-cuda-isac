@@ -28,11 +28,11 @@ The replay fixture has the same SHA-256 digests on the Spark (aarch64) and on an
 
 ### Sprint 1.1 acceptance
 
-`make accept-s1.1 BACKENDS="cpu cuda"` ran every Sprint 1.1 gate on the same Spark and ended with `Sprint 1.1: ACCEPTED on this DGX Spark.` The run ID is `s11-spark-ecf8-20261120T011024Z`, and its `summary.txt` names the commit. All 20 gate lines passed. Later commits to the documentation do not change gated code.
+`make accept-s1.1 BACKENDS="cpu cuda"` ran every Sprint 1.1 gate on the same Spark at commit `cb9451e` and ended with `Sprint 1.1: ACCEPTED on this DGX Spark.` The run ID is `s11-spark-ecf8-20261120T011024Z`. All 20 gate lines passed. Later commits to the documentation do not change gated code.
 
 | Gate | Result | What it showed |
 |---|---|---|
-| Committed tree and unit suite | Pass | The evidence came from a clean checkout, and the portable unit suite ran with no failure |
+| Committed tree and unit suite | Pass | The evidence came from a clean checkout. 103 tests ran, none skipped |
 | OCUDU source | Pass | Pristine at `27e84cb3` before the build. Still at the pin, with no new file, after it |
 | Native build | Pass | Full Release build of the default target, out of tree in `build/ocudu-spark` |
 | Reference platform and toolchain | Pass | aarch64, NVIDIA GB10, compute capability 12.1. `nvcc` emits `sm_121` and the host compiler accepts `-mcpu=neoverse-v2` |
