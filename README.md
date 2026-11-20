@@ -6,7 +6,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1.1 (native Release build) are accepted on one DGX Spark. Sprint 1.2 (the DeepSig Table II row) is the next open gate.** Its gate, `make accept-s1.2`, is delivered and has no accepted Spark run yet. S2 to S9 are specified and not yet implemented.
+As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1 (native Release build and the DeepSig Table II row) are accepted on one DGX Spark. Sprint 2.1 (`grant_fixture`) is next and starts the project's own ISAC work.** S2 to S9 are specified and not yet implemented.
 
 ### Sprint 0 acceptance
 
@@ -47,6 +47,30 @@ The gate also compares the host with the environment DeepSig measured. CPU cores
 
 Two earlier runs on the same host, `s11-spark-ecf8-20261120T002657Z` and `s11-spark-ecf8-20261120T004837Z`, stopped in the configure step because OCUDU's development libraries were not installed. The builder now installs the missing ones before it configures. [Record](docs/dev/NATIVE_BASELINE.md)
 
+### Sprint 1.2 acceptance
+
+`make accept-s1.2` ran every Sprint 1.2 gate on the same Spark at commit `ea7bb43` and ended with `Sprint 1.2: ACCEPTED on this DGX Spark.` and `Sprint 1: ACCEPTED on this DGX Spark`. The run ID is `s12-spark-ecf8-20261120T144154Z`. All 27 gate lines passed. The gate measured the executables that Sprint 1.1 accepted, with nothing rebuilt in between.
+
+| Gate | Result | What it showed |
+|---|---|---|
+| Committed tree and unit suite | Pass | The evidence came from a clean checkout. 121 tests ran, none skipped |
+| Build identity | Pass | Both executables in `isac/bin` match the receipt of the accepted run `s11-spark-ecf8-20261120T011024Z`. The source is still at `27e84cb3` after the runs |
+| Device and CPU set | Pass | The process could see only the GB10, selected by UUID, and ran under `taskset -c 5-9,15-19` |
+| Workload | Pass | The Table II 20 MHz one-layer row: 51 PRB, MCS 27 (qam256), 1 layer, 1 RX port, TBS 54296 bits, 200 measured frames after 5 warmup, direct-managed grid, pinned output |
+| CPU and GPU decodes | Pass | 200 of 200 CRC passes on each path |
+| Decoded bytes | Pass | 0 CRC disagreements, 0 byte mismatches, 0 output guard failures |
+| Completed CUDA work | Pass | Resident timing, producer-owned device grid and immutable snapshot on 200 of 200 frames. The LDPC decode stage took 120.5 us by CUDA events |
+| Service times | Pass | Measured and finite: CPU 397.2 us mean (123.0 to 997.0), GPU 239.6 us mean (213.0 to 327.0) |
+| Four-RX smoke | Pass | 20 of 20 on each path with no differing byte. CPU 240.5 us mean, GPU 167.9 us mean |
+
+Correctness equals the published row: a 54.3 kb transport block, 200 of 200 decoded frames on each path and no differing byte. The SINR the two paths report differs by less than 0.01 dB, where the paper states 0.02 dB or less.
+
+Timing is recorded and not graded. The paper reports 334.0 us on the CPU, 183.9 us on the GPU and 1.82x. This run measured 397.2 us (+19 percent), 239.6 us (+30 percent) and 1.66x. The GPU value repeats: an attempt 14 minutes earlier measured 237.2 us. The CPU value does not: that attempt measured 448.9 us, and single frames range from 123 to 1177 us. Most of the GPU difference follows the SINR, which the paper does not state. At the 30 dB used here the decoders need about two LDPC iterations per frame. A hand-run probe at 40 dB, not archived, needed one and measured 198.9 us on the GPU. The run also differs from the paper's in the OCUDU revision, the CUDA toolkit and the driver, and a desktop session with a browser was open.
+
+The timing was accepted on 2026-11-20 as comparable to the paper for bring-up. System tuning is deferred until the project features are implemented. The values are a record of this host and not a reproduction of the published latencies.
+
+An earlier attempt, `s12-spark-ecf8-20261120T142736Z`, measured the same files on an uncommitted tree to test the gate before the commit. Its 26 other gates passed and it was not accepted for that reason alone. [Record](docs/dev/NATIVE_BASELINE.md)
+
 ### Verified configuration
 
 | Item | Value on the accepted host |
@@ -72,13 +96,14 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 - **S0.2** refuses a source tree that is off its pinned commit or has an edited tracked file, an installed Sionna file that differs from the pinned tree, a missing LLVM or CUDA backend, and a traced channel that deviates from free space. The file comparison matters because two Sionna RT commits both report version 2.2.0.
 - **S0.3** refuses malformed or ambiguous fixtures, unknown or duplicate sequence IDs, a mismatched clock, and outputs that differ on repeat.
 - **S1.1** refuses another platform under the Spark profile, an `nvcc` that cannot emit the GPU architecture, a cache value that differs from the recipe (including `CUDA_ACCEL_FOUND=FALSE`), a CUDA source compiled for another architecture, a PUSCH test compiled without `ENABLE_CUDA` or the CPU target, an executable without linked device code, binaries that differ from the build receipt, and an OCUDU source that is not pristine. A missing development library stopped two real runs in the configure step.
-- **S1.2** has no accepted Spark run yet. Its graders refuse, in the unit suite and in a rehearsal against a stand-in for the native test: a workload other than the Table II row, fewer than 200 CRC passes on either path, a CRC disagreement, a byte mismatch, an output guard failure, a GPU path without resident timing or the producer-owned grid on every measured frame, a missing or non-finite service time, a transcript that is truncated, repeated or of zero iterations, a run that was not pinned to CPUs 5-9,15-19 or could see another GPU, and a build that Sprint 1.1 did not accept. A GPU path that is slower than the CPU path is recorded and not refused.
+- **S1.2** refuses, in the unit suite and in a rehearsal against a stand-in for the native test: a workload other than the Table II row, fewer than 200 CRC passes on either path, a CRC disagreement, a byte mismatch, an output guard failure, a GPU path without resident timing or the producer-owned grid on every measured frame, a missing or non-finite service time, a transcript that is truncated, repeated or of zero iterations, a run that was not pinned to CPUs 5-9,15-19 or could see another GPU, and a build that Sprint 1.1 did not accept. A GPU path that is slower than the CPU path is recorded and not refused. An uncommitted tree stopped one real run.
 - **The gate runner** refuses an uncommitted tree, an empty test run, a skipped test on a simulation host, and an evidence directory that already exists.
 
 ### Open items
 
-- **Sprint 1.2.** `make accept-s1.2` is the next gate. It measures the accepted S1.1 build and has no accepted Spark run yet. A passing run also closes Sprint 1 on this host.
-- **Other hosts.** Sprints 0 and 1.1 are accepted on one Spark. The second Spark and the GB300 each need their own `make accept-s0` and `make accept-s1.1` runs. The GB300 uses `bash scripts/accept_s1_1.sh --machine local` with its own CPU target.
+- **Next sprint.** S2.1 `grant_fixture` exports one legal uplink grant and its transmit reference. It is the first project-owned component.
+- **Timing.** The Sprint 1.2 latencies were taken with desktop applications open and are 19 to 30 percent above the paper's. Tuning is deferred until the project features are implemented. Before a latency or speedup claim, measure on a quiet host, repeat the run to bound the CPU spread and state the SINR.
+- **Other hosts.** Sprints 0 and 1 are accepted on one Spark. The second Spark needs its own `make accept-s0` and `make accept-s1` runs. The GB300 needs `make accept-s0` and `bash scripts/accept_s1_1.sh --machine local` with its own CPU target. The Sprint 1.2 gate measures the Table II row, which is assigned to a GB10.
 - **Evidence location.** The run directories are on the Spark under `results/runs/`, which Git ignores. They are not in this repository.
 - **Hosted checks.** `.github/workflows/portable.yml` is in place. No hosted run is recorded here yet.
 - **Fresh clone.** `make hydrate` has not been run end to end on a new clone. The Spark's sources were added in place at the same commits. [ext/README.md](ext/README.md) covers an interrupted fetch.
@@ -118,7 +143,7 @@ make accept-s0 BACKENDS="cpu cuda"
 
 `make hydrate` fetches the three submodules at their pinned commits and verifies them. `PIP_CONSTRAINT` reproduces the validated third-party set. Leave it unset to let pip resolve newer releases. `make accept-s0` runs every Sprint 0 gate, writes the evidence to a new directory under `results/runs/` and prints one verdict. Name only `cpu` on a host without an NVIDIA GPU. [Source details](ext/README.md)
 
-### Native receiver (Sprint 1.1 accepted, Sprint 1.2 next)
+### Native receiver (Sprint 1 accepted)
 
 ```bash
 source isac/bin/activate
