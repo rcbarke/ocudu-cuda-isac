@@ -4,11 +4,13 @@ Start in the local `isac` environment. `make check`, `make smoke` and `make pins
 
 | File in a hardware run | Required contents |
 |---|---|
-| `manifest.json` | Parent commit, upstream SHAs, patch digests, build/toolchain/backend, machine/driver/CUDA, MPS clients or MIG UUIDs/profiles, thermal and power policy, CPU affinity, clock domains, run purpose, scenario/model hashes, offered load and predeclared budgets |
+| `manifest.json` | Parent commit, upstream SHAs, patch digests, build/toolchain/backend, machine/driver/CUDA, MPS clients or MIG UUIDs/profiles, thermal and power policy, CPU affinity, clock domains, run purpose, scenario/model hashes, offered load and predeclared budgets, the resolved entry on every ablation axis, and whether the KPI page was attached and from where |
 | `commands.sh` and `stdout.log` | Exact setup, execution, elapsed wall time, exit codes, independent transcript checks, start/stop markers |
 | `events.jsonl` | Opaque episode, absolute opportunity/sequence, cell/UE, slot and symbol, queue state, producer/consumer events, timestamps with units and domains, explicit drops/expiry |
 | `radio.jsonl` | Grant, legal RE mask, TB identifier and byte count, true CRC/error/retry, backend and PHY deadlines |
 | `decisions.jsonl` | Frozen model/algorithm, supported output and score, input observation span, publication time, status |
+| `kpi.jsonl` | Derived KPI windows for the live page. Never an input to a grade. Its counts must equal the offline reduction. |
+| `slo_calibration.json` | For any run graded against a deadline or an allowance: rule hash, sample counts, derived values, verification run and host state |
 | `offline-evaluation.json` | Post-run truth join, denominator reconciliation, errors, false alarms, timely counts, CIs and energy basis |
 | `summary.md` | Claim, stage executed, run length, limits, failed gates, figure/table source hashes |
 

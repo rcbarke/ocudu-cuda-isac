@@ -1,6 +1,6 @@
 # Deployment and measurement plan
 
-All three modes replay the same held-out uplink episodes through the same receiver and sensing pipeline. Mode 1 is the first Spark milestone. Modes 2 and 3 are subsequent experiments. Hardware timings, successful UE decoding, link rates and resource isolation require measurements from the named machines. The portable replay fixture can be exercised before any of that equipment is available.
+All three modes replay the same held-out uplink episodes through the same receiver and sensing pipeline. Mode 1 is the first Spark milestone and is completed for every ablation before Modes 2 and 3 begin. Aerial Framework and Aerial-OCUDU over the air follow. [Build order](../dev/DEVELOPMENT.md#build-order) · [Aerial ports](../integration/AERIAL.md) Hardware timings, successful UE decoding, link rates and resource isolation require measurements from the named machines. The portable replay fixture can be exercised before any of that equipment is available.
 
 | Mode | Placement of communications and sensing | Observation handoff | Question |
 |---|---|---|---|
@@ -32,9 +32,36 @@ N2 connects CU-CP to AMF using NGAP/SCTP and N3 connects CU-UP to UPF using GTP-
 
 The WS300 is a DGX Station system using the GB300 Grace Blackwell Ultra Desktop Superchip. The MIG guide lists CUDA 13 with R595 ≥ 595.58.03 for GB300 DGX Station. Apply MIG to the GB300 device, identifying its UUID explicitly if another GPU is installed. NVIDIA lists profiles for 252 GB of GPU memory. The system's larger coherent-memory figure includes CPU memory. [MSI WS300](https://www.msi.com/Landing/NVIDIA-DGX-STATION) · [MIG deployment requirements](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/deployment-considerations.html) · [GB300 profiles and placement diagram](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/supported-mig-profiles.html)
 
-A starting placement is `4g.126gb` for DSP and `3g.126gb` for sensing. NVIDIA's profile diagram permits the complementary placement. It assigns four and three sevenths of the SM capacity respectively, with half the available memory slices for each. With workloads stopped and the administrator's agreed MIG configuration in place, inspect `nvidia-smi mig -lgip`, `nvidia-smi mig -lgipp` and `nvidia-smi -L`. Save GI/CI configuration and verify one distinct MIG device UUID per worker. Profile names describe capacity. Record application-visible free memory, clocks, context and observed interference. The CPU, host services, platform power envelope and the publication ring remain shared. [MIG profiles](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/supported-mig-profiles.html) · [GPU and compute instance isolation](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/concepts.html)
+A starting placement is `4g.126gb` for DSP and `3g.126gb` for sensing. NVIDIA's profile diagram permits the complementary placement. It assigns four and three sevenths of the SM capacity respectively, with half the available memory slices for each. With workloads stopped and the administrator's agreed MIG configuration in place, inspect `nvidia-smi mig -lgip`, `nvidia-smi mig -lgipp` and `nvidia-smi -L`. Save GI/CI configuration and verify one distinct MIG device UUID per worker. Profile names describe capacity. Record application-visible free memory, clocks, context and observed interference. NVIDIA's general MIG page lists preliminary instance sizes for the GB300 NVL72 (7 × 34 GB, 4 × 69 GB, 2 × 139 GB, 1 × 279 GB per GPU). That is a different system from the station, so take the profiles from the station's own listing. The CPU, host services, platform power envelope and the publication ring remain shared. [MIG profiles](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/supported-mig-profiles.html) · [GPU and compute instance isolation](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/concepts.html)
 
 Use the host-staged path for the first cross-GI experiment. NVIDIA documents same-physical-GPU peer-to-peer access between MIG instances on R570 and later. CUDA IPC across separate GPU instances is unsupported, so passing a `cudaIpcMemHandle` from the PHY process to the sensing process is invalid here. A separately measured broker that can enumerate both devices and establish peer access could test a direct peer copy after checking capability and data integrity. Report each copy, synchronization and process boundary. [MIG application considerations](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/latest/deployment-considerations.html)
+
+## Functional splits on any placement
+
+A placement says where the work runs. A split says where the DU's radio boundary is. This project deploys three of the pin's targets, and S5.4 gives each a launch profile and one ingress adapter that reads the same episode store.
+
+| Split | Targets at the pin | Boundary that replay enters | Use |
+|---|---|---|---|
+| Staged harness | The `pusch_e2e_pipeline_test` fixture path | Upper-PHY resource grid | Demonstration (S2–S4) |
+| Monolithic CU/DU | `gnb` | As configured: dummy RU, SDR or Open Fronthaul | Full stack in one process with scheduler pacing |
+| Split 8 | `gnb_split_8`, `odu_split_8` | Baseband samples at the ZeroMQ radio | The DU alone on Sionna RT channels in both directions, because the lower PHY is in the DU. Also where an OAI software UE with an OAI 5GC attaches (S6.10). |
+| Split 7.2x | `gnb_split_7_2`, `odu_split_7_2` | U-plane IQ from the `ru_emulator` example (socket or DPDK transceiver) or an O-RU | Packetized fronthaul. The lower PHY is in the RU, so a channel can be injected on the uplink only. |
+
+The `gnb_split_*` and `odu_split_*` targets are excluded from the default build. The accepted S1.1 build has ZeroMQ and UHD off, so S5.4 adds a build profile with ZeroMQ on for split-8 replay and software-UE testing. DPDK is off by default, and the RU emulator then uses its socket transceiver. ZeroMQ runs in lockstep and not in real time, so it supports correctness and sensing-quality comparisons and no latency claim. The dummy RU supplies timing and load and no signal. The pin also carries a split-6 unit that ends in a plugin seam. It is noted in the [inventory](../integration/OCUDU.md) and is not deployed here. Over the air, the FAPI boundary comes from the Aerial-OCUDU branch instead ([Aerial ports](../integration/AERIAL.md)).
+
+## Memory paths and sharing controls
+
+S5.5 varies one of these at a time on the collocated Spark and reads the effective setting back.
+
+| Factor | Options |
+|---|---|
+| Uplink grid memory | `ul_cuda_visible_grid_mode`: `auto`, `managed`, `pinned`. On the GB10 `auto` resolves to managed memory. |
+| Observation export | Host copy into the pinned ring, device-side copy before publication, a shared mapping where supported |
+| Payload | The receiver's estimate (O3) in FP16 (19,584 bytes per slot at the demonstration profile) or complex64, comb LS in complex64 (19,584 bytes), or the full grid (274,176 bytes) |
+| MPS | Default, active-thread percentage, static SM partition, client priority, memory limit |
+| Stream priority | The pin's PUSCH and PDSCH CUDA stream priority overrides |
+
+The GB10 shares memory between CPU and GPU. A GPU memory figure is therefore also a system memory figure, and both are recorded.
 
 ## Comparable runs and evidence
 

@@ -1,6 +1,25 @@
 {
   "status": "proposed_advisor_acceptance_profile",
   "mode": "one_spark_mps",
+  "axes": {
+    "source": "pusch_dmrs",
+    "ue": "replayed_cfr",
+    "stage": "o3_executed",
+    "clutter": "background_magnitude",
+    "detector": "frozen_threshold",
+    "angle": "none",
+    "model": "cusense_cnn",
+    "heads": [
+      "presence",
+      "location_grid"
+    ],
+    "training_domain": "receiver_executed",
+    "memory_path": "pinned_host_ring",
+    "gpu_sharing": "mps_default",
+    "placement": "one_spark",
+    "split": "staged_harness",
+    "host": "deepsig_ocudu"
+  },
   "radio": {
     "ue_count": 1,
     "cell_count": 1,
@@ -8,7 +27,10 @@
     "occupied_prbs": 51,
     "subcarrier_spacing_khz": 30,
     "tx_layers": 1,
-    "rx_channels": 4
+    "rx_channels": 4,
+    "tdd_pattern": "DDDDDDSUUU",
+    "period_ms": 5,
+    "ul_slots_per_period": 3
   },
   "native_baseline": {
     "target": "pusch_e2e_pipeline_test",
@@ -23,12 +45,78 @@
     "warmup_iterations": 5,
     "measured_iterations": 20
   },
+  "scene": {
+    "carrier_ghz": 3.5,
+    "target": "TR38901SensingTarget human",
+    "analytic_control_target": "constant-RCS cuboid",
+    "calibration": "target-absent episodes of the training split",
+    "position_grid": "frozen with the episode set before training",
+    "run_structure": "comparable in kind with the cuSense campaign: open indoor space, one walking person, equal numbers of target-present and target-absent runs"
+  },
   "sensing": {
-    "input": "observer-derived single-layer DMRS LS on executed receiver ingress (O2)",
-    "model": "one frozen batch-one presence head",
-    "history_observations": 8,
-    "nominal_update_period_ms": 5,
-    "deadline_from_first_contributing_sample_ms": 50
+    "input": "the receiver's own estimate (O3, S5.2) for the cuSense-like branch; observer pilot LS (O2) for the delay-Doppler branch, as parity reference and as fallback",
+    "graded_presence_branch": "cusense_like",
+    "branches": {
+      "cusense_like": {
+        "model": "plain-block 1D CNN with a location grid and a jointly trained presence logit",
+        "input_support": "4 RX x 612 subcarriers x 2 DMRS symbols, after frequency interpolation and smoothing, before time interpolation",
+        "window": "UL slots of one TDD period, coherent average",
+        "background": "complex template, magnitude-domain subtraction",
+        "normalization": "z-score fitted on the training split only",
+        "update_period_ms": 5,
+        "deadline_from_first_contributing_sample_ms": {
+          "status": "proposed",
+          "value": 5,
+          "replaced_by": "S4.6 slo_calibration"
+        },
+        "input_stage": "o3_executed",
+        "fallback_input": "o2_pilot_ls on the comb, 306 pilot subcarriers per DMRS symbol"
+      },
+      "delay_doppler": {
+        "model": "one frozen batch-one presence head",
+        "history_observations": 8,
+        "nominal_update_period_ms": 5,
+        "deadline_from_first_contributing_sample_ms": {
+          "status": "proposed",
+          "value": 50,
+          "replaced_by": "S4.6 slo_calibration"
+        },
+        "input_stage": "o2_pilot_ls"
+      }
+    }
+  },
+  "kpi_page": {
+    "record_schema": "kpi/v1",
+    "aggregation_window_s": 0.5,
+    "viewer": "second machine through an SSH tunnel",
+    "impact_arms": [
+      "page_off",
+      "page_remote",
+      "page_local"
+    ],
+    "counts_must_equal_scorecard": true
+  },
+  "service_levels": {
+    "status": "proposed",
+    "calibration_ticket": "S4.6 slo_calibration",
+    "rules": "declared and hashed before measuring; derived from training and validation episodes only; verified on a second run",
+    "radio_allowance": "derived from the dsp-only arm",
+    "sensing_deadlines": "acquisition time plus a margin on the measured post-window service of the concurrent arm",
+    "valid_for": "the recorded host state; S5.6 recalibrates on the tuned host"
+  },
+  "cusense_reference": {
+    "graded": false,
+    "published_mean_position_error_cm": 73,
+    "published_live_inference_us": 241,
+    "source": "arXiv:2512.06493v3",
+    "differences_to_list": [
+      "simulated scene against an over-the-air room",
+      "20 MHz against 100 MHz",
+      "GB10 against GH200",
+      "inference engine",
+      "latency boundary"
+    ],
+    "aim": "comparable performance in software, judged as S1.2 judged the DeepSig Table II timing"
   },
   "paired_runs": {
     "repetitions": 3,
@@ -43,7 +131,9 @@
     "minimum_timely_positives": 8,
     "maximum_false_alarms": 2,
     "minimum_fraction_phy_jobs_within_configured_allowance": 0.99,
-    "absent_missing_rule": "Report valid absent decisions. Mark inconclusive if unobserved alerts could change the false-alarm verdict."
+    "absent_missing_rule": "Report valid absent decisions. Mark inconclusive if unobserved alerts could change the false-alarm verdict.",
+    "position_error_rule": "Report mean, median and 90th percentile in metres with the eligible count. Recorded beside the cuSense reference and not graded.",
+    "deadline_rule": "Gates use the calibrated values of S4.6, never the starting proposals."
   },
   "must_record": [
     "actual_legal_allocations",
@@ -53,6 +143,18 @@
     "actual_model_hash_and_threshold",
     "unique_tx_payloads",
     "received_grid_hashes",
-    "wall_clock_deadline_misses"
-  ]
+    "wall_clock_deadline_misses",
+    "resolved_axis_entries",
+    "background_template_and_normalizer_hashes",
+    "tdd_pattern_and_ul_slots_used_per_window",
+    "kpi_parity_with_scorecard",
+    "page_attachment_and_viewer_location",
+    "o3_parity_and_patch_hash",
+    "slo_calibration_run_and_rule_hash",
+    "cusense_reference_comparison"
+  ],
+  "ue_realization": {
+    "entry": "replayed_cfr",
+    "meaning": "No UE, 5GC or PRACH procedure. A Sionna RT radar CFR applied to a legal grant at the receiver stands in for a connected UE."
+  }
 }

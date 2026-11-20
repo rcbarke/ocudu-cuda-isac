@@ -1,12 +1,12 @@
 # ocudu-cuda-isac
 
-Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. The first lab result is a reproducible CPU/GPU PUSCH decode on DGX Spark. The first project demonstration adds a second MPS client that detects a moving target from that receiver's uplink pilots. The publication study compares receiver stages, radar and AI estimators, and three hardware deployments under matched communication load.
+Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. The first lab result is a reproducible CPU/GPU PUSCH decode on DGX Spark. The first project demonstration adds a second MPS client that runs a cuSense-like pipeline on that receiver's own channel estimate, with a live KPI page. The publication study compares receiver stages, PHY channels, radar and AI estimators, functional splits, memory paths and three hardware deployments under matched communication load. The same sensing core is then run on Aerial Framework and, over the air, on Aerial-OCUDU.
 
 **Start with [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md).** It contains the phase order, every sprint's component contract, isolated test, integration prerequisites and acceptance evidence.
 
 ## CURRENT STATUS
 
-As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1 (native Release build and the DeepSig Table II row) are accepted on one DGX Spark. Sprint 2.1 (`grant_fixture`) is next and starts the project's own ISAC work.** S2 to S9 are specified and not yet implemented.
+As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1 (native Release build and the DeepSig Table II row) are accepted on one DGX Spark. Sprint 2.1 (`grant_fixture`) is next and starts the project's own ISAC work.** S2 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built)
 
 ### Sprint 0 acceptance
 
