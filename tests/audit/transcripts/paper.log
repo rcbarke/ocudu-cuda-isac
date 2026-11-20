@@ -1,0 +1,64 @@
+
+=== E2E GPU Pipeline Test ===
+Config: 51 PRB, 30.0 dB SINR, MCS 27 (table=qam256), 1 layer(s), 1 RX port(s), DMRS Type1 [2,11], transform_precoding=off, 200 iterations, 5 warmup, rx_device_grid=direct-managed, gpu_output=pinned
+
+TBS: 54296 bits (6787 bytes), Base Graph: BG1, Codeblocks: 7, Modulation: 256QAM
+
+E2E GPU Pipeline: ACTIVE (warmup complete, resident timing: enabled)
+
+
+=== Results (200 iterations, 5 warmup skipped) ===
+CPU: 200/200 pass (0.0% BLER)
+GPU: 200/200 pass (0.0% BLER)  [resident GPU timing: 200/200]
+GPU producer-owned grid: 200/200 measured iterations
+GPU immutable owned snapshot: 200/200 measured iterations
+Disagreements: 0
+Byte mismatches: 0
+Output guard failures: 0
+
+=== LDPC Iterations (max=6) ===
+CPU avg: 1.00
+GPU avg: 1.00
+
+=== Latency (microseconds) ===
+                      Min     Mean      Max
+CPU total:          293.0    304.0    315.0
+GPU total:          256.0    264.9    274.0
+Speedup:                  1.15x
+
+=== GPU Pipeline Breakdown (microseconds) ===
+                        Min     Mean      Max        %
+Ch estimate:            0.3      0.3      0.3     0.1%
+Setup:                  7.5      8.5      9.5     3.5%
+Grid staging:           0.4      0.6      0.8     0.3%
+Demod sync:            38.0     40.0     42.0    16.7%
+Deinterleave:           6.1      6.5      6.9     2.7%
+Rate dematch:           9.5     10.1     10.7     4.2%
+LDPC decode:           96.0    100.0    104.0    41.7%
+CRC check:             13.9     14.3     14.7     6.0%
+D2H transfer:           5.0      5.2      5.4     2.2%
+Extract bits:           0.0      0.0      0.0     0.0%
+Demod wrapper:                  13.4              5.6%
+Decode wrapper:                 22.1              9.2%
+Join/notify:           11.0     13.0     15.0     5.4%
+SINR readback:          1.2      1.2      1.2     0.5%
+Decoder cfg:            2.4      2.4      2.4     1.0%
+RM cfg:                 1.1      1.1      1.1     0.5%
+Completion wait*:     120.0    124.0    128.0    51.7%
+TB host copy:           0.9      0.9      0.9     0.4%
+Avg iters query:        0.2      0.2      0.2     0.1%
+Accounted total:               239.8
+Demod call:                     54.0
+Decode call:                   177.0
+Unaccounted:                    25.1
+
+=== CSI Metric Parity ===
+                   CPU Mean   GPU Mean      Delta   GPU Populated?
+SINR (dB):            29.87      29.86      -0.01   Yes
+EVM (%):               3.21       3.22      +0.01   Yes
+EPRE (dB):            -0.01      -0.01      +0.00   Yes
+TA (us):               0.00       0.00      +0.00   Yes
+RSRP (dB):             -0.1       -0.1       +0.0   Yes
+CFO (Hz):               N/A        N/A        N/A   NO
+
+PASS: Both paths decoded all 200 iterations, 0 byte mismatches

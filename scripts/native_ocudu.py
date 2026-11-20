@@ -1,4 +1,4 @@
-"""Build the locked OCUDU Release tree, grade its evidence and collect one isolated Spark PUSCH run."""
+"""Build the locked OCUDU Release tree, run one isolated Spark PUSCH profile and grade the evidence of either."""
 
 import argparse
 import csv
@@ -16,6 +16,11 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+try:  # imported as scripts.native_ocudu by the tests, run as a file otherwise
+    from scripts import verify_pusch_log
+except ImportError:
+    import verify_pusch_log
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +78,8 @@ HOST_PACKAGES = (
 )
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # terminal colors that a tool forced into its output
 BUILD_ERROR = re.compile(r"error:|undefined reference|nvcc fatal|\*\*\* |^FAILED: ")
+# OCUDU applications that would share the GPU and the pinned cores with a measured run.
+MODEM_PROCESSES = ("gnb", "odu", "odu_low")
 
 
 class CommandFailed(ValueError):
@@ -599,9 +606,65 @@ def checked_build(build, run, gpu, pin):
     write_json(run / "native-build.json", stamp)
 
 
+def read_value(path):
+    """One-line kernel or driver setting, or None where the host does not expose it."""
+    try:
+        return path.read_text(errors="replace").strip() or None
+    except OSError:
+        return None
+
+
+def gpu_processes(listing):
+    """Clients in the Processes section of `nvidia-smi -q`: pid, type (C, G or C+G), name, memory."""
+    clients = []
+    for line in listing.splitlines():
+        key, _, value = (part.strip() for part in line.partition(":"))
+        if key == "Process ID":
+            clients.append({"pid": value})
+        elif clients and key in ("Type", "Name", "Used GPU Memory"):
+            clients[-1][key.lower().replace(" ", "_")] = value
+    return clients
+
+
+def measurement_conditions(run, sysfs=Path("/sys"), proc=Path("/proc")):
+    """Observe what a timing run shares the machine with. A fact the host does not expose is None.
+
+    The governors and the allowed CPUs are in platform.json. The GPU clients come from the
+    nvidia-smi listing the preflight has just archived in this run directory.
+    """
+    frequency = {}
+    for cpu in sorted(AFFINITY):
+        policy = sysfs / f"devices/system/cpu/cpu{cpu}/cpufreq"
+        current, maximum = read_value(policy / "scaling_cur_freq"), read_value(policy / "cpuinfo_max_freq")
+        if current and current.isdigit():
+            frequency[str(cpu)] = {"current_khz": int(current),
+                                   "maximum_khz": int(maximum) if maximum and maximum.isdigit() else None}
+    modem = []
+    for entry in proc.glob("[0-9]*"):
+        name = read_value(entry / "comm")
+        if name in MODEM_PROCESSES:
+            modem.append({"pid": entry.name, "name": name})
+    try:
+        listing = read_log(run / "nvidia-smi.txt")
+    except OSError:
+        listing = ""
+    # The Utilization section prints "GPU : 0 %" with driver 580 on the Spark and "Gpu" with older drivers.
+    utilization = re.search(r"^\s*GPU\s*:\s*(\d+) %", listing, re.MULTILINE | re.IGNORECASE)
+    try:
+        load = list(os.getloadavg())
+    except OSError:
+        load = None
+    return {"observed_utc": datetime.now(timezone.utc).isoformat(), "cpu_frequency": frequency,
+            "clocksource": read_value(sysfs / "devices/system/clocksource/clocksource0/current_clocksource"),
+            "drm_kms_polling": read_value(sysfs / "module/drm_kms_helper/parameters/poll"),
+            "load_average": load, "gpu_utilization_percent": int(utilization[1]) if utilization else None,
+            "gpu_clients": gpu_processes(listing), "modem_processes": sorted(modem, key=lambda item: int(item["pid"]))}
+
+
 def benchmark(profile, build, run, gpu, stage):
+    stage["stage"] = "run"
     paper = profile == "paper"
-    iterations = 200 if paper else 20
+    iterations = verify_pusch_log.PROFILES[profile]["iterations"]
     if paper and not AFFINITY.issubset(os.sched_getaffinity(0)):
         raise ValueError("The paper profile requires cores 5-9,15-19 in this process's allowed CPU set.")
     command = ["timeout", "--kill-after=10s", "5m"]
@@ -615,14 +678,28 @@ def benchmark(profile, build, run, gpu, stage):
                 "--iterations", str(iterations), "--warmup", "5", "--cpu-every", "1",
                 "--rx-device-grid", "direct-managed", "--require-gpu-resident",
                 "--gpu-output-buffer", "pinned" if paper else "vector", "--quiet"]
-    stage["stage"] = "run"
-    record_command(command, run, "pusch.log")
-    stage["stage"] = "verify"
-    verify = [sys.executable, ROOT / "scripts/verify_pusch_log.py", run / "pusch.log", "--iterations", str(iterations)]
-    if paper:
-        verify += ["--paper-json", run / "table-ii.json"]
-    record_command(verify, run, "verification.txt")
-    print(read_log(run / "verification.txt").strip())
+    # What the run starts next to: GPU clients, a running modem, CPU clocks. Recorded, never refused.
+    conditions = measurement_conditions(run)
+    conditions.update(profile=profile, command=[str(word) for word in command])
+    write_json(run / "measurement-conditions.json", conditions)
+    failure = None
+    try:
+        record_command(command, run, "pusch.log")
+    except CommandFailed as error:
+        failure = error
+    else:
+        stage["stage"] = "verify"
+    # The transcript of a failed run is graded too: its FAIL lines name what the test reported.
+    verify = [sys.executable, ROOT / "scripts/verify_pusch_log.py", run / "pusch.log", "--profile", profile,
+              "--json", run / verify_pusch_log.PROFILES[profile]["json"]]
+    try:
+        record_command(verify, run, "verification.txt")
+    except CommandFailed as error:
+        failure = failure or error
+    if (run / "verification.txt").is_file():
+        print(read_log(run / "verification.txt").strip(), flush=True)
+    if failure:
+        raise failure
 
 
 def grade(evidence, pin=None):
@@ -644,7 +721,6 @@ def grade(evidence, pin=None):
         banner = read_log(evidence / "gnb-version.txt") if receipt.get("target") == "all" else ""
         toolchain, plan, targets = receipt["toolchain"], receipt["compile"], receipt["targets"]
         arch, cpu = receipt["cuda_arch"], receipt["cpu_target"]
-        facts = report["facts"]
     except (OSError, ValueError, KeyError, TypeError) as error:
         return True, [f"FAIL  S1.1 build evidence is incomplete in {evidence}: {error!r}"]
 
@@ -698,9 +774,19 @@ def grade(evidence, pin=None):
           and targets.get(GNB.name, {}).get("sha256") == receipt.get("gnb_sha256"),
           f"compiled targets and hashes: {hashes}", ": the target list disagrees with the receipt")
 
+    lines += reference_notes(report, receipt["machine"] == "spark")
+    for name in sorted(overrides):
+        if name in BUILD_ENVIRONMENT:
+            lines.append(f"NOTE  build environment override: {name}={overrides[name]}")
+    return failed, lines
+
+
+def reference_notes(report, spark):
+    """NOTE lines for the reference rows that are recorded and not required: what matches, what differs."""
     labels = {"benchmark_cpus": "high-capacity CPU set", "cpu_governor": "CPU frequency governor",
               "cpu_cores": "CPU cores", "host_compiler": "host compiler", "operating_system": "operating system",
               "cuda_toolkit": "CUDA toolkit", "gpu_driver": "GPU driver", "source_revision": "OCUDU revision"}
+    lines = []
     others = [row for row in report["reference"] if row["item"] not in PLATFORM_ROWS]
     same = [f"{labels[row['item']]} ({row['observed']})" for row in others if row["verdict"] == "match"]
     if same:
@@ -712,12 +798,101 @@ def grade(evidence, pin=None):
         found = "not observable" if row["verdict"] == "unknown" else row["observed"]
         lines.append(f"NOTE  {scope}, {labels[row['item']]}: {found} here; "
                      f"{row['reference']} in the {row['source']}")
-    if receipt["machine"] == "spark" and not report.get("benchmark_cpus_allowed"):
-        lines.append(f"NOTE  S1.2 measurement condition, allowed CPUs: {facts.get('allowed_cpus')} here; "
+    if spark and not report.get("benchmark_cpus_allowed"):
+        allowed = report.get("facts", {}).get("allowed_cpus")
+        lines.append(f"NOTE  S1.2 measurement condition, allowed CPUs: {allowed} here; "
                      f"the measured run needs {SPARK['cpus']}")
-    for name in sorted(overrides):
-        if name in BUILD_ENVIRONMENT:
-            lines.append(f"NOTE  build environment override: {name}={overrides[name]}")
+    return lines
+
+
+def condition_notes(conditions):
+    """NOTE lines for what a timing run shared the machine with. The entry condition is an idle GPU."""
+    scope = "NOTE  S1.2 measurement condition"
+    clients = conditions.get("gpu_clients") or []
+    named = [f"{Path(item.get('name', '?')).name} ({item.get('type', '?')}, {item.get('used_gpu_memory', '?')})"
+             for item in clients]
+    usage = conditions.get("gpu_utilization_percent")
+    lines = [f"{scope}, GPU clients at the start: {', '.join(named) or 'none listed'}"
+             + (f"; GPU utilization {usage} percent" if usage is not None else "")]
+    compute = [f"{Path(item.get('name', '?')).name} (pid {item['pid']})" for item in clients
+               if "C" in item.get("type", "")]
+    if compute:
+        lines.append(f"{scope}, compute workload on the GPU at the start: {', '.join(compute)}; "
+                     "the entry condition is an idle GPU")
+    modem = [f"{item['name']} (pid {item['pid']})" for item in conditions.get("modem_processes") or []]
+    if modem:
+        lines.append(f"{scope}, modem process running at the start: {', '.join(modem)}; "
+                     "Table II was measured with the live modem off")
+    if conditions.get("drm_kms_polling") == "Y":
+        lines.append(f"{scope}, DRM KMS polling: on here; the upstream tuning script scripts/ocudu_performance "
+                     "turns it off before a latency capture")
+    frequency = conditions.get("cpu_frequency") or {}
+    if frequency:
+        current = [item["current_khz"] / 1e6 for item in frequency.values()]
+        limits = [item["maximum_khz"] / 1e6 for item in frequency.values() if item.get("maximum_khz")]
+        lines.append(f"{scope}, CPU clocks: CPUs {cpu_list(int(cpu) for cpu in frequency)} at "
+                     f"{min(current):.2f} to {max(current):.2f} GHz"
+                     + (f" of {max(limits):.2f} GHz maximum" if limits else "")
+                     + f", clocksource {conditions.get('clocksource') or 'not observable'}")
+    return lines
+
+
+def grade_run(evidence, pin=None):
+    """Grade the evidence directory of one measured run. Return (failed, lines) like grade()."""
+    lines = []
+    failed = False
+    label = "S1.2"
+
+    def check(passed, text, detail=""):
+        nonlocal failed
+        failed = failed or not passed
+        lines.append(f"{'PASS' if passed else 'FAIL'}  {label} {text}{'' if passed else detail}")
+
+    try:
+        record = json.loads((evidence / "platform.json").read_text())
+        profile, gpu = record["profile"], record["gpu"]
+        label = verify_pusch_log.PROFILES[profile]["label"]
+        status = dict(line.split("=", 1) for line in (evidence / "status.txt").read_text().split())
+        receipt = json.loads((evidence / "native-build.json").read_text())
+        report = json.loads((evidence / "reference-environment.json").read_text())
+        conditions = json.loads((evidence / "measurement-conditions.json").read_text())
+        command = [str(word) for word in conditions["command"]]
+        transcript = read_log(evidence / "pusch.log")
+        binary = receipt["targets"][TEST.name]
+        platform_rows = {row["item"]: row for row in report["reference"] if row["item"] in PLATFORM_ROWS}
+        device = ", ".join(str(platform_rows[item]["observed"]) for item in PLATFORM_ROWS)
+        uuid, driver = gpu["uuid"], gpu["driver"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return True, [f"FAIL  {label} run evidence is incomplete in {evidence}: {error!r}"]
+
+    check(status.get("stage") == "completed" and status.get("exit_code") == "0",
+          "run completed: the native test and the transcript validator exited zero",
+          f": stage={status.get('stage')}, exit_code={status.get('exit_code')}")
+    pin = pin or locked_source("ocudu")["commit"]
+    check(receipt.get("target") == "all" and receipt.get("machine") == "spark" and receipt.get("commit") == pin
+          and binary.get("sha256") == receipt.get("binary_sha256") and binary.get("cuda_device_code") is True,
+          f"measured the full Spark Release build: {TEST.name} {str(binary.get('sha256'))[:12]} "
+          f"of OCUDU {receipt.get('commit')} ({receipt.get('source_kind')})",
+          f"; found target={receipt.get('target')}, machine={receipt.get('machine')}; ext/lock.json pins {pin}")
+    # The process could see only the selected GPU, and the paper row ran on the paper's CPU set.
+    visible = f"CUDA_VISIBLE_DEVICES={uuid}" in command
+    reference = all(row["verdict"] == "match" for row in platform_rows.values())
+    pinned = any(command[index:index + 3] == ["taskset", "-c", SPARK["cpus"]] for index in range(len(command)))
+    where = f"ran on the intended device: {device}, {uuid}, driver {driver}"
+    if profile == "paper":
+        where += f", pinned to CPUs {SPARK['cpus']}"
+    check(visible and reference and (pinned or profile != "paper"), where,
+          "; the recorded command is " + shlex.join(command))
+
+    graded_failed, graded = verify_pusch_log.grade_transcript(transcript, profile)[:2]
+    if failed and not graded_failed and profile == "paper":
+        # A run that was not the accepted build on the paper's device and CPU set compares nothing.
+        graded = [line for line in graded if not line.startswith("NOTE")]
+        graded.append(f"NOTE  {label} {verify_pusch_log.WITHHELD}")
+    failed = failed or graded_failed
+    lines += graded
+    if profile == "paper":
+        lines += condition_notes(conditions) + reference_notes(report, True)
     return failed, lines
 
 
@@ -741,6 +916,8 @@ def main(argv=None):
     run_cmd = sub.add_parser("run", help="Run one Spark baseline")
     grade_cmd = sub.add_parser("grade", help="Grade the evidence directory of a finished build")
     grade_cmd.add_argument("evidence", type=Path, help="directory printed by the build as 'Run artifacts'")
+    grade_run_cmd = sub.add_parser("grade-run", help="Grade the evidence directory of a measured run")
+    grade_run_cmd.add_argument("evidence", type=Path, help="directory printed by the run as 'Run artifacts'")
     for cmd in [build_cmd, run_cmd]:
         cmd.add_argument("--build-dir", type=Path, help="out-of-source build directory")
         cmd.add_argument("--jobs", type=int, default=8)
@@ -753,8 +930,8 @@ def main(argv=None):
     run_cmd.add_argument("--skip-build", action="store_true", help="verify the saved build identity and reuse it")
     run_cmd.set_defaults(machine="spark", mcpu=None)
     args = parser.parse_args(argv)
-    if args.action == "grade":
-        failed, lines = grade(args.evidence.resolve())
+    if args.action in ("grade", "grade-run"):
+        failed, lines = (grade if args.action == "grade" else grade_run)(args.evidence.resolve())
         print("\n".join(lines))
         return int(failed)
     if args.jobs < 1:

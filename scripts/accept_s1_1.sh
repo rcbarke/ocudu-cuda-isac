@@ -215,7 +215,7 @@ if (( failed )); then
     exit 1
 fi
 if [[ "$machine" == spark ]]; then
-    note "Sprint 1.1: ACCEPTED on this DGX Spark. Next gate: make paper-baseline (S1.2)."
+    note "Sprint 1.1: ACCEPTED on this DGX Spark. Next gate: make accept-s1.2 (S1.2)."
 else
     note "Sprint 1.1: ACCEPTED on this host for the local profile. The DeepSig Table II row stays assigned to a GB10."
 fi

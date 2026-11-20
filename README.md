@@ -6,7 +6,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1.1 (native Release build) are accepted on one DGX Spark. Sprint 1.2 (the DeepSig Table II row) is the next open gate.** S2 to S9 are specified and not yet implemented.
+As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1.1 (native Release build) are accepted on one DGX Spark. Sprint 1.2 (the DeepSig Table II row) is the next open gate.** Its gate, `make accept-s1.2`, is delivered and has no accepted Spark run yet. S2 to S9 are specified and not yet implemented.
 
 ### Sprint 0 acceptance
 
@@ -72,11 +72,12 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 - **S0.2** refuses a source tree that is off its pinned commit or has an edited tracked file, an installed Sionna file that differs from the pinned tree, a missing LLVM or CUDA backend, and a traced channel that deviates from free space. The file comparison matters because two Sionna RT commits both report version 2.2.0.
 - **S0.3** refuses malformed or ambiguous fixtures, unknown or duplicate sequence IDs, a mismatched clock, and outputs that differ on repeat.
 - **S1.1** refuses another platform under the Spark profile, an `nvcc` that cannot emit the GPU architecture, a cache value that differs from the recipe (including `CUDA_ACCEL_FOUND=FALSE`), a CUDA source compiled for another architecture, a PUSCH test compiled without `ENABLE_CUDA` or the CPU target, an executable without linked device code, binaries that differ from the build receipt, and an OCUDU source that is not pristine. A missing development library stopped two real runs in the configure step.
+- **S1.2** has no accepted Spark run yet. Its graders refuse, in the unit suite and in a rehearsal against a stand-in for the native test: a workload other than the Table II row, fewer than 200 CRC passes on either path, a CRC disagreement, a byte mismatch, an output guard failure, a GPU path without resident timing or the producer-owned grid on every measured frame, a missing or non-finite service time, a transcript that is truncated, repeated or of zero iterations, a run that was not pinned to CPUs 5-9,15-19 or could see another GPU, and a build that Sprint 1.1 did not accept. A GPU path that is slower than the CPU path is recorded and not refused.
 - **The gate runner** refuses an uncommitted tree, an empty test run, a skipped test on a simulation host, and an evidence directory that already exists.
 
 ### Open items
 
-- **Sprint 1.2.** `make paper-baseline` is the next gate. It uses the accepted S1.1 build and has produced no Spark evidence yet.
+- **Sprint 1.2.** `make accept-s1.2` is the next gate. It measures the accepted S1.1 build and has no accepted Spark run yet. A passing run also closes Sprint 1 on this host.
 - **Other hosts.** Sprints 0 and 1.1 are accepted on one Spark. The second Spark and the GB300 each need their own `make accept-s0` and `make accept-s1.1` runs. The GB300 uses `bash scripts/accept_s1_1.sh --machine local` with its own CPU target.
 - **Evidence location.** The run directories are on the Spark under `results/runs/`, which Git ignores. They are not in this repository.
 - **Hosted checks.** `.github/workflows/portable.yml` is in place. No hosted run is recorded here yet.
@@ -122,10 +123,10 @@ make accept-s0 BACKENDS="cpu cuda"
 ```bash
 source isac/bin/activate
 make accept-s1.1 BACKENDS="cpu cuda"
-make paper-baseline
+make accept-s1.2
 ```
 
-`make accept-s1.1` is the Sprint 1.1 gate. It first installs the OCUDU development libraries that dpkg reports missing (`scripts/install_native_deps.sh`, safe to repeat, asks for sudo only when something is missing). It shows the CMake output while it runs, builds Release with CUDA architecture 121 and `neoverse-v2` on Spark, compares the host with the environment DeepSig measured, requires compiled CUDA kernels and linked device code, and starts `gnb` and `pusch_e2e_pipeline_test` from the environment. Name the simulation backends only on a host that passed them in Sprint 0. The evidence goes to a new directory under `results/runs/`. `make native-build` runs the build alone, with host-specific targets for other machines. The final command runs the one-layer DeepSig Table II profile, checks actual resident GPU counters and CPU/GPU decoded-byte agreement, and archives the local timings. The separate short four-RX smoke uses the original advisor profile. The source, hardware and runtime dependencies for these commands are documented in the [native runbook](docs/dev/NATIVE_BASELINE.md). On split deployments run the full Sionna check on the scene host and the native build and receiver check on the DSP host.
+`make accept-s1.1` is the Sprint 1.1 gate. It first installs the OCUDU development libraries that dpkg reports missing (`scripts/install_native_deps.sh`, safe to repeat, asks for sudo only when something is missing). It shows the CMake output while it runs, builds Release with CUDA architecture 121 and `neoverse-v2` on Spark, compares the host with the environment DeepSig measured, requires compiled CUDA kernels and linked device code, and starts `gnb` and `pusch_e2e_pipeline_test` from the environment. Name the simulation backends only on a host that passed them in Sprint 0. The evidence goes to a new directory under `results/runs/`. `make native-build` runs the build alone, with host-specific targets for other machines. `make accept-s1.2` is the Sprint 1.2 gate. It measures the build that Sprint 1.1 accepted and never builds. It runs the one-layer DeepSig Table II profile on CPUs 5-9,15-19, then the short four-RX smoke of the original advisor profile. It requires 200 CRC passes on the CPU and on the GPU path, agreement of the decoded bytes and resident GPU work on every measured frame, and it records the local timings next to the published ones without grading them. A passing run ends with the Sprint 1.2 and the Sprint 1 verdicts. `make accept-s1` runs both gates in order, and `make paper-baseline` runs the paper profile alone. The source, hardware and runtime dependencies for these commands are documented in the [native runbook](docs/dev/NATIVE_BASELINE.md). On split deployments run the full Sionna check on the scene host and the native build and receiver check on the DSP host.
 
 ## Repository map
 

@@ -1,0 +1,34 @@
+
+=== E2E GPU Pipeline Test ===
+Config: 51 PRB, 30.0 dB SINR, MCS 27 (table=qam256), 1 layer(s), 1 RX port(s), DMRS Type1 [2,11], transform_precoding=off, 0 iterations, 5 warmup, rx_device_grid=direct-managed, gpu_output=pinned
+
+TBS: 54296 bits (6787 bytes), Base Graph: BG1, Codeblocks: 7, Modulation: 256QAM
+
+E2E GPU Pipeline: NOT ACTIVE (warmup complete, resident timing: missing)
+
+
+=== Results (0 iterations, 5 warmup skipped) ===
+CPU: 0/0 pass (-nan% BLER)
+GPU: 0/0 pass (-nan% BLER)  [resident GPU timing: 0/0]
+GPU producer-owned grid: 0/0 measured iterations
+GPU immutable owned snapshot: 0/0 measured iterations
+Disagreements: 0
+Byte mismatches: 0
+Output guard failures: 0
+
+=== Latency (microseconds) ===
+                      Min     Mean      Max
+CPU total:       1000000000.0      0.0      0.0
+GPU total:       1000000000.0      0.0      0.0
+Speedup:                  -nanx
+
+=== CSI Metric Parity ===
+                   CPU Mean   GPU Mean      Delta   GPU Populated?
+SINR (dB):              N/A        N/A        N/A   Yes
+EVM (%):                N/A        N/A        N/A   Yes
+EPRE (dB):              N/A        N/A        N/A   Yes
+TA (us):                N/A        N/A        N/A   Yes
+RSRP (dB):              N/A        N/A        N/A   Yes
+CFO (Hz):               N/A        N/A        N/A   Yes
+
+PASS: Both paths decoded all 0 iterations, 0 byte mismatches

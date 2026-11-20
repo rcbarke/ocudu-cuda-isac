@@ -110,7 +110,7 @@ class SprintOneBuildGateTests(unittest.TestCase):
         result = self.gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("FAIL", result.stdout)
-        self.assertIn("Sprint 1.1: ACCEPTED on this DGX Spark. Next gate: make paper-baseline (S1.2).", result.stdout)
+        self.assertIn("Sprint 1.1: ACCEPTED on this DGX Spark. Next gate: make accept-s1.2 (S1.2).", result.stdout)
         summary = (self.run_dir / "summary.txt").read_text()
         shown = result.stdout.splitlines()
         self.assertEqual([line for line in shown if line in summary.splitlines()], summary.splitlines())

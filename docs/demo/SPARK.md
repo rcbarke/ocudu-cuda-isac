@@ -14,13 +14,17 @@ The gate builds, grades the evidence and ends with `Sprint 1.1: ACCEPTED on this
 ## 2. Run the paper comparison and four-RX diagnostic
 
 ```bash
+make accept-s1.2
+# One profile alone, for diagnosis
 bash scripts/run_spark_baseline.sh --profile paper --skip-build
 bash scripts/run_spark_baseline.sh --profile smoke --skip-build
 ```
 
+The gate measures both profiles on the build that step 1 accepted, grades the archived evidence and ends with `Sprint 1.2: ACCEPTED on this DGX Spark.` and the Sprint 1 verdict. Stop gNB, training and inference processes first.
+
 The **paper** profile uses 51 PRBs at 30 kHz SCS, MCS 27 from the 256-QAM table, 1 layer/1 RX, a direct-managed grid and pinned output. It checks 200 measured CPU/GPU decodes after warmup and reports actual CPU/GPU mean latency alongside the paper’s 334.0/183.9 µs. The **smoke** profile uses MCS 10 from the 64-QAM table, four RX ports and 20 measured frames. It remains the default for `bash scripts/run_spark_baseline.sh`, which can build the test target on demand. Use the same `--build-dir DIR` in both wrappers when overriding the default. [DeepSig, Table II](https://arxiv.org/abs/2608.04338v1)
 
-Each command prints a unique evidence directory. Require the successful stage/status, native log with real CRC successes, zero CPU/GPU byte mismatches, and all measured frames on the resident/owned-grid path. Read `table-ii.json` for the paper profile’s actual means and timing differences. The supplied branch and paper measurement commit differ. The stock test generates its own input and compares CPU/GPU decoded bytes. S2 establishes replay against retained original TX payloads before sensing results are attributed to a real PUSCH observation. [Acceptance and regrade commands](../dev/NATIVE_BASELINE.md)
+Each command prints a unique evidence directory. The gate writes `results/runs/s12-<host>-<UTC time>/` with `summary.txt`, `paper/` and `smoke/`. Require the successful stage/status, native log with real CRC successes, zero CPU/GPU byte mismatches, and all measured frames on the resident/owned-grid path. Read `table-ii.json` for the paper profile’s actual means and timing differences. The supplied branch and paper measurement commit differ. The stock test generates its own input and compares CPU/GPU decoded bytes. S2 establishes replay against retained original TX payloads before sensing results are attributed to a real PUSCH observation. [Acceptance and regrade commands](../dev/NATIVE_BASELINE.md)
 
 ## 3. Demonstrate receiver-linked sensing after the native adapter is implemented
 

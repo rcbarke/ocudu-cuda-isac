@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1.1 native-deps native-build paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 native-deps native-build paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -10,7 +10,10 @@ help:
 	@echo "make native-deps     Install the missing OCUDU development libraries with apt-get (safe to repeat)"
 	@echo "make native-build    Build the native Spark Release and correctness targets"
 	@echo "make accept-s1.1     Build, then run every Sprint 1.1 gate and archive the evidence (BACKENDS=\"cpu cuda\", JOBS=8)"
-	@echo "make paper-baseline  Execute the DeepSig one-layer comparison on Spark"
+	@echo "make accept-s1.2     Measure the DeepSig Table II row and the four-RX smoke on the S1.1 build, grade and archive"
+	@echo "make accept-s1       Run the Sprint 1.1 gate, then the Sprint 1.2 gate (BACKENDS=\"cpu cuda\", JOBS=8)"
+	@echo "make paper-baseline  Execute the DeepSig one-layer comparison alone on Spark"
+	@echo "make spark-baseline  Execute the short four-RX smoke alone on Spark"
 
 env:
 	bash scripts/bootstrap_env.sh core
@@ -44,6 +47,14 @@ native-build:
 
 accept-s1.1:
 	bash scripts/accept_s1_1.sh $(if $(JOBS),--jobs $(JOBS)) $(BACKENDS)
+
+accept-s1.2:
+	bash scripts/accept_s1_2.sh
+
+# Command-line variables such as BACKENDS and JOBS reach both gates. The second runs only if the first passed.
+accept-s1:
+	$(MAKE) accept-s1.1
+	$(MAKE) accept-s1.2
 
 paper-baseline:
 	bash scripts/run_spark_baseline.sh --profile paper --skip-build

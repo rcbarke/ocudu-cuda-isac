@@ -1,4 +1,4 @@
-"""Host-only fixtures for native build identity, reference comparison, evidence grading and workload selection."""
+"""Host-only fixtures for native build identity, reference comparison, evidence grading and measured runs."""
 
 from argparse import Namespace
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
@@ -15,23 +15,51 @@ import unittest
 from unittest.mock import patch
 
 from scripts import native_ocudu
-from scripts.verify_pusch_log import compare_table_ii
 
-# Synthetic transcript in the pinned test's format. Times intentionally differ from the paper.
-PAPER_LOG = """Config: 51 PRB, 30.0 dB SINR, MCS 27 (table=qam256), 1 layer(s), 1 RX port(s), DMRS Type1 [2,11], transform_precoding=off, 200 iterations, 5 warmup, rx_device_grid=direct-managed, gpu_output=pinned
-TBS: 54296 bits (6787 bytes), Base Graph: BG1, Codeblocks: 7, Modulation: 256QAM
-=== Results (200 iterations, 5 warmup skipped) ===
-CPU: 200/200 pass (0.0% BLER)
-GPU: 200/200 pass (0.0% BLER)  [resident GPU timing: 200/200]
-GPU producer-owned grid: 200/200 measured iterations
-GPU immutable owned snapshot: 200/200 measured iterations
-Disagreements: 0
-Byte mismatches: 0
-Output guard failures: 0
-CPU total: 150.0 200.0 280.0
-GPU total: 200.0 250.0 400.0
-Speedup:                  0.80x
-PASS: Both paths decoded all 200 iterations, 0 byte mismatches
+# Transcripts in the pinned test's format, described in test_pusch_log.py. Parser fixtures, no measurement.
+TRANSCRIPTS = Path(__file__).resolve().parent / "transcripts"
+PAPER_LOG = (TRANSCRIPTS / "paper.log").read_text()
+SMOKE_LOG = (TRANSCRIPTS / "smoke.log").read_text()
+# Listing in the layout `nvidia-smi -q` prints on the Spark with driver 580.178.04, shortened, with invented
+# values: two desktop clients and one compute process.
+NVIDIA_SMI = """==============NVSMI LOG==============
+
+Timestamp                                              : Thu Nov 19 20:10:24 2026
+Driver Version                                         : 580.178.04
+CUDA Version                                           : 13.0
+
+Attached GPUs                                          : 1
+GPU 0000000F:01:00.0
+    Product Name                                       : NVIDIA GB10
+    GPU UUID                                           : GPU-spark
+    Performance State                                  : P8
+    Utilization
+        GPU                                            : 3 %
+        Memory                                         : 0 %
+        Encoder                                        : 0 %
+    Temperature
+        GPU Current Temp                               : 35 C
+    GPU Power Readings
+        Average Power Draw                             : 4.31 W
+    Processes
+        GPU instance ID                   : N/A
+        Compute instance ID               : N/A
+        Process ID                        : 3120
+            Type                          : G
+            Name                          : /usr/lib/xorg/Xorg
+            Used GPU Memory               : 155 MiB
+        GPU instance ID                   : N/A
+        Compute instance ID               : N/A
+        Process ID                        : 3351
+            Type                          : G
+            Name                          : /usr/bin/gnome-shell
+            Used GPU Memory               : 120 MiB
+        GPU instance ID                   : N/A
+        Compute instance ID               : N/A
+        Process ID                        : 41877
+            Type                          : C
+            Name                          : python3
+            Used GPU Memory               : 2048 MiB
 """
 # What CMake printed on the Spark when libgtest-dev was absent. The shell forced terminal colors.
 CONFIGURE_WITHOUT_GTEST = """-- Found FFTW3F: /usr/lib/aarch64-linux-gnu/libfftw3f.so
@@ -94,47 +122,136 @@ def reference_report(profile, facts, mcpu):
         return native_ocudu.compare_reference(profile, facts, mcpu, LOCK_ENTRY)
 
 
-class PaperProfileTest(unittest.TestCase):
-    def test_slower_gpu_still_records_correctness_and_actual_latency(self):
-        result = compare_table_ii(PAPER_LOG)
-        self.assertTrue(result["correctness_matches_table_row"])
-        self.assertFalse(result["gpu_faster_on_this_run"])
-        self.assertEqual(result["observed"]["gpu_mean_us"], 250)
-        self.assertEqual(result["reference"]["gpu_mean_us"], 183.9)
+class MeasuredRunTest(unittest.TestCase):
+    """The command of each profile, what is recorded around it and what a failed run leaves behind."""
 
-    def test_wrong_workload_damaged_timing_and_truncated_decode_fail(self):
-        for old, new in [("qam256", "qam64"), ("30.0 dB", "25.0 dB"), ("30.0 dB", "nan dB"),
-                         ("1 RX port(s)", "4 RX port(s)"), ("54296 bits", "54240 bits"),
-                         ("gpu_output=pinned", "gpu_output=vector"), ("5 warmup skipped", "0 warmup skipped"),
-                         ("GPU total: 200.0 250.0 400.0", "GPU total: 250 0 300"),
-                         ("Speedup:                  0.80x", "Speedup: 1.82x"),
-                         ("GPU immutable owned snapshot: 200", "GPU immutable owned snapshot: 199")]:
-            with self.subTest(old=old, new=new), self.assertRaises(ValueError):
-                compare_table_ii(PAPER_LOG.replace(old, new))
-        with self.assertRaises(ValueError):
-            compare_table_ii(PAPER_LOG + PAPER_LOG)
-
-    def test_paper_run_pins_the_reference_cpus_and_requires_the_resident_path(self):
-        commands = []
+    def measure(self, profile, fail=()):
+        """Run benchmark() against a recorder. Return (commands, stage, error, files written)."""
+        commands, stage = [], {}
 
         def record(command, run, filename, env=None):
             commands.append([str(word) for word in command])
-            (run / filename).write_text("graded\n")
+            (run / filename).write_text("PASS  graded\n" if filename == "verification.txt" else "transcript\n")
+            if filename in fail:
+                raise native_ocudu.CommandFailed(command, 2, run / filename)
 
+        error = None
         with tempfile.TemporaryDirectory() as temp, patch.object(native_ocudu, "record_command", side_effect=record), \
                 patch.object(native_ocudu.os, "sched_getaffinity", return_value=set(range(20))), \
-                redirect_stdout(io.StringIO()):
-            native_ocudu.benchmark("paper", Path(temp) / "build", Path(temp), SPARK_GPU, {})
-            self.assertEqual(commands[0][:6], ["timeout", "--kill-after=10s", "5m", "taskset", "-c", "5-9,15-19"])
-            line = " ".join(commands[0])
-            for expected in ("CUDA_VISIBLE_DEVICES=GPU-spark", "--prb 51 --sinr 30 --mcs 27 --mcs-table qam256",
-                             "--layers 1 --ports 1", "--iterations 200 --warmup 5", "--rx-device-grid direct-managed",
-                             "--require-gpu-resident --gpu-output-buffer pinned"):
-                self.assertIn(expected, line)
-            self.assertIn("--paper-json", commands[1])
-            with patch.object(native_ocudu.os, "sched_getaffinity", return_value={0, 1, 2, 3}), \
-                    self.assertRaisesRegex(ValueError, "5-9,15-19"):
-                native_ocudu.benchmark("paper", Path(temp) / "build", Path(temp), SPARK_GPU, {})
+                redirect_stdout(io.StringIO()) as shown:
+            run = Path(temp)
+            (run / "nvidia-smi.txt").write_text(NVIDIA_SMI)
+            try:
+                native_ocudu.benchmark(profile, run / "build", run, SPARK_GPU, stage)
+            except native_ocudu.CommandFailed as failure:
+                error = failure
+            conditions = json.loads((run / "measurement-conditions.json").read_text())
+            return commands, stage, error, conditions, shown.getvalue()
+
+    def test_paper_run_pins_the_reference_cpus_and_requires_the_resident_path(self):
+        commands, stage, error, conditions, shown = self.measure("paper")
+        self.assertIsNone(error)
+        self.assertEqual(commands[0][:6], ["timeout", "--kill-after=10s", "5m", "taskset", "-c", "5-9,15-19"])
+        line = " ".join(commands[0])
+        for expected in ("CUDA_VISIBLE_DEVICES=GPU-spark", "OCUDU_PUSCH_ACCELERATION_TIMING=1",
+                         "--prb 51 --sinr 30 --mcs 27 --mcs-table qam256", "--layers 1 --ports 1",
+                         "--dmrs-type type1 --dmrs-symbols 2,11", "--iterations 200 --warmup 5 --cpu-every 1",
+                         "--rx-device-grid direct-managed --require-gpu-resident --gpu-output-buffer pinned --quiet"):
+            self.assertIn(expected, line)
+        # The transcript validator is the second command. It grades the same log for the paper profile.
+        self.assertEqual(commands[1][1:], [str(native_ocudu.ROOT / "scripts/verify_pusch_log.py"),
+                                           commands[1][2], "--profile", "paper", "--json", commands[1][6]])
+        self.assertEqual((Path(commands[1][2]).name, Path(commands[1][6]).name), ("pusch.log", "table-ii.json"))
+        self.assertEqual((stage, shown.strip()), ({"stage": "verify"}, "PASS  graded"))
+        # The conditions name the exact command and what shared the GPU before it started.
+        self.assertEqual((conditions["profile"], conditions["command"]), ("paper", commands[0]))
+        self.assertEqual([client["name"] for client in conditions["gpu_clients"]],
+                         ["/usr/lib/xorg/Xorg", "/usr/bin/gnome-shell", "python3"])
+        self.assertEqual(conditions["gpu_utilization_percent"], 3)
+        # A CPU allocation without the paper's cores is refused in the run stage, before anything starts.
+        stage = {}
+        with patch.object(native_ocudu.os, "sched_getaffinity", return_value={0, 1, 2, 3}), \
+                self.assertRaisesRegex(ValueError, "5-9,15-19"):
+            native_ocudu.benchmark("paper", Path("build"), Path("absent"), SPARK_GPU, stage)
+        self.assertEqual(stage, {"stage": "run"})
+
+    def test_smoke_run_uses_four_rx_ports_on_any_allowed_cpu(self):
+        commands, _, error, conditions, _ = self.measure("smoke")
+        self.assertIsNone(error)
+        self.assertEqual(commands[0][:4], ["timeout", "--kill-after=10s", "5m", "env"])
+        line = " ".join(commands[0])
+        for expected in ("--mcs 10 --mcs-table qam64", "--ports 4", "--iterations 20 --warmup 5",
+                         "--rx-device-grid direct-managed --require-gpu-resident --gpu-output-buffer vector"):
+            self.assertIn(expected, line)
+        self.assertNotIn("taskset", line)
+        self.assertEqual(commands[1][-4:-1], ["--profile", "smoke", "--json"])
+        self.assertEqual((Path(commands[1][-1]).name, conditions["profile"]), ("smoke.json", "smoke"))
+
+    def test_failed_native_test_is_still_graded_and_reported_as_the_failure(self):
+        commands, stage, error, _, shown = self.measure("paper", fail=("pusch.log", "verification.txt"))
+        self.assertEqual(len(commands), 2, "the transcript of a failed run is graded too")
+        self.assertEqual((stage, error.log.name, error.status), ({"stage": "run"}, "pusch.log", 2))
+        self.assertIn("PASS  graded", shown)
+        # A test that exits zero with a transcript the validator refuses stops in the verify stage.
+        commands, stage, error, _, _ = self.measure("paper", fail=("verification.txt",))
+        self.assertEqual((len(commands), stage, error.log.name), (2, {"stage": "verify"}, "verification.txt"))
+
+    def test_conditions_are_read_from_the_archived_listing_and_the_kernel(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run, sysfs, proc = root / "run", root / "sys", root / "proc"
+            run.mkdir()
+            (run / "nvidia-smi.txt").write_text(NVIDIA_SMI)
+            for cpu in (5, 19):
+                policy = sysfs / f"devices/system/cpu/cpu{cpu}/cpufreq"
+                policy.mkdir(parents=True)
+                (policy / "scaling_cur_freq").write_text("3900000\n" if cpu == 5 else "2808000\n")
+                (policy / "cpuinfo_max_freq").write_text("3900000\n")
+            (sysfs / "devices/system/clocksource/clocksource0").mkdir(parents=True)
+            (sysfs / "devices/system/clocksource/clocksource0/current_clocksource").write_text("arch_sys_counter\n")
+            (sysfs / "module/drm_kms_helper/parameters").mkdir(parents=True)
+            (sysfs / "module/drm_kms_helper/parameters/poll").write_text("Y\n")
+            for pid, name in (("812", "gnb"), ("77", "odu_low"), ("900", "bash"), ("self", "python3")):
+                (proc / pid).mkdir(parents=True)
+                (proc / pid / "comm").write_text(name + "\n")
+            (proc / "4242").mkdir()  # a process that ended while it was read
+            conditions = native_ocudu.measurement_conditions(run, sysfs, proc)
+            self.assertEqual(conditions["cpu_frequency"], {"5": {"current_khz": 3900000, "maximum_khz": 3900000},
+                                                           "19": {"current_khz": 2808000, "maximum_khz": 3900000}})
+            self.assertEqual((conditions["clocksource"], conditions["drm_kms_polling"]), ("arch_sys_counter", "Y"))
+            self.assertEqual(conditions["modem_processes"], [{"pid": "77", "name": "odu_low"},
+                                                             {"pid": "812", "name": "gnb"}])
+            self.assertEqual(conditions["gpu_clients"][0], {"pid": "3120", "type": "G", "name": "/usr/lib/xorg/Xorg",
+                                                            "used_gpu_memory": "155 MiB"})
+            self.assertEqual((len(conditions["gpu_clients"]), conditions["gpu_utilization_percent"]), (3, 3))
+            notes = native_ocudu.condition_notes(conditions)
+            self.assertEqual(notes, [
+                "NOTE  S1.2 measurement condition, GPU clients at the start: Xorg (G, 155 MiB), gnome-shell "
+                "(G, 120 MiB), python3 (C, 2048 MiB); GPU utilization 3 percent",
+                "NOTE  S1.2 measurement condition, compute workload on the GPU at the start: python3 (pid 41877); "
+                "the entry condition is an idle GPU",
+                "NOTE  S1.2 measurement condition, modem process running at the start: odu_low (pid 77), gnb "
+                "(pid 812); Table II was measured with the live modem off",
+                "NOTE  S1.2 measurement condition, DRM KMS polling: on here; the upstream tuning script "
+                "scripts/ocudu_performance turns it off before a latency capture",
+                "NOTE  S1.2 measurement condition, CPU clocks: CPUs 5,19 at 2.81 to 3.90 GHz of 3.90 GHz maximum, "
+                "clocksource arch_sys_counter"])
+            # A host that exposes none of this records unknowns and one line, and never raises.
+            empty = native_ocudu.measurement_conditions(root / "absent", root / "absent", root / "absent")
+            self.assertEqual((empty["cpu_frequency"], empty["gpu_clients"], empty["modem_processes"]), ({}, [], []))
+            self.assertEqual((empty["clocksource"], empty["drm_kms_polling"], empty["gpu_utilization_percent"]),
+                             (None, None, None))
+            self.assertEqual(native_ocudu.condition_notes(empty),
+                             ["NOTE  S1.2 measurement condition, GPU clients at the start: none listed"])
+        self.assertEqual(native_ocudu.gpu_processes("    Processes                             : None\n"), [])
+        # Older drivers spell the utilization row "Gpu". A row that reports no number stays unknown.
+        for row, expected in (("        Gpu                               : 41 %", 41),
+                              ("        GPU                               : N/A", None),
+                              ("    GPU Current Temp                      : 35 C", None)):
+            with tempfile.TemporaryDirectory() as temp:
+                Path(temp, "nvidia-smi.txt").write_text("    Utilization\n" + row + "\n")
+                found = native_ocudu.measurement_conditions(Path(temp), Path(temp, "sys"), Path(temp, "proc"))
+                self.assertEqual(found["gpu_utilization_percent"], expected, row)
 
 
 class LockedSourceTest(unittest.TestCase):
@@ -806,6 +923,175 @@ class EvidenceGradeTest(FakeBuildCase):
         self.assertIn("CMAKE_CUDA_ARCHITECTURES=89, MCPU=neoverse-v2", text)
 
 
+class RunEvidenceGradeTest(FakeBuildCase):
+    """Grade the files a measured run leaves behind, then damage them one at a time."""
+
+    PIN = LOCK_ENTRY["commit"]
+
+    def setUp(self):
+        super().setUp()
+        self.build_full(pin=self.PIN)
+        self.receipt = json.loads((self.run / "native-build.json").read_text())
+        self.report = reference_report("spark", spark_facts(), "neoverse-v2")
+        self.platform = {"profile": "paper", "gpu": dict(SPARK_GPU)}
+        self.status = "stage=completed\nexit_code=0\n"
+        self.transcript = PAPER_LOG
+        self.evidence = self.root / "paper"
+        self.evidence.mkdir()
+        self.conditions = {"command": self.command("paper"), "gpu_clients": [], "modem_processes": []}
+
+    def command(self, profile):
+        """The command benchmark() records for a profile."""
+        with patch.object(native_ocudu.os, "sched_getaffinity", return_value=set(range(20))), \
+                redirect_stdout(io.StringIO()):
+            native_ocudu.benchmark(profile, self.build, self.root, SPARK_GPU, {})
+        return json.loads((self.root / "measurement-conditions.json").read_text())["command"]
+
+    def record_fake_command(self, command, run, filename, env=None, live=False):
+        if filename in ("pusch.log", "verification.txt"):
+            (run / filename).write_text("")
+        else:
+            super().record_fake_command(command, run, filename, env=env, live=live)
+
+    def grade(self):
+        native_ocudu.write_json(self.evidence / "native-build.json", self.receipt)
+        native_ocudu.write_json(self.evidence / "reference-environment.json", self.report)
+        native_ocudu.write_json(self.evidence / "platform.json", self.platform)
+        native_ocudu.write_json(self.evidence / "measurement-conditions.json", self.conditions)
+        (self.evidence / "status.txt").write_text(self.status)
+        (self.evidence / "pusch.log").write_text(self.transcript)
+        return native_ocudu.grade_run(self.evidence, pin=self.PIN)
+
+    def test_complete_paper_evidence_passes_and_lists_conditions_and_differences(self):
+        failed, lines = self.grade()
+        text = "\n".join(lines)
+        self.assertFalse(failed, text)
+        self.assertEqual([line[:4] for line in lines], ["PASS"] * 10 + ["NOTE"] * 12)
+        binary = self.receipt["binary_sha256"][:12]
+        for expected in (
+                "PASS  S1.2 paper run completed: the native test and the transcript validator exited zero",
+                f"PASS  S1.2 paper measured the full Spark Release build: pusch_e2e_pipeline_test {binary} of OCUDU "
+                f"{self.PIN} (verified-archive)",
+                "PASS  S1.2 paper ran on the intended device: aarch64, NVIDIA GB10, 12.1, GPU-spark, driver "
+                "580.178.04, pinned to CPUs 5-9,15-19",
+                "PASS  S1.2 paper CPU decodes: 200/200 CRC passes",
+                "PASS  S1.2 paper CUDA work completed on the device: resident pipeline active after warmup",
+                "NOTE  S1.2 paper performance, GPU mean: 264.9 us here; 183.9 us in the paper (+44.0 percent)",
+                "NOTE  S1.2 measurement condition, GPU clients at the start: none listed",
+                "NOTE  matches the reference: CPU cores (Cortex-A725, Cortex-X925), high-capacity CPU set "
+                "(5-9,15-19), host compiler (GCC 13.3.0), operating system (Ubuntu 24.04)",
+                "NOTE  S1.2 measurement condition, CPU frequency governor: schedutil here; performance in the paper",
+                "NOTE  recorded difference, OCUDU revision: nvcuda_accel_02 at 27e84cb3 here; "
+                "wg/nvcuda_accel_01 at 3c89cdee in the paper"):
+            self.assertIn(expected, text)
+
+    def test_smoke_evidence_needs_no_cpu_pinning_and_carries_no_paper_notes(self):
+        self.platform["profile"] = "smoke"
+        self.transcript = SMOKE_LOG
+        self.conditions = {"command": self.command("smoke")}
+        failed, lines = self.grade()
+        self.assertFalse(failed, "\n".join(lines))
+        self.assertEqual([line[:4] for line in lines], ["PASS"] * 10)
+        self.assertIn("PASS  S1.2 smoke ran on the intended device: aarch64, NVIDIA GB10, 12.1, GPU-spark, driver "
+                      "580.178.04", lines)
+        self.assertIn("PASS  S1.2 smoke GPU decodes: 20/20 CRC passes", lines)
+        # A paper run without the paper's CPU set is refused. The smoke command has no taskset.
+        self.platform["profile"] = "paper"
+        self.transcript = PAPER_LOG
+        failed, lines = self.grade()
+        self.assertTrue(failed)
+        self.assertEqual([line.split(":")[0] for line in lines if line.startswith("FAIL")],
+                         ["FAIL  S1.2 paper ran on the intended device"])
+
+    def test_each_damaged_record_fails_its_own_gate(self):
+        def receipt(**changes):
+            return lambda: self.receipt.update(changes)
+
+        def row(item, **changes):
+            return lambda: next(r for r in self.report["reference"] if r["item"] == item).update(changes)
+
+        def words(old, new):
+            return lambda: self.conditions.update(command=[new if word == old else word
+                                                           for word in self.conditions["command"]])
+
+        def log(old, new):
+            return lambda: setattr(self, "transcript", PAPER_LOG.replace(old, new))
+
+        damages = [
+            (lambda: setattr(self, "status", "stage=verify\nexit_code=1\n"), "run completed"),
+            (lambda: setattr(self, "status", "stage=run\nexit_code=1\n"), "run completed"),
+            (receipt(target="baseline"), "measured the full Spark Release build"),
+            (receipt(machine="local"), "measured the full Spark Release build"),
+            (receipt(commit="0" * 40), "measured the full Spark Release build"),
+            (receipt(binary_sha256="0" * 64), "measured the full Spark Release build"),
+            (lambda: self.receipt["targets"]["pusch_e2e_pipeline_test"].update(cuda_device_code=False),
+             "measured the full Spark Release build"),
+            (words("CUDA_VISIBLE_DEVICES=GPU-spark", "CUDA_VISIBLE_DEVICES=GPU-other"), "ran on the intended device"),
+            (words("5-9,15-19", "0-4"), "ran on the intended device"),
+            (row("gpu", observed="NVIDIA RTX 5000 Ada Generation", verdict="differs"), "ran on the intended device"),
+            (log("54296 bits (6787 bytes)", "54240 bits (6780 bytes)"), "workload is the Table II"),
+            (log("CPU: 200/200 pass (0.0% BLER)", "CPU: 199/200 pass (0.5% BLER)"), "CPU decodes"),
+            (log("GPU: 200/200 pass (0.0% BLER)", "GPU: 0/200 pass (100.0% BLER)"), "GPU decodes"),
+            (log("Byte mismatches: 0", "Byte mismatches: 1"), "decoded bytes agree"),
+            (log("Output guard failures: 0", "Output guard failures: 1"), "decoded bytes agree"),
+            (log("resident GPU timing: 200/200", "resident GPU timing: 0/200"), "CUDA work completed on the device"),
+            (log("GPU total:          256.0    264.9    274.0", "GPU total:          256.0      nan    274.0"),
+             "service times measured"),
+            (log("PASS: Both paths decoded all 200 iterations", "PASS: Both paths agree on BLER"),
+             "native test verdict"),
+        ]
+        originals = (copy.deepcopy(self.receipt), copy.deepcopy(self.report), self.status,
+                     copy.deepcopy(self.conditions))
+        for index, (damage, gate) in enumerate(damages):
+            damage()
+            failed, lines = self.grade()
+            with self.subTest(index=index, gate=gate):
+                self.assertTrue(failed)
+                failures = [line for line in lines if line.startswith("FAIL")]
+                self.assertEqual(len(failures), 1, failures)
+                self.assertTrue(failures[0].startswith(f"FAIL  S1.2 paper {gate}"), failures[0])
+                self.assertIn("NOTE  S1.2 paper comparison with Table II withheld: a gate above failed", lines)
+            self.receipt, self.report, self.status = (copy.deepcopy(originals[0]), copy.deepcopy(originals[1]),
+                                                      originals[2])
+            self.conditions, self.transcript = copy.deepcopy(originals[3]), PAPER_LOG
+        self.assertFalse(self.grade()[0])
+
+    def test_missing_records_and_build_evidence_fail_closed(self):
+        for name in ("status.txt", "native-build.json", "reference-environment.json", "platform.json",
+                     "measurement-conditions.json", "pusch.log"):
+            self.grade()
+            (self.evidence / name).rename(self.evidence / "moved")
+            with self.subTest(missing=name):
+                failed, lines = native_ocudu.grade_run(self.evidence, pin=self.PIN)
+                self.assertTrue(failed)
+                self.assertEqual(len(lines), 1)
+                self.assertRegex(lines[0], r"^FAIL  S1\.2( paper)? run evidence is incomplete")
+            (self.evidence / "moved").rename(self.evidence / name)
+        self.assertFalse(self.grade()[0])
+        # The evidence of a build is not the evidence of a run.
+        self.platform["profile"] = "spark"
+        self.assertEqual(self.grade()[1], [f"FAIL  S1.2 run evidence is incomplete in {self.evidence}: KeyError('spark')"])
+        self.assertTrue(native_ocudu.grade_run(self.root / "absent", pin=self.PIN)[0])
+
+    def test_recorded_conditions_become_notes(self):
+        self.conditions.update(gpu_clients=native_ocudu.gpu_processes(NVIDIA_SMI), gpu_utilization_percent=3,
+                               modem_processes=[{"pid": "812", "name": "gnb"}], drm_kms_polling="Y")
+        self.report = reference_report("spark", spark_facts(
+            governors={f"policy{cpu}": "performance" for cpu in (0, 5, 10, 15)}), "neoverse-v2")
+        failed, lines = self.grade()
+        text = "\n".join(lines)
+        self.assertFalse(failed, text)
+        for expected in ("GPU clients at the start: Xorg (G, 155 MiB), gnome-shell (G, 120 MiB), python3 (C, 2048 MiB); "
+                         "GPU utilization 3 percent",
+                         "compute workload on the GPU at the start: python3 (pid 41877)",
+                         "modem process running at the start: gnb (pid 812)",
+                         "DRM KMS polling: on here",
+                         "NOTE  matches the reference: CPU cores (Cortex-A725, Cortex-X925), high-capacity CPU set "
+                         "(5-9,15-19), CPU frequency governor (performance)"):
+            self.assertIn(expected, text)
+        self.assertNotIn("CPU frequency governor: ", text)
+
+
 class CommandLineTest(unittest.TestCase):
     def run_main(self, *arguments):
         output, errors = io.StringIO(), io.StringIO()
@@ -965,8 +1251,14 @@ class CommandLineTest(unittest.TestCase):
             status, output, _ = self.run_main("grade", temp)
             self.assertEqual(status, 1)
             self.assertIn("FAIL  S1.1 build evidence is incomplete", output)
+            status, output, _ = self.run_main("grade-run", temp)
+            self.assertEqual(status, 1)
+            self.assertIn("FAIL  S1.2 run evidence is incomplete", output)
         with patch.object(native_ocudu, "grade", return_value=(False, ["PASS  S1.1 example", "NOTE  example"])):
             self.assertEqual(self.run_main("grade", "anywhere"), (0, "PASS  S1.1 example\nNOTE  example\n", ""))
+        with patch.object(native_ocudu, "grade_run", return_value=(True, ["FAIL  S1.2 paper example"])):
+            self.assertEqual(self.run_main("grade-run", "anywhere"), (1, "FAIL  S1.2 paper example\n", ""))
+        self.assertEqual(self.run_main("grade-run")[0], 2)
 
 
 if __name__ == "__main__":

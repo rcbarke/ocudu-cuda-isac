@@ -1,6 +1,6 @@
 # Reproduce a run
 
-Start in the local `isac` environment. `make check`, `make smoke` and `make pins` are portable. S0 also ships the source/environment verifier; S1 ships `make native-build` and `make paper-baseline` for the enabled host. See [environment setup](ENVIRONMENT.md) and [native acquisition](NATIVE_BASELINE.md). The native commands whose implementation is assigned to later sprints must be added to the run manifest and runbook when implemented. Store each acquisition as a new run under `results/runs/<run-id>/`; failed acquisitions are useful evidence.
+Start in the local `isac` environment. `make check`, `make smoke` and `make pins` are portable. S0 also ships the source/environment verifier; S1 ships the gates `make accept-s1.1` and `make accept-s1.2` for the enabled host, with `make native-build` and `make paper-baseline` as their single steps. See [environment setup](ENVIRONMENT.md) and [native acquisition](NATIVE_BASELINE.md). The native commands whose implementation is assigned to later sprints must be added to the run manifest and runbook when implemented. Store each acquisition as a new run under `results/runs/<run-id>/`; failed acquisitions are useful evidence.
 
 | File in a hardware run | Required contents |
 |---|---|
