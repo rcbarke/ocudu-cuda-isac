@@ -49,7 +49,7 @@ Two earlier runs on the same host, `s11-spark-ecf8-20261120T002657Z` and `s11-sp
 
 ### Sprint 1.2 acceptance
 
-`make accept-s1.2` ran every Sprint 1.2 gate on the same Spark at commit `ea7bb43` and ended with `Sprint 1.2: ACCEPTED on this DGX Spark.` and `Sprint 1: ACCEPTED on this DGX Spark`. The run ID is `s12-spark-ecf8-20261120T144154Z`. All 27 gate lines passed. The gate measured the executables that Sprint 1.1 accepted, with nothing rebuilt in between.
+`make accept-s1.2` ran every Sprint 1.2 gate on the same Spark at commit `e770a28` (recorded by the run as `ea7bb43` before a message-only history rewrite, same tree) and ended with `Sprint 1.2: ACCEPTED on this DGX Spark.` and `Sprint 1: ACCEPTED on this DGX Spark`. The run ID is `s12-spark-ecf8-20261120T144154Z`. All 27 gate lines passed. The gate measured the executables that Sprint 1.1 accepted, with nothing rebuilt in between.
 
 | Gate | Result | What it showed |
 |---|---|---|
