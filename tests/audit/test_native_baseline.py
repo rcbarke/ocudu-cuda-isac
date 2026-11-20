@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shlex
 import struct
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -32,6 +33,21 @@ GPU total: 200.0 250.0 400.0
 Speedup:                  0.80x
 PASS: Both paths decoded all 200 iterations, 0 byte mismatches
 """
+# What CMake printed on the Spark when libgtest-dev was absent. The shell forced terminal colors.
+CONFIGURE_WITHOUT_GTEST = """-- Found FFTW3F: /usr/lib/aarch64-linux-gnu/libfftw3f.so
+-- Could NOT find ARMPL (missing: ARMPL_LIBRARIES ARMPL_INCLUDE_DIRS)
+\x1b[31mCMake Error at /usr/share/cmake-3.28/Modules/FindPackageHandleStandardArgs.cmake:230 (message):
+  Could NOT find GTest (missing: GTEST_LIBRARY GTEST_INCLUDE_DIR
+  GTEST_MAIN_LIBRARY)
+Call Stack (most recent call first):
+  /usr/share/cmake-3.28/Modules/FindPackageHandleStandardArgs.cmake:600 (_FPHSA_FAILURE_MESSAGE)
+  /usr/share/cmake-3.28/Modules/FindGTest.cmake:270 (FIND_PACKAGE_HANDLE_STANDARD_ARGS)
+  CMakeLists.txt:468 (find_package)
+
+\x1b[0m
+-- Configuring incomplete, errors occurred!
+"""
+PACKAGES = ("libgtest-dev", "libyaml-cpp-dev", "libsctp-dev", "libmbedtls-dev")
 SPARK_GPU = {"uuid": "GPU-spark", "name": "NVIDIA GB10", "compute_capability": "12.1", "driver": "580.178.04"}
 LOCK_ENTRY = {"name": "ocudu", "commit": "27e84cb3da65205b55dbd56ace6fac93a035331e", "source_ref": "nvcuda_accel_02"}
 KERNELS = ("pusch_e2e", "ldpc_decoder_flexible")
@@ -66,6 +82,7 @@ def spark_facts(**changes):
         "cxx": {"command": "c++", "banner": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0", "family": "GCC",
                 "version": "13.3.0", "accepts_mcpu": True},
         "cmake": "3.28.3", "gpu": dict(SPARK_GPU),
+        "host_packages": [{"package": package, "found": True} for package in PACKAGES],
     }
     facts.update(changes)
     return facts
@@ -154,6 +171,7 @@ class FakeBuildCase(unittest.TestCase):
         self.stack.enter_context(patch.object(native_ocudu.subprocess, "check_output",
                                               side_effect=lambda *args, **options: self.codes))
         self.stack.enter_context(patch.object(native_ocudu, "record_command", side_effect=self.record_fake_command))
+        self.stack.enter_context(patch.dict(native_ocudu.os.environ, {"CLICOLOR_FORCE": "1"}))
         self.machine = "aarch64"
         self.stack.enter_context(patch.object(native_ocudu.platform, "machine", side_effect=lambda: self.machine))
         self.commands = []
@@ -198,10 +216,13 @@ class FakeBuildCase(unittest.TestCase):
                         "command": f"/usr/bin/c++ {self.host_flags} -std=gnu++17 -o test.o -c {test}"})
         (self.build / "compile_commands.json").write_text(json.dumps(entries))
 
-    def record_fake_command(self, command, run, filename, env=None):
+    def record_fake_command(self, command, run, filename, env=None, live=False):
         self.commands.append([str(word) for word in command])
+        # CMake's output is shown while it runs. Short identity commands only go to their log.
+        self.assertEqual(live, filename in ("configure.log", "build.log"), filename)
         if filename in ("configure.log", "build.log"):
             self.assertIn(str(self.source.parent), env["GIT_CEILING_DIRECTORIES"].split(":"))
+            self.assertNotIn("CLICOLOR_FORCE", env)
         if filename == "configure.log":
             self.write_configuration()
         if filename == "build.log":
@@ -394,6 +415,129 @@ class BuildContractTest(FakeBuildCase):
         self.host_flags = "-DENABLE_CUDA -mcpu=neoverse-v2 -O3 -DNDEBUG"
         self.build_full(machine="local", mcpu="neoverse-v2")
         self.assertIn("-DMCPU=neoverse-v2", self.commands[0])
+
+
+class ToolOutputTest(unittest.TestCase):
+    """What a person sees while a tool runs and after it fails."""
+
+    def run_tool(self, script, live):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp, redirect_stdout(output):
+            run = Path(temp)
+            try:
+                native_ocudu.record_command([sys.executable, "-c", script], run, "tool.log", live=live)
+                error = None
+            except native_ocudu.CommandFailed as failure:
+                error = failure
+            return error, (run / "tool.log").read_text(), output.getvalue(), (run / "commands.sh").read_text()
+
+    def test_live_command_prints_while_it_runs_and_both_modes_keep_the_log(self):
+        script = "import sys; print('-- configuring'); sys.stderr.write('CMake Error at top\\n'); sys.exit(3)"
+        error, log, shown, history = self.run_tool(script, live=True)
+        self.assertEqual(log, "-- configuring\nCMake Error at top\n")
+        self.assertIn("-- configuring\nCMake Error at top\n", shown)
+        self.assertEqual((error.status, error.live, error.log.name), (3, True, "tool.log"))
+        self.assertEqual(str(error), f"{Path(sys.executable).name} exited with status 3 (see tool.log)")
+        self.assertIn("-c", history)
+        error, log, shown, _ = self.run_tool(script, live=False)
+        self.assertEqual((log, error.live), ("-- configuring\nCMake Error at top\n", False))
+        self.assertNotIn("-- configuring\nCMake Error at top\n", shown)
+        error, log, shown, _ = self.run_tool("print('done')", live=True)
+        self.assertEqual((error, log), (None, "done\n"))
+        self.assertIn("done\n", shown)
+        error, _, _, _ = self.run_tool("import os, signal; os.kill(os.getpid(), signal.SIGKILL)", live=True)
+        self.assertIn("was stopped by signal 9", str(error))
+
+    def test_output_the_terminal_cannot_encode_does_not_stop_the_build(self):
+        class Terminal(io.StringIO):
+            encoding = "ascii"
+
+        terminal = Terminal()
+        with redirect_stdout(terminal):
+            native_ocudu.show(f"  --rx-device-grid MODE  (auto {chr(0x2014)} managed)\n")
+        self.assertEqual(terminal.getvalue(), "  --rx-device-grid MODE  (auto ? managed)\n")
+
+    def test_excerpt_quotes_cmake_errors_then_build_errors_then_the_end_of_the_log(self):
+        excerpt = native_ocudu.failure_excerpt(CONFIGURE_WITHOUT_GTEST)
+        self.assertEqual(excerpt[0], "CMake Error at /usr/share/cmake-3.28/Modules/"
+                                     "FindPackageHandleStandardArgs.cmake:230 (message):")
+        self.assertEqual(excerpt[1:3], ["  Could NOT find GTest (missing: GTEST_LIBRARY GTEST_INCLUDE_DIR",
+                                        "  GTEST_MAIN_LIBRARY)"])
+        self.assertEqual(excerpt[-1], "  CMakeLists.txt:468 (find_package)")
+        self.assertFalse([line for line in excerpt if "\x1b" in line or "ARMPL" in line or "Configuring" in line])
+        two = "CMake Error at a.cmake:1 (message):\n  first\n\nCMake Error at b.cmake:2 (message):\n  second\n-- done\n"
+        self.assertEqual(native_ocudu.failure_excerpt(two),
+                         ["CMake Error at a.cmake:1 (message):", "  first",
+                          "CMake Error at b.cmake:2 (message):", "  second"])
+        build = ("[ 10%] Building CXX object lib/support/CMakeFiles/ocudu_support.dir/error.cpp.o\n"
+                 "/src/lib/phy/x.cpp:12:5: error: unused variable 'n' [-Werror=unused-variable]\n"
+                 "gmake[2]: *** [lib/phy/CMakeFiles/x.dir/build.make:76: x.cpp.o] Error 1\n"
+                 "[ 11%] Building CXX object lib/phy/y.cpp.o\n"
+                 "/usr/bin/ld: libocudu_ldpc_cuda.a(e.cpp.o): undefined reference to `cuCtxCreate'\n")
+        self.assertEqual(native_ocudu.failure_excerpt(build), [build.splitlines()[index] for index in (1, 2, 4)])
+        plain = "".join(f"line {number}\n" for number in range(50))
+        self.assertEqual(native_ocudu.failure_excerpt(plain, limit=3), ["line 47", "line 48", "line 49"])
+        many = "".join(f"x.cpp:{number}: error: e\n" for number in range(40))
+        self.assertEqual(native_ocudu.failure_excerpt(many, limit=5)[-2:], ["x.cpp:4: error: e", "... (35 more lines)"])
+        self.assertEqual(native_ocudu.failure_excerpt(""), [])
+
+    def test_missing_package_failure_names_every_absent_package_and_the_install_command(self):
+        report = {"facts": {"host_packages": [{"package": "libgtest-dev", "found": False},
+                                              {"package": "libyaml-cpp-dev", "found": False},
+                                              {"package": "libsctp-dev", "found": True},
+                                              {"package": "libmbedtls-dev", "found": None}]}}
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "configure.log"
+            log.write_text(CONFIGURE_WITHOUT_GTEST)
+            error = native_ocudu.CommandFailed(["cmake", "-S", "source"], 1, log, live=True)
+            text = native_ocudu.explain(error, report).splitlines()
+            self.assertEqual(text[0], "cmake exited with status 1 (see configure.log)")
+            self.assertEqual(text[1], "  CMake Error at /usr/share/cmake-3.28/Modules/"
+                                      "FindPackageHandleStandardArgs.cmake:230 (message):")
+            self.assertEqual(text[-4:], [
+                "CMake could not find a required development package: libgtest-dev.",
+                "The same configure requires these next, and the compiler cannot find them either: libyaml-cpp-dev.",
+                "Install with: sudo apt-get install libgtest-dev libyaml-cpp-dev",
+                "Then run the same command again. Nothing needs to be cleaned first."])
+            # On the screen a live command has already printed its error: only the remedy is added.
+            self.assertEqual(native_ocudu.explain(error, report, quote=False).splitlines(), [text[0], *text[-4:]])
+            # Without the probe the package CMake named is still the remedy.
+            self.assertEqual(native_ocudu.explain(error).splitlines()[-2],
+                             "Install with: sudo apt-get install libgtest-dev")
+            for words, package in (("yaml-cpp is required to build ocudu", "libyaml-cpp-dev"),
+                                   ("Could NOT find SCTP (missing: SCTP_LIBRARIES)", "libsctp-dev"),
+                                   ("Could NOT find MbedTLS (missing: MBEDTLS_LIBRARIES)", "libmbedtls-dev")):
+                log.write_text(f"CMake Error at CMakeLists.txt:1 (message):\n  {words}\n")
+                self.assertIn(f"sudo apt-get install {package}", native_ocudu.explain(error, {"facts": {}}))
+            # Any other failure is quoted and gets no package advice, whatever the probe saw.
+            log.write_text("-- Could NOT find libdw (missing: LIBDW_LIBRARY)\n"
+                           "CMake Error at x:1 (message):\n  No CUDA\n")
+            self.assertEqual(native_ocudu.explain(error, report).splitlines(),
+                             [text[0], "  CMake Error at x:1 (message):", "    No CUDA"])
+            log.unlink()
+            self.assertEqual(native_ocudu.explain(error, report), text[0])
+        self.assertEqual(native_ocudu.explain(ValueError("Missing host tool: nvcc."), report), "Missing host tool: nvcc.")
+
+    def test_package_probe_asks_the_compiler_and_reports_unknown_without_one(self):
+        present = {"gtest/gtest.h", "netinet/sctp.h", "mbedtls/md.h"}
+        libraries = {"libgtest.a", "libsctp.so"}
+
+        def compiler(command):
+            if "-include" in command:
+                return "" if command[command.index("-include") + 1] in present else None
+            name = command[-1].split("=", 1)[1] if command[-1].startswith("-print-file-name=") else None
+            if name:
+                return f"/usr/lib/aarch64-linux-gnu/{name}\n" if name in libraries else name + "\n"
+            return ""
+
+        with patch.object(native_ocudu, "tool_output", side_effect=compiler):
+            found = {item["package"]: item["found"] for item in native_ocudu.host_packages(["c++"])}
+        # A header without its library, or neither, counts as absent.
+        self.assertEqual(found, {"libgtest-dev": True, "libyaml-cpp-dev": False, "libsctp-dev": True,
+                                 "libmbedtls-dev": False})
+        with patch.object(native_ocudu, "tool_output", return_value=None):
+            self.assertEqual([item["found"] for item in native_ocudu.host_packages(["c++"])], [None] * 4)
+        self.assertEqual([entry[0] for entry in native_ocudu.HOST_PACKAGES], list(PACKAGES))
 
 
 class ReferenceEnvironmentTest(unittest.TestCase):
@@ -742,6 +886,50 @@ class CommandLineTest(unittest.TestCase):
             self.assertEqual((status, build.call_count, checked.call_count), (0, 1, 1), errors)
             self.assertEqual(measured.call_args.args[:2], ("paper", root / "build/ocudu-spark"))
             self.assertTrue((root / "evidence/paper/reference-environment.json").is_file())
+
+    def test_failed_configure_leaves_the_cmake_error_and_the_remedy_in_the_evidence(self):
+        absent = [{"package": package, "found": package not in ("libgtest-dev", "libyaml-cpp-dev")}
+                  for package in PACKAGES]
+
+        def configure(args, build, run, gpu, pin, target, stage):
+            stage["stage"] = "configure"
+            (run / "configure.log").write_text(CONFIGURE_WITHOUT_GTEST)
+            raise native_ocudu.CommandFailed(["cmake", "-S", "source"], 1, run / "configure.log", live=True)
+
+        with tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+            root = Path(temp).resolve()
+            (root / "isac").mkdir()
+            (root / "ext").mkdir()
+            (root / "ext/lock.json").write_text(json.dumps({"dependencies": [dict(LOCK_ENTRY, path="ext/ocudu")]}))
+            for target, name, value in ((native_ocudu, "ROOT", root), (native_ocudu.sys, "prefix", str(root / "isac"))):
+                stack.enter_context(patch.object(target, name, value))
+            stack.enter_context(patch.object(native_ocudu.shutil, "which", return_value="/usr/bin/tool"))
+            stack.enter_context(patch.object(native_ocudu, "selected_gpu", return_value=dict(SPARK_GPU)))
+            stack.enter_context(patch.object(native_ocudu, "host_facts", side_effect=lambda device, mcpu: spark_facts(
+                gpu=device, host_packages=absent)))
+            stack.enter_context(patch.object(native_ocudu.platform, "machine", return_value="aarch64"))
+            stack.enter_context(patch.object(native_ocudu, "record_command"))
+            stack.enter_context(patch.object(native_ocudu, "native_build", side_effect=configure))
+            status, output, errors = self.run_main("build", "--run-dir", "evidence/no-gtest")
+            run = root / "evidence/no-gtest"
+            self.assertEqual(status, 1)
+            # Advice before CMake runs, without stopping it: CMake searches more places than the compiler.
+            self.assertIn("The compiler cannot find these packages, which the configure requires: libgtest-dev, "
+                          "libyaml-cpp-dev. CMake decides. If it stops, run: sudo apt-get install libgtest-dev "
+                          "libyaml-cpp-dev", output)
+            self.assertEqual((run / "status.txt").read_text(), "stage=configure\nexit_code=1\n")
+            record = (run / "error.txt").read_text().splitlines()
+            self.assertEqual(record[0], "cmake exited with status 1 (see configure.log)")
+            self.assertIn("    Could NOT find GTest (missing: GTEST_LIBRARY GTEST_INCLUDE_DIR", record)
+            self.assertEqual(record[-2], "Install with: sudo apt-get install libgtest-dev libyaml-cpp-dev")
+            # The screen already showed CMake's own error while it ran. Only the verdict and remedy follow.
+            self.assertEqual(errors.splitlines()[:2], [
+                "configure: cmake exited with status 1 (see configure.log)",
+                "CMake could not find a required development package: libgtest-dev."])
+            self.assertNotIn("Could NOT find GTest", errors)
+            self.assertEqual(errors.splitlines()[-1], f"See {run}")
+            self.assertEqual(json.loads((run / "reference-environment.json").read_text())["facts"]["host_packages"],
+                             absent)
 
     def test_grade_command_prints_the_lines_and_fails_on_missing_evidence(self):
         with tempfile.TemporaryDirectory() as temp:

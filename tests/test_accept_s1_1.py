@@ -22,13 +22,23 @@ case "$*" in
     *"-m unittest discover"*) printf '%s\\n' "$FAKE_UNIT" >&2; exit "${{FAKE_UNIT_STATUS:-0}}" ;;
     *"native_ocudu.py build --run-dir "*)
         [ -z "${{FAKE_LEAVE:-}}" ] || echo "written by the build" > "$FAKE_SOURCE/$FAKE_LEAVE"
+        echo "Run artifacts: $4"
+        echo "-- The CXX compiler identification is GNU 13.3.0"
         if [ -z "${{FAKE_NO_EVIDENCE:-}}" ]; then
             mkdir -p "$4"
-            [ "${{FAKE_BUILD:-0}}" = 0 ] || echo "configure: synthetic compiler failure" > "$4/error.txt"
+            if [ "${{FAKE_BUILD:-0}}" != 0 ]; then
+                echo "CMake Error at CMakeLists.txt:468 (find_package):" >&2
+                printf 'stage=configure\nexit_code=1\n' > "$4/status.txt"
+                printf '%s\n' "cmake exited with status 1 (see configure.log)" \
+                    "  CMake Error at CMakeLists.txt:468 (find_package):" "    Could NOT find GTest" \
+                    "Install with: sudo apt-get install libgtest-dev" > "$4/error.txt"
+            fi
         fi
-        echo "Run artifacts: $4"; exit "${{FAKE_BUILD:-0}}" ;;
+        exit "${{FAKE_BUILD:-0}}" ;;
     *"native_ocudu.py grade "*) printf '%s\\n' "$FAKE_GRADE"; exit "${{FAKE_GRADE_STATUS:-0}}" ;;
-    *"--profile core --with-native"*) exit "${{FAKE_NATIVE:-0}}" ;;
+    *"--profile core --with-native"*)
+        [ "${{FAKE_NATIVE:-0}}" = 0 ] || echo "ValueError: Native binaries differ from the locked full-build receipt" >&2
+        exit "${{FAKE_NATIVE:-0}}" ;;
     *"--backend cpu --with-native"*) exit "${{FAKE_CPU:-0}}" ;;
     *"--backend cuda --with-native"*) exit "${{FAKE_CUDA:-0}}" ;;
     *"check_pins.py --worktrees --only ocudu") echo "ext/ocudu 27e84cb3 (Git worktree)"; exit "${{FAKE_PINS:-0}}" ;;
@@ -101,7 +111,17 @@ class SprintOneBuildGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("FAIL", result.stdout)
         self.assertIn("Sprint 1.1: ACCEPTED on this DGX Spark. Next gate: make paper-baseline (S1.2).", result.stdout)
-        self.assertEqual((self.run_dir / "summary.txt").read_text(), result.stdout)
+        summary = (self.run_dir / "summary.txt").read_text()
+        shown = result.stdout.splitlines()
+        self.assertEqual([line for line in shown if line in summary.splitlines()], summary.splitlines())
+        # Everything the builder and CMake print is shown while it runs and kept in its own log.
+        live = [f"Run artifacts: {self.run_dir / 'native-build'}", "-- The CXX compiler identification is GNU 13.3.0"]
+        self.assertEqual([line for line in shown if line not in summary.splitlines()], live)
+        self.assertEqual((self.run_dir / "native-build.log").read_text().splitlines(), live)
+        self.assertLess(shown.index("Building the locked OCUDU Release. CMake output follows. A first build "
+                                    "takes a while."), shown.index(live[0]))
+        self.assertLess(shown.index(live[1]), shown.index(
+            "PASS  S1.1 native build command (native-build.log, evidence in native-build/)"))
         for line in ("spark profile", "PASS  unit tests (96 ran, 0 skipped)",
                      "PASS  S1.1 native build command (native-build.log, evidence in native-build/)",
                      *GRADE.splitlines(),
@@ -152,10 +172,6 @@ class SprintOneBuildGateTests(unittest.TestCase):
     def test_any_failed_gate_rejects_the_host_and_the_rest_still_run(self):
         failing_grade = GRADE.replace("PASS  S1.1 CUDA", "FAIL  S1.1 CUDA")
         cases = (
-            ({"build": 1}, "FAIL  S1.1 native build command (see native-build.log and native-build/): "
-                           "configure: synthetic compiler failure"),
-            ({"build": 2, "no_evidence": 1}, "FAIL  S1.1 native build command (see native-build.log and "
-                                             "native-build/): no evidence written"),
             ({"grade": failing_grade, "grade_status": 1}, "FAIL  S1.1 CUDA compilation: 18 kernel sources"),
             ({"grade": "Traceback (most recent call last):", "grade_status": 1},
              "FAIL  S1.1 build evidence could not be graded (see native-grade.txt)"),
@@ -167,7 +183,17 @@ class SprintOneBuildGateTests(unittest.TestCase):
             ({"banner": "srsRAN 5G gNB version 24.10"}, "FAIL  S1.1 gnb --version from the environment"),
             ({"help": 1}, "FAIL  S1.1 pusch_e2e_pipeline_test --help (see pusch-help.txt)"),
             ({"no_resident": 1}, "FAIL  S1.1 pusch_e2e_pipeline_test --help (see pusch-help.txt)"),
-            ({"native": 1}, "FAIL  S1.1 native environment report (native-env.json) (see native-env.log)"),
+            ({"native": 1}, "FAIL  S1.1 native environment report (native-env.json) (see native-env.log)\n"
+                            "      ValueError: Native binaries differ from the locked full-build receipt\n"),
+            ({"unit_status": 1, "unit": "FAIL: test_replay (tests.ReplayTest.test_replay)\nRan 96 tests in 1s\n\n"
+                                        "FAILED (failures=1)"},
+             "FAIL  unit tests (96 ran; see unit-tests.log)\n      FAIL: test_replay (tests.ReplayTest.test_replay)\n"),
+            ({"grade": "Traceback (most recent call last):\nKeyError: 'toolchain'", "grade_status": 1},
+             "FAIL  S1.1 build evidence could not be graded (see native-grade.txt)\n"
+             "      Traceback (most recent call last):\n      KeyError: 'toolchain'\n"),
+            ({"banner": "srsRAN 5G gNB version 24.10"},
+             "FAIL  S1.1 gnb --version from the environment (see gnb-version.txt)\n"
+             "      --== OCUDU gNB (commit 27e84cb3da) ==--\n      srsRAN 5G gNB version 24.10\n"),
             ({"cuda": 1}, "FAIL  S1.1 simulation on cuda and native from one interpreter (collocated-cuda.json)"),
             ({"pins": 1}, "FAIL  S1.1 OCUDU source at the locked revision after the build"),
             ({"path": 1, "source": ""}, "FAIL  S1.1 OCUDU source directory could not be resolved"),
@@ -183,6 +209,41 @@ class SprintOneBuildGateTests(unittest.TestCase):
                 calls = self.calls.read_text()
                 for later in ("native_ocudu.py grade", "--profile core --with-native", "check_pins.py --worktrees"):
                     self.assertIn(later, calls)
+
+    def test_failed_build_shows_the_tool_error_and_skips_the_gates_that_need_a_build(self):
+        result = self.gate("cuda", build=1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        shown = result.stdout.splitlines()
+        # The failing tool's own message is on the screen, where the builder printed it.
+        self.assertIn("CMake Error at CMakeLists.txt:468 (find_package):", shown)
+        failure = ("FAIL  S1.1 native build command stopped in stage configure: "
+                   "cmake exited with status 1 (see configure.log)")
+        skip = ("SKIP  S1.1 evidence grade, isac/bin links, gnb --version, pusch_e2e_pipeline_test --help "
+                "and environment reports: no completed build")
+        self.assertLess(shown.index("CMake Error at CMakeLists.txt:468 (find_package):"), shown.index(failure))
+        self.assertLess(shown.index(failure), shown.index(skip))
+        self.assertIn("Sprint 1.1: NOT ACCEPTED on this host", shown)
+        # The summary holds the failure, the tool's words and the remedy, so it explains itself.
+        summary = (self.run_dir / "summary.txt").read_text().splitlines()
+        position = summary.index(failure)
+        self.assertEqual(summary[position + 1:position + 4],
+                         ["        CMake Error at CMakeLists.txt:468 (find_package):", "          Could NOT find GTest",
+                          "      Install with: sudo apt-get install libgtest-dev"])
+        self.assertIn("CMake Error at CMakeLists.txt:468", (self.run_dir / "native-build.log").read_text())
+        # One failure is reported once: nothing that needs the build ran, the source checks still did.
+        self.assertEqual([line for line in shown if line.startswith("FAIL")], [failure])
+        calls = self.calls.read_text()
+        for skipped in ("native_ocudu.py grade", "--with-native"):
+            self.assertNotIn(skipped, calls)
+        self.assertIn("check_pins.py --worktrees --only ocudu", calls)
+        self.assertIn("PASS  S1.1 OCUDU source at the locked revision after the build (sources-after.txt)", shown)
+        for name in ("native-grade.txt", "native-tools.txt", "gnb-version.txt", "pusch-help.txt", "native-env.log"):
+            self.assertFalse((self.run_dir / name).exists(), name)
+        # A builder that dies before it writes anything is still one clear failure.
+        result = self.gate(run_dir=self.root.parent / "silent", build=2, no_evidence=1)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL  S1.1 native build command stopped in stage unknown: no evidence written", result.stdout)
+        self.assertIn(skip, result.stdout)
 
     def test_native_tools_must_be_the_links_published_inside_the_environment(self):
         gnb = self.bin / "gnb"

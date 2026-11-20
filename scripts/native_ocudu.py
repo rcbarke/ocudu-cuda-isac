@@ -61,6 +61,27 @@ REFERENCE = {
 PLATFORM_ROWS = ("machine", "gpu", "compute_capability")
 MEASUREMENT_ROWS = ("benchmark_cpus", "cpu_governor")  # conditions of the S1.2 timing run
 BUILD_ENVIRONMENT = ("CC", "CXX", "CUDACXX", "CUDAHOSTCXX", "CFLAGS", "CXXFLAGS", "CUDAFLAGS", "LDFLAGS")
+# Development packages the pinned configure requires for this recipe: the Ubuntu package, the text
+# CMake prints when it is absent, and the header and library CMake looks for. GTest and yaml-cpp are
+# required by the top CMakeLists.txt (GTest because BUILD_TESTING is on), SCTP by lib/gateways and
+# mbedTLS by lib/security.
+HOST_PACKAGES = (
+    ("libgtest-dev", r"Could NOT find GTest\b", "gtest/gtest.h", "gtest"),
+    ("libyaml-cpp-dev", r"yaml-cpp is required|Could NOT find (YAMLCPP|yaml-cpp)\b", "yaml-cpp/yaml.h", "yaml-cpp"),
+    ("libsctp-dev", r"Could NOT find SCTP\b", "netinet/sctp.h", "sctp"),
+    ("libmbedtls-dev", r"Could NOT find MbedTLS\b", "mbedtls/md.h", "mbedcrypto"),
+)
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # terminal colors that a tool forced into its output
+BUILD_ERROR = re.compile(r"error:|undefined reference|nvcc fatal|\*\*\* |^FAILED: ")
+
+
+class CommandFailed(ValueError):
+    """A recorded host command ended with a failure status. Its log holds the tool's own message."""
+
+    def __init__(self, args, status, log, live=False):
+        self.status, self.log, self.live = status, log, live
+        ending = f"was stopped by signal {-status}" if status < 0 else f"exited with status {status}"
+        super().__init__(f"{Path(str(args[0])).name} {ending} (see {log.name})")
 
 
 def digest(path):
@@ -80,13 +101,76 @@ def read_log(path):
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def record_command(args, run_dir, log_name, *, env=None):
+def show(text):
+    """Print tool output. A character the terminal cannot encode must not stop a build."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    sys.stdout.write(text.encode(encoding, "replace").decode(encoding))
+    sys.stdout.flush()
+
+
+def record_command(args, run_dir, log_name, *, env=None, live=False):
+    """Run one host command with its output kept in a log. A live command also prints while it runs."""
     command = shlex.join([str(arg) for arg in args])
     with (run_dir / "commands.sh").open("a") as history:
         history.write(command + "\n")
     print(f"{command}\n  log: {run_dir / log_name}", flush=True)
-    with (run_dir / log_name).open("w") as log:
-        subprocess.run(args, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, cwd=ROOT)
+    path = run_dir / log_name
+    with path.open("wb") as log:
+        if live:
+            process = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=ROOT)
+            with process.stdout:
+                for line in process.stdout:
+                    log.write(line)
+                    log.flush()
+                    show(line.decode("utf-8", "replace"))
+            status = process.wait()
+        else:
+            status = subprocess.run(args, env=env, stdout=log, stderr=subprocess.STDOUT, check=False,
+                                    cwd=ROOT).returncode
+    if status:
+        raise CommandFailed(args, status, path, live)
+
+
+def failure_excerpt(text, limit=30):
+    """Lines of a failed tool log that name the failure: CMake errors, else compile and link errors, else its end."""
+    lines = [ANSI_ESCAPE.sub("", line).rstrip() for line in text.splitlines()]
+    chosen = []
+    for start, first in enumerate(lines):
+        if not first.startswith("CMake Error"):
+            continue
+        block = [first]
+        for line in lines[start + 1:]:
+            if line.startswith(("-- ", "CMake Error", "CMake Warning")):
+                break
+            block.append(line)
+        while block and not block[-1]:
+            block.pop()
+        chosen += block
+    if not chosen:
+        chosen = [line for line in lines if BUILD_ERROR.search(line)] or [line for line in lines if line][-limit:]
+    return chosen[:limit] + ([f"... ({len(chosen) - limit} more lines)"] if len(chosen) > limit else [])
+
+
+def explain(error, report=None, quote=True):
+    """What failed, the failing tool's own words (quote) and, for a missing package, the remedy."""
+    lines = [str(error)]
+    if not isinstance(error, CommandFailed):
+        return lines[0]
+    excerpt = failure_excerpt(read_log(error.log)) if error.log.is_file() else []
+    if quote:
+        lines += ["  " + line for line in excerpt]
+    words = "\n".join(excerpt)
+    named = [package for package, pattern, _, _ in HOST_PACKAGES if re.search(pattern, words)]
+    if named:
+        probed = (report or {}).get("facts", {}).get("host_packages") or []
+        later = [item["package"] for item in probed if item["found"] is False and item["package"] not in named]
+        lines.append("CMake could not find a required development package: " + ", ".join(named) + ".")
+        if later:
+            lines.append("The same configure requires these next, and the compiler cannot find them either: "
+                         + ", ".join(later) + ".")
+        lines.append("Install with: sudo apt-get install " + " ".join(named + later))
+        lines.append("Then run the same command again. Nothing needs to be cleaned first.")
+    return "\n".join(lines)
 
 
 def tool_output(command):
@@ -199,6 +283,25 @@ def high_capacity_cpus(topology):
     return [], None
 
 
+def host_packages(cxx):
+    """Ask the compiler whether it can see each development package the configure requires.
+
+    The answer is advice for a failed configure and never stops a build: CMake also searches
+    prefixes the compiler does not. None means the compiler could not be asked.
+    """
+    usable = tool_output([*cxx, "-x", "c++", "-E", os.devnull, "-o", os.devnull]) is not None
+    packages = []
+    for package, _, header, library in HOST_PACKAGES:
+        found = None
+        if usable:
+            seen = tool_output([*cxx, "-x", "c++", "-E", "-include", header, os.devnull, "-o", os.devnull])
+            names = [(tool_output([*cxx, f"-print-file-name=lib{library}{suffix}"]) or "").strip()
+                     for suffix in (".so", ".a")]
+            found = seen is not None and any(os.path.isabs(name) for name in names)
+        packages.append({"package": package, "header": header, "library": library, "found": found})
+    return packages
+
+
 def host_facts(gpu, mcpu):
     """Observe what the reference comparison and the build need. A missing fact is None, not an error."""
     topology = cpu_topology()
@@ -237,6 +340,7 @@ def host_facts(gpu, mcpu):
         "cxx": {"command": shlex.join(cxx), "banner": first, "family": family,
                 "version": versions[-1] if versions else None, "accepts_mcpu": accepts},
         "cmake": cmake[1] if cmake else None,
+        "host_packages": host_packages(cxx),
         "gpu": gpu,
     }
 
@@ -418,10 +522,11 @@ def native_build(args, build, run, gpu, pin, selected_target, stage):
     # An archive has no upstream .git. Keep its version script from reporting
     # the enclosing research repository's HEAD as OCUDU's revision.
     cmake_env = os.environ.copy()
+    cmake_env.pop("CLICOLOR_FORCE", None)  # keep terminal color codes out of the archived logs
     if not (SOURCE / ".git").exists():
         ceilings = cmake_env.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep)
         cmake_env["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(filter(None, [str(SOURCE.parent), *ceilings]))
-    record_command(["cmake", "-S", SOURCE, "-B", build, *options], run, "configure.log", env=cmake_env)
+    record_command(["cmake", "-S", SOURCE, "-B", build, *options], run, "configure.log", env=cmake_env, live=True)
     expected = {"CMAKE_HOME_DIRECTORY": str(SOURCE), "CMAKE_BUILD_TYPE": "Release",
                 "BUILD_TESTING": "ON", "ENABLE_CUDA": "ON", "CMAKE_CUDA_ARCHITECTURES": arch,
                 "CUDA_ACCEL_FOUND": "TRUE"}
@@ -438,7 +543,7 @@ def native_build(args, build, run, gpu, pin, selected_target, stage):
     command = ["cmake", "--build", build, f"-j{args.jobs}"]
     if selected_target == "baseline":
         command += ["--target", TEST.name]
-    record_command(command, run, "build.log", env=cmake_env)
+    record_command(command, run, "build.log", env=cmake_env, live=True)
     stage["stage"] = "inspect"
     # The build may regenerate its build system. The receipt names the cache as the build left it.
     values = archived_cache(build, run, expected)
@@ -664,6 +769,7 @@ def main(argv=None):
     print(f"Run artifacts: {run}", flush=True)
     stage = {"stage": "preflight"}
     status = 1
+    report = None
     try:
         if Path(sys.prefix).resolve() != ROOT / "isac" or sys.prefix == sys.base_prefix:
             raise ValueError("Activate the project environment with 'source isac/bin/activate'.")
@@ -693,6 +799,10 @@ def main(argv=None):
                    overrides={k: v for k, v in os.environ.items()
                               if k in BUILD_ENVIRONMENT or k.startswith(("OCUDU_", "CUDA_", "CMAKE_"))}))
         require_profile(report)
+        absent = [item["package"] for item in report["facts"].get("host_packages") or [] if item["found"] is False]
+        if absent:
+            print("The compiler cannot find these packages, which the configure requires: " + ", ".join(absent)
+                  + ". CMake decides. If it stops, run: sudo apt-get install " + " ".join(absent), flush=True)
         stage["stage"] = "source"
         record_command([sys.executable, ROOT / "scripts/check_pins.py", "--worktrees", "--only", "ocudu"], run, "pins.txt")
         pin = locked_source("ocudu")["commit"]
@@ -711,8 +821,10 @@ def main(argv=None):
         status = 0
         return 0
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        (run / "error.txt").write_text(str(error) + "\n")
-        print(f"{stage['stage']}: {error}. See {run}", file=sys.stderr)
+        (run / "error.txt").write_text(explain(error, report) + "\n")
+        # A live command has just printed its own error. Do not repeat it on the screen.
+        message = explain(error, report, quote=not getattr(error, "live", False))
+        print(f"{stage['stage']}: {message}\nSee {run}", file=sys.stderr)
         return 1
     finally:
         (run / "status.txt").write_text(f"stage={stage['stage']}\nexit_code={status}\n")
