@@ -1,4 +1,6 @@
-# ocudu-cuda-isac
+# Lightspeed: An Inline CUDA PHY Ladder for Receiver-Conditioned ISAC from Ray-Traced Channels to Over-the-Air 5G
+
+**Index terms:** OCUDU, Sionna RT, DeepSig, Aerial. **Repository:** `ocudu-cuda-isac`.
 
 Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. The first lab result is a reproducible CPU/GPU PUSCH decode on DGX Spark. The first project demonstration adds a second MPS client that runs a cuSense-like pipeline on that receiver's own channel estimate, with a live KPI page. The publication study compares receiver stages, PHY channels, radar and AI estimators, functional splits, memory paths and three hardware deployments under matched communication load. The same sensing core is then run on Aerial Framework and, over the air, on Aerial-OCUDU.
 
