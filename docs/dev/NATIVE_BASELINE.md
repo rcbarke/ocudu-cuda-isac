@@ -117,7 +117,21 @@ A failed gate prints the last lines of its log under its `FAIL` line, on the scr
 
 **Rehearsal off the Spark, 2026-11-19.** The gate was exercised once on an x86_64 Ubuntu 24.04 container without a GPU, using GCC 13.3.0, CMake 3.28.3, the real `nvcc` 13.5.37 and a stand-in `nvidia-smi` that reports compute capability 12.1. The pinned source configured with the options above. The 24 CUDA sources that the two executables link compiled for `sm_121`, 18 of them the kernel sources of `ocudu_phy_cuda`. `gnb` and `pusch_e2e_pipeline_test` linked with device code, `gnb --version` printed the banner and the test printed its help. `bash scripts/accept_s1_1.sh --machine local` then passed every gate on that build, also on a repeat run. The rehearsal built only those two executables and not the rest of the default target. It executed no CUDA kernel, compiled nothing for AArch64 and never took the Spark profile. It checks the tooling. The Spark run alone closes I1-build.
 
-**First Spark run, 2026-11-20.** Run `s11-spark-ecf8-20261120T002657Z` passed the platform and toolchain preflight (aarch64, NVIDIA GB10, 12.1, `sm_121`, CMake 3.28.3, GCC 13.3.0 accepting `-mcpu=neoverse-v2`) and recorded the paper's CPU layout and governor: `cpu_capacity` marks CPUs 5-9 and 15-19 as the large cores and every policy runs `performance`. It stopped in the configure step with `Could NOT find GTest`, because `libgtest-dev` was not installed. The same failure was then reproduced off the Spark by hiding GTest and yaml-cpp, which produced the error text and install command described under Recovery, and the failed build directory configured cleanly once the packages were back.
+**Accepted Spark run, 2026-11-20 (UTC).** Run `s11-spark-ecf8-20261120T011024Z` closed I1-build. Its `summary.txt` names the commit. `make accept-s1.1 BACKENDS="cpu cuda"` passed all 20 gates on `spark-ecf8` and ended with `Sprint 1.1: ACCEPTED on this DGX Spark.` The grade lines of that run read as follows.
+
+| Gate | Line in `summary.txt` |
+|---|---|
+| Source identity | `27e84cb3da65205b55dbd56ace6fac93a035331e (git)` |
+| gNB version banner | `OCUDU 5G gNB version 26.04.0 (27e84cb3da)` |
+| Reference platform | `aarch64, NVIDIA GB10, 12.1` |
+| Toolchain requirements | `nvcc emits sm_121; CMake 3.18 or newer; c++ accepts -mcpu=neoverse-v2` |
+| Build configuration | `CMAKE_BUILD_TYPE=Release, ENABLE_CUDA=ON, CUDA_ACCEL_FOUND=TRUE, BUILD_TESTING=ON, CMAKE_CUDA_ARCHITECTURES=121, MCPU=neoverse-v2` |
+| CUDA compilation | `18 kernel sources of 30 CUDA sources for sm_121 by nvcc 13.5.37, host compiler GNU 13.3.0, device code linked into pusch_e2e_pipeline_test and gnb` |
+| Compiled targets and hashes | `gnb 0815f3a2dfdc, libocudu_phy_cuda.a 4b4a39e38a9c, pusch_e2e_pipeline_test e49b2b81e28a` |
+
+The run also passed the committed tree, the unit suite, the source checks before and after the build, the `isac/bin` links, `gnb --version`, the PUSCH test help, the native environment report and the collocated simulation reports on `cpu` and `cuda`. Its `NOTE` lines record that CPU cores, the high-capacity CPU set 5-9,15-19, the `performance` governor, GCC 13.3.0 and Ubuntu 24.04 match the reference. They record three differences: CUDA toolkit 13.5.37 against 13.0.88, GPU driver 580.178.04 against 580.95.05, and OCUDU `nvcuda_accel_02` at `27e84cb3` against `wg/nvcuda_accel_01` at `3c89cdee`. No S1.2 measurement condition was flagged. Hand this run directory, `build/ocudu-spark` and the source identity to S1.2.
+
+**Earlier attempts on the same host.** Runs `s11-spark-ecf8-20261120T002657Z` and `s11-spark-ecf8-20261120T004837Z` passed the platform and toolchain preflight (aarch64, NVIDIA GB10, 12.1, `sm_121`, CMake 3.28.3, GCC 13.3.0 accepting `-mcpu=neoverse-v2`) and recorded the paper's CPU layout and governor: `cpu_capacity` marks CPUs 5-9 and 15-19 as the large cores and every policy runs `performance`. Both stopped in the configure step with `Could NOT find GTest`. `libgtest-dev`, `libyaml-cpp-dev`, `libsctp-dev` and `libmbedtls-dev` were not installed. The same failure was reproduced off the Spark by hiding GTest and yaml-cpp, which produced the error text and install command described under Recovery, and the failed build directory configured cleanly once the packages were back. The builder then gained the prerequisite installer described under Entry, and the four libraries were installed before the accepted run.
 
 ## S1.2 · Reproduce the 20 MHz PUSCH correctness row
 
