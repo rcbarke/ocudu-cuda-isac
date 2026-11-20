@@ -6,7 +6,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-19, **Sprint 0 (install and verify) is accepted on one DGX Spark. Sprint 1 (native build and the DeepSig Table II row) has not started.** S2 to S9 are specified and not yet implemented.
+As of 2026-11-19, **Sprint 0 (install and verify) is accepted on one DGX Spark. Sprint 1.1 (native Release build) is implemented and waits for its acceptance run on the Spark. Sprint 1.2 (the DeepSig Table II row) follows it.** S2 to S9 are specified and not yet implemented.
 
 ### Sprint 0 acceptance
 
@@ -51,7 +51,8 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 
 ### Open items
 
-- **Sprint 1.** `make native-build` and `make paper-baseline` ship with the repository. Neither has produced Spark evidence.
+- **Sprint 1.1.** `make accept-s1.1` builds the locked OCUDU Release with CUDA, grades the evidence and prints one verdict. It has not run on the Spark yet. Off the Spark it passed every gate on a real configure and build of `gnb` and `pusch_e2e_pipeline_test` with `nvcc` 13.5.37 for `sm_121` (x86_64, no GPU, local profile), which checks the tooling and is not Spark evidence.
+- **Sprint 1.2.** `make paper-baseline` ships with the repository and has produced no Spark evidence. It needs the accepted S1.1 build.
 - **Other hosts.** Sprint 0 is accepted on one Spark. The second Spark and the GB300 each need their own `make accept-s0` run.
 - **Evidence location.** The run directory is on the Spark under `results/runs/`, which Git ignores. It is not in this repository.
 - **Hosted checks.** `.github/workflows/portable.yml` is in place. No hosted run is recorded here yet.
@@ -96,12 +97,11 @@ make accept-s0 BACKENDS="cpu cuda"
 
 ```bash
 source isac/bin/activate
-make native-build
-python scripts/verify_environment.py --profile simulation --backend cuda --with-native --report build/native-env.json
+make accept-s1.1 BACKENDS="cpu cuda"
 make paper-baseline
 ```
 
-The native build uses Release, CUDA architecture 121 and `neoverse-v2` on Spark, with host-specific targets for other machines. A full build exposes both `gnb` and `pusch_e2e_pipeline_test` in the activated environment. The final command runs the one-layer DeepSig Table II profile, checks actual resident GPU counters and CPU/GPU decoded-byte agreement, and archives the local timings. The separate short four-RX smoke uses the original advisor profile. The source, hardware and runtime dependencies for these commands are documented in the [native runbook](docs/dev/NATIVE_BASELINE.md). On split deployments run the full Sionna check on the scene host and the native build and receiver check on the DSP host.
+`make accept-s1.1` is the Sprint 1.1 gate. It builds Release with CUDA architecture 121 and `neoverse-v2` on Spark, compares the host with the environment DeepSig measured, requires compiled CUDA kernels and linked device code, and starts `gnb` and `pusch_e2e_pipeline_test` from the environment. Name the simulation backends only on a host that passed them in Sprint 0. The evidence goes to a new directory under `results/runs/`. `make native-build` runs the build alone, with host-specific targets for other machines. The final command runs the one-layer DeepSig Table II profile, checks actual resident GPU counters and CPU/GPU decoded-byte agreement, and archives the local timings. The separate short four-RX smoke uses the original advisor profile. The source, hardware and runtime dependencies for these commands are documented in the [native runbook](docs/dev/NATIVE_BASELINE.md). On split deployments run the full Sionna check on the scene host and the native build and receiver check on the DSP host.
 
 ## Repository map
 

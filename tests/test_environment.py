@@ -65,18 +65,23 @@ class EnvironmentGateTests(unittest.TestCase):
             (venv / "bin").mkdir(parents=True)
             gnb = build / "apps/gnb/gnb"
             pusch = build / "tests/pusch_e2e_pipeline_test"
+            listing = ("--rx-device-grid MODE", "--gpu-output-buffer MODE", "--require-gpu-resident")
             for path in (gnb, pusch):
                 path.parent.mkdir(parents=True)
-                path.write_text("#!/bin/sh\nexit 0\n")
+                path.write_text('#!/bin/sh\n[ "$1" = "--help" ] || exit 2\n'
+                                + "".join(f'echo "  {option}"\n' for option in listing))
                 path.chmod(0o755)
                 (venv / "bin" / path.name).symlink_to(path)
+            cache = build / "CMakeCache.txt"
+            cache.write_text("CMAKE_BUILD_TYPE:STRING=Release\n")
             cases = [(commit[:8], "26.04.0", "git", True), ("", "26.04.0", "verified-archive", True),
                      ("deadbeef", "26.04.0", "git", False), ("", "26.04.0", "git", False),
                      (commit[:8], "25.04.0", "git", False)]
             for rev, version, kind, valid in cases:
                 banner = f"OCUDU 5G gNB version {version} ({rev})"
                 gnb.write_text(f'#!/bin/sh\n[ "$1" = "--version" ] || exit 2\necho "{banner}"\n')
-                stamp = {"target": "all", "commit": commit, "source_kind": kind,
+                stamp = {"target": "all", "commit": commit, "source_kind": kind, "machine": "spark",
+                         "cuda_arch": "121", "cache_sha256": hashlib.sha256(cache.read_bytes()).hexdigest(),
                          "gnb_sha256": hashlib.sha256(gnb.read_bytes()).hexdigest(),
                          "binary_sha256": hashlib.sha256(pusch.read_bytes()).hexdigest()}
                 (build / "isac-native.json").write_text(json.dumps(stamp))
@@ -85,9 +90,31 @@ class EnvironmentGateTests(unittest.TestCase):
                         report = environment.check_native(venv, commit)
                         self.assertEqual(report["gnb_version"], banner)
                         self.assertEqual(report["executables"][pusch.name]["sha256"], stamp["binary_sha256"])
+                        self.assertEqual(report["pusch_test_options"], list(environment.NATIVE_TEST_OPTIONS))
+                        self.assertEqual(report["build"], {"machine": "spark", "cuda_arch": "121",
+                                                           "cpu_target": None, "toolchain": None})
                     else:
                         with self.assertRaises(ValueError):
                             environment.check_native(venv, commit)
+            # A valid receipt again, then one defect at a time.
+            gnb.write_text(f'#!/bin/sh\necho "OCUDU 5G gNB version 26.04.0 ({commit[:10]})"\n')
+            stamp.update(source_kind="git", gnb_sha256=hashlib.sha256(gnb.read_bytes()).hexdigest())
+            (build / "isac-native.json").write_text(json.dumps(stamp))
+            environment.check_native(venv, commit)
+            cache.write_text("CMAKE_BUILD_TYPE:STRING=Debug\n")
+            with self.assertRaisesRegex(ValueError, "reconfigured after its receipt"):
+                environment.check_native(venv, commit)
+            cache.write_text("CMAKE_BUILD_TYPE:STRING=Release\n")
+            pusch.write_text('#!/bin/sh\necho "  --rx-device-grid MODE"\necho "  --require-gpu-resident"\n')
+            stamp["binary_sha256"] = hashlib.sha256(pusch.read_bytes()).hexdigest()
+            (build / "isac-native.json").write_text(json.dumps(stamp))
+            with self.assertRaisesRegex(ValueError, "--help lacks --gpu-output-buffer"):
+                environment.check_native(venv, commit)
+            pusch.write_text("#!/bin/sh\nexit 127\n")
+            stamp["binary_sha256"] = hashlib.sha256(pusch.read_bytes()).hexdigest()
+            (build / "isac-native.json").write_text(json.dumps(stamp))
+            with self.assertRaises(subprocess.CalledProcessError):
+                environment.check_native(venv, commit)
             stamp["target"] = "baseline"
             (build / "isac-native.json").write_text(json.dumps(stamp))
             with self.assertRaisesRegex(ValueError, "full-build receipt"):

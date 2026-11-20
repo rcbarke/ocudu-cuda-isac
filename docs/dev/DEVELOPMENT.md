@@ -64,7 +64,7 @@ The accepted state differs from the original delivery in five ways.
 - **Replay.** The four-opportunity fixture writes byte-identical files on x86_64 and aarch64. The test suite records their digests.
 - **Hosted checks.** `.github/workflows/portable.yml` runs the core environment gate, the pin check, the unit suite and the replay fixture on a CPU runner for Python 3.11, 3.12 and 3.13.
 
-S1 is the next open gate. A Spark must still produce the actual CUDA build and the Table II measurement. The build and grading tools are delivered, and the native wrapper finds the OCUDU source through the lock. S2 to S9 name implementation deliverables and lab gates. The launchers and selectors in those cards become executable as their owning patches land.
+S1 is the next open gate. A Spark must still produce the actual CUDA build and the Table II measurement. S1.1 is implemented and unit accepted: `make accept-s1.1` builds the locked source, grades the build evidence against the DeepSig reference environment and archives one run directory. Its integration status stays open until that command prints its accepted verdict on the Spark. The S1.2 runner and grader are delivered, and the native wrapper finds the OCUDU source through the lock. S2 to S9 name implementation deliverables and lab gates. The launchers and selectors in those cards become executable as their owning patches land.
 
 <a id="phase-s0"></a>
 
@@ -111,7 +111,7 @@ cmake --build build -j8
 
 The wrapper uses equivalent source/build arguments and enables the upstream test target required in S1.2. Keep the reusable upstream control pristine and build out of tree. Select each host's supported architecture and CPU target explicitly. Record the cache and compiler evidence for real CUDA compilation. The numeric Spark architecture in this recipe is specific to GB10.
 
-**Unit.** Exercise native argument generation and wrong profile/cache/toolchain conditions using the isolated tests named in the runbook. **Integrate and accept.** On Spark, keep the build log, source identity, compiler versions, compiled targets and hashes. From the activated environment run `gnb --version` and `pusch_e2e_pipeline_test --help`. Run `python scripts/verify_environment.py --profile core --with-native --report build/native-env.json`. On a combined simulation/receiver machine, `--profile simulation --backend cuda --with-native` verifies all three dependencies from one interpreter. The native CPU/GPU result comes next.
+**Unit.** Exercise native argument generation and wrong profile/cache/toolchain conditions using the isolated tests named in the runbook. **Integrate and accept.** On Spark, keep the build log, source identity, compiler versions, compiled targets and hashes. From the activated environment run `gnb --version` and `pusch_e2e_pipeline_test --help`. Run `python scripts/verify_environment.py --profile core --with-native --report build/native-env.json`. On a combined simulation/receiver machine, `--profile simulation --backend cuda --with-native` verifies all three dependencies from one interpreter. `make accept-s1.1` runs the build and every check of this card in one pass and writes the evidence to a new run directory. Add `BACKENDS="cpu cuda"` on a combined machine. The gate list and the reference-environment comparison are in the runbook. The native CPU/GPU result comes next.
 
 ### S1.2 Reproduce one DeepSig receiver result
 

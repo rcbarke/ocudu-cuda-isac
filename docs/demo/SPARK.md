@@ -6,13 +6,10 @@ Start from a clean, locked `ext/ocudu-deepsig-cuda-inline` and the repository-lo
 
 ```bash
 source isac/bin/activate
-bash scripts/build_ocudu.sh
-command -v gnb pusch_e2e_pipeline_test
-gnb --version
-python scripts/verify_environment.py --profile simulation --backend cuda --with-native
+make accept-s1.1 BACKENDS="cpu cuda"
 ```
 
-The full Release build uses eight jobs by default, CUDA architecture 121 and the upstream Spark CPU target. Use `--jobs 2` if memory is limited. Use a separate build directory for other toolchains or GPUs. The emitted build record links the clean OCUDU source identity, native executable and CMake cache. [Build entry point](../../scripts/build_ocudu.sh)
+The gate builds, grades the evidence and ends with `Sprint 1.1: ACCEPTED on this DGX Spark.` The full Release build uses eight jobs by default, CUDA architecture 121 and the upstream Spark CPU target. Use `JOBS=2` if memory is limited. `bash scripts/build_ocudu.sh` runs the build alone. Use a separate build directory for other toolchains or GPUs. The emitted build record links the clean OCUDU source identity, native executable and CMake cache. [Build entry point](../../scripts/build_ocudu.sh)
 
 ## 2. Run the paper comparison and four-RX diagnostic
 

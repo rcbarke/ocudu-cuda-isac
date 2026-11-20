@@ -226,6 +226,10 @@ def check_simulation(backend):
             "native_libraries": loaded_libraries()}
 
 
+# Options of the pinned PUSCH test that the measured Table II row passes on its command line.
+NATIVE_TEST_OPTIONS = ("--rx-device-grid", "--gpu-output-buffer", "--require-gpu-resident")
+
+
 def check_native(venv, expected_commit):
     binaries = {}
     for name in ("gnb", "pusch_e2e_pipeline_test"):
@@ -246,8 +250,19 @@ def check_native(venv, expected_commit):
             or stamp.get("gnb_sha256") != binaries["gnb"]["sha256"]
             or stamp.get("binary_sha256") != pusch["sha256"]):
         raise ValueError(f"Native binaries differ from the locked full-build receipt at {receipt}")
+    with (build / "CMakeCache.txt").open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != stamp.get("cache_sha256"):
+            raise ValueError(f"The build in {build} was reconfigured after its receipt. "
+                             "Rebuild with scripts/build_ocudu.sh.")
 
-    result = subprocess.run([str(gnb), "--version"], capture_output=True, text=True,
+    # Both programs must start from the environment's own entries, as an activated shell runs them.
+    listing = subprocess.run([pusch["path"], "--help"], capture_output=True, encoding="utf-8",
+                             errors="replace", check=True, timeout=15).stdout
+    options = [option for option in NATIVE_TEST_OPTIONS if option in listing]
+    if options != list(NATIVE_TEST_OPTIONS):
+        raise ValueError("pusch_e2e_pipeline_test --help lacks "
+                         + ", ".join(sorted(set(NATIVE_TEST_OPTIONS) - set(options))))
+    result = subprocess.run([binaries["gnb"]["path"], "--version"], capture_output=True, text=True,
                             check=True, timeout=15)
     # The pinned gNB announces itself before CLI11 processes --version.
     banner = re.search(r"^OCUDU 5G gNB version 26\.04\.0 \(([a-f0-9]{4,40})?\)$",
@@ -260,7 +275,8 @@ def check_native(venv, expected_commit):
     if not abbreviation and stamp.get("source_kind") != "verified-archive":
         raise ValueError("Git build failed to report its revision")
     return {"executables": binaries, "gnb_version": banner.group(), "build_receipt": str(receipt),
-            "commit": expected_commit}
+            "commit": expected_commit, "pusch_test_options": options,
+            "build": {key: stamp.get(key) for key in ("machine", "cuda_arch", "cpu_target", "toolchain")}}
 
 
 def run_checks(args, report):
@@ -304,7 +320,8 @@ def main(argv=None):
     parser.add_argument("--profile", choices=("core", "simulation"), default="core")
     parser.add_argument("--backend", choices=("cpu", "cuda"),
                         help="force both simulation backends (default for simulation: cpu)")
-    parser.add_argument("--with-native", action="store_true", help="verify both full-build executables and run gnb --version")
+    parser.add_argument("--with-native", action="store_true",
+                        help="match both full-build executables to the build receipt and start each one")
     parser.add_argument("--report", type=Path, help="write the JSON report to a new file")
     args = parser.parse_args(argv)
     if args.backend and args.profile != "simulation":
