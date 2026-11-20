@@ -1,0 +1,137 @@
+{
+  "schema": "integration-config/grant_fixture/v1",
+  "selector": "grant_fixture",
+  "adapter_build": "build/ocudu-adapter",
+  "tolerance": {
+    "storage": "complex bf16",
+    "relative": 0.00390625,
+    "absolute": 1e-06,
+    "alignment_gain": 0.005,
+    "alignment_phase_rad": 0.001,
+    "reference_absolute": 1e-09
+  },
+  "cases": [
+    {
+      "grant": "configs/grants/two_prb_offset.json",
+      "pinned_dmrs_reference": "differs",
+      "expect": {
+        "tbs_bits": 384,
+        "tb_sha256": "76dccd9e2ed11ce0a9d0eb52b0baaf1a51fa2b755f52df583593120bc72e2f8e",
+        "pilot": {
+          "index": 0,
+          "symbol": 2,
+          "subcarrier": 180,
+          "reference": [
+            -0.998814876483345,
+            -0.998814876483345
+          ]
+        },
+        "data": [
+          {
+            "index": 0,
+            "symbol": 0,
+            "subcarrier": 180,
+            "value": [
+              0.31622776601683794,
+              0.31622776601683794
+            ]
+          },
+          {
+            "index": 287,
+            "symbol": 13,
+            "subcarrier": 203,
+            "value": [
+              -0.31622776601683794,
+              0.31622776601683794
+            ]
+          }
+        ]
+      },
+      "rehearsal_sha256": {
+        "x.npy": "ba9258f0630ad918487b269ed625245096908f33574db411eaaca97a7a8b6d10",
+        "x_sionna.npy": "c8405ab131f0250d974a105e859704816f08a0d97deb2a3c8adfbdc2e4aebc1d"
+      }
+    },
+    {
+      "grant": "configs/grants/demo_51prb_4rx.json",
+      "expect": {
+        "tbs_bits": 9736,
+        "tb_sha256": "a2187d90d75129b1e70b120b436e12be1899dbfd9d19d49e2c2d029b32b58dfd",
+        "pilot": {
+          "index": 0,
+          "symbol": 2,
+          "subcarrier": 0,
+          "reference": [
+            -0.998814876483345,
+            0.998814876483345
+          ]
+        },
+        "data": [
+          {
+            "index": 0,
+            "symbol": 0,
+            "subcarrier": 0,
+            "value": [
+              0.9486832980505138,
+              0.31622776601683794
+            ]
+          },
+          {
+            "index": 7343,
+            "symbol": 13,
+            "subcarrier": 611,
+            "value": [
+              0.31622776601683794,
+              -0.31622776601683794
+            ]
+          }
+        ]
+      },
+      "rehearsal_sha256": {
+        "x.npy": "a18b72ae9b9ea84fcfe979cd48085db46709021717bea6b2f633ae99a7940beb",
+        "x_sionna.npy": "4b049a21cbddee03766181a1e8108a4a4ba4907bc1ba4f029c1bc1b4c6e21c68"
+      }
+    },
+    {
+      "grant": "configs/grants/table2_51prb_1rx.json",
+      "pinned_dmrs_reference": "identical",
+      "expect": {
+        "tbs_bits": 54296,
+        "tb_sha256": "810232b5e9915783c5b0a21ec7d6d1d3778b74ad7b8bede2573f3a6c003bb727",
+        "pilot": {
+          "index": 0,
+          "symbol": 2,
+          "subcarrier": 0,
+          "reference": [
+            0.998814876483345,
+            0.998814876483345
+          ]
+        },
+        "data": [
+          {
+            "index": 0,
+            "symbol": 0,
+            "subcarrier": 0,
+            "value": [
+              0.2300894966542111,
+              0.07669649888473704
+            ]
+          },
+          {
+            "index": 7343,
+            "symbol": 13,
+            "subcarrier": 611,
+            "value": [
+              0.3834824944236852,
+              0.6902684899626333
+            ]
+          }
+        ]
+      },
+      "rehearsal_sha256": {
+        "x.npy": "47f62296ce6576332ba186a266da6a3d9ef171a21a3f6ed684c02752a389e708",
+        "x_sionna.npy": "4f8539ca26f11da062f7c79ab85c1a0e9a3c50e564bcd64e44bca1ee92ddb395"
+      }
+    }
+  ]
+}

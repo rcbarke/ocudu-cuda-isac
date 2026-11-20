@@ -1,0 +1,65 @@
+{
+  "schema": "pusch-grant/v1",
+  "grant_id": "table2-51prb-1rx",
+  "carrier": {
+    "scs_khz": 30,
+    "cyclic_prefix": "normal",
+    "grid_size_rb": 51,
+    "carrier_hz": 3500000000,
+    "n_cell_id": 0
+  },
+  "bwp": {
+    "start_rb": 0,
+    "size_rb": 51
+  },
+  "slot": {
+    "sfn": 0,
+    "slot": 1
+  },
+  "rnti": 4660,
+  "n_id": 0,
+  "allocation": {
+    "mapping_type": "A",
+    "prb_start": 0,
+    "prb_count": 51,
+    "symbol_start": 0,
+    "symbol_count": 14
+  },
+  "mcs": {
+    "table": "qam256",
+    "index": 27
+  },
+  "codeword": {
+    "rv": 0,
+    "new_data": true
+  },
+  "layers": 1,
+  "dmrs": {
+    "config_type": 1,
+    "length": 1,
+    "type_a_position": 2,
+    "additional_position": 1,
+    "symbols": [
+      2,
+      11
+    ],
+    "ports": [
+      0
+    ],
+    "scrambling_id": 0,
+    "n_scid": 0,
+    "cdm_groups_without_data": 2
+  },
+  "tx": {
+    "antenna_ports": 1,
+    "precoding": "identity"
+  },
+  "rx_ports": [
+    0
+  ],
+  "tb": {
+    "generator": "sha256-counter/v1",
+    "seed": "table2-51prb-1rx",
+    "bytes": 6787
+  }
+}

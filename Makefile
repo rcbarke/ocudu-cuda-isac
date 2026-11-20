@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 native-deps native-build paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2.1 native-deps native-build adapter-build paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -12,6 +12,8 @@ help:
 	@echo "make accept-s1.1     Build, then run every Sprint 1.1 gate and archive the evidence (BACKENDS=\"cpu cuda\", JOBS=8)"
 	@echo "make accept-s1.2     Measure the DeepSig Table II row and the four-RX smoke on the S1.1 build, grade and archive"
 	@echo "make accept-s1       Run the Sprint 1.1 gate, then the Sprint 1.2 gate (BACKENDS=\"cpu cuda\", JOBS=8)"
+	@echo "make adapter-build   Build the project's native adapter out of tree against the accepted OCUDU build"
+	@echo "make accept-s2.1     Build the adapter, compare both transmit references of each grant, archive the records"
 	@echo "make paper-baseline  Execute the DeepSig one-layer comparison alone on Spark"
 	@echo "make spark-baseline  Execute the short four-RX smoke alone on Spark"
 
@@ -55,6 +57,12 @@ accept-s1.2:
 accept-s1:
 	$(MAKE) accept-s1.1
 	$(MAKE) accept-s1.2
+
+adapter-build:
+	$(PYTHON) scripts/native_adapter.py build
+
+accept-s2.1:
+	bash scripts/accept_s2_1.sh
 
 paper-baseline:
 	bash scripts/run_spark_baseline.sh --profile paper --skip-build

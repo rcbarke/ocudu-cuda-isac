@@ -8,7 +8,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1 (native Release build and the DeepSig Table II row) are accepted on one DGX Spark. Sprint 2.1 (`grant_fixture`) is next and starts the project's own ISAC work.** S2 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built)
+As of 2026-11-20 (UTC), **Sprint 0 (install and verify) and Sprint 1 (native Release build and the DeepSig Table II row) are accepted on one DGX Spark. Sprint 2.1 (`grant_fixture`), the first project-owned component, is implemented and passes its unit gate on a development host. Its integration gate, `make accept-s2.1`, has not run on the Spark yet.** S2.2 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built)
 
 ### Sprint 0 acceptance
 
@@ -73,6 +73,28 @@ The timing was accepted on 2026-11-20 as comparable to the paper for bring-up. S
 
 An earlier attempt, `s12-spark-ecf8-20261120T142736Z`, measured the same files on an uncommitted tree to test the gate before the commit. Its 26 other gates passed and it was not accepted for that reason alone. [Record](docs/dev/NATIVE_BASELINE.md)
 
+### Sprint 2.1: implemented, gate pending on the Spark
+
+Sprint 2.1 exports one legal uplink grant and its transmit reference. `src/ocudu_cuda_isac/episodes/grant.py` validates a `pusch-grant/v1` record, derives the transport block size, the resource elements in mapping order and the DM-RS reference symbols, and keeps them with the transmit grid in a checksummed store entry. The grant's DM-RS is registered as the first sensing source, `pusch_dmrs`. A thin native adapter builds the transmit grid with the transmit chain of the pinned `pusch_e2e_pipeline_test`, out of tree and against the build that Sprint 1.1 accepted. [Record, coordinates, store and alignment](docs/interfaces/GRANT.md)
+
+`make accept-s2.1` feeds the same known transport block to both transmit references, the pinned OCUDU chain and Sionna NR, and compares them on three grants: the two-block unit fixture inside a larger carrier, the demonstration profile (51 blocks, four receive ports) and the PDU of the Table II row.
+
+| Gate | What it requires |
+|---|---|
+| Committed tree and unit suite | A clean checkout. The card's unit command also runs on its own |
+| References | The pinned Sionna on the CPU and the Sprint 1.1 build, verified from one interpreter |
+| Adapter | Built with the compile flags and the link line of the pinned test. Its receipt binds the executable to its sources and to the OCUDU build |
+| Transport block and coding | The same size in the record, in OCUDU and in Sionna. The same modulation, base graph and code block count |
+| Resource elements | The occupied elements of both grids are exactly the grant's data and pilot elements |
+| Pilots and data symbols | Every pilot equals its reference symbol and every data symbol of the two references agrees, within the storage tolerance of the pinned grid |
+| Scale and phase | Gain within 0.5 percent of one and phase within 1 mrad between the references |
+| Receiver check | The host PUSCH processor decodes the grid, without noise, to the original bytes on every receive port of the grant |
+| Record | The grant, the bytes and both grids are archived and verified on reading. A pilot coordinate, a data symbol and the block hash are recovered from the record, the hash also with `sha256sum` |
+
+One disagreement between the pinned test fixture and a true PUSCH was found and fixed. The test places the DM-RS sequence from the first block of the bandwidth part. PUSCH DM-RS starts at CRB 0. They coincide only when the bandwidth part starts at CRB 0, which is the only case the pinned test runs. The adapter uses CRB 0. On the offset grant every run archives the difference: with the test's setting 19 of 24 pilots differ and the receiver's CRC fails.
+
+The steps of the gate were rehearsed on a development host: x86_64, a CPU-only build of the pinned OCUDU source, the pinned Sionna 2.2.0. All 38 checks of the three grants passed there, and every data symbol of the OCUDU grid equalled the Sionna value after rounding to the grid's storage format. The environment check and the pin check of the gate were not part of that rehearsal. It is no lab evidence. Sprint 2.1 is integrated when `make accept-s2.1` prints its verdict on the Spark.
+
 ### Verified configuration
 
 | Item | Value on the accepted host |
@@ -99,11 +121,13 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 - **S0.3** refuses malformed or ambiguous fixtures, unknown or duplicate sequence IDs, a mismatched clock, and outputs that differ on repeat.
 - **S1.1** refuses another platform under the Spark profile, an `nvcc` that cannot emit the GPU architecture, a cache value that differs from the recipe (including `CUDA_ACCEL_FOUND=FALSE`), a CUDA source compiled for another architecture, a PUSCH test compiled without `ENABLE_CUDA` or the CPU target, an executable without linked device code, binaries that differ from the build receipt, and an OCUDU source that is not pristine. A missing development library stopped two real runs in the configure step.
 - **S1.2** refuses, in the unit suite and in a rehearsal against a stand-in for the native test: a workload other than the Table II row, fewer than 200 CRC passes on either path, a CRC disagreement, a byte mismatch, an output guard failure, a GPU path without resident timing or the producer-owned grid on every measured frame, a missing or non-finite service time, a transcript that is truncated, repeated or of zero iterations, a run that was not pinned to CPUs 5-9,15-19 or could see another GPU, and a build that Sprint 1.1 did not accept. A GPU path that is slower than the CPU path is recorded and not refused. An uncommitted tree stopped one real run.
+- **S2.1** refuses, in the unit suite: a grant with an invalid DM-RS or receive port, an allocation outside the bandwidth part, a repeated pilot, DM-RS symbols the standard does not give for the allocation, and a payload that does not match the transport block size, each before a grid is allocated. A store entry is refused when a file differs from its hash, when a stored index or reference symbol is not the grant's own, when a grid occupies an element the grant does not, and when a pilot differs from its reference symbol. Against doubles of both transmit references the integration driver fails the check that names the fault: a differing transport block size or coding, a shifted or incomplete grid, a wrong pilot or data symbol, a failed receiver CRC, and a reference that cannot run, which is a failure and never a skip. The adapter builder refuses an OCUDU build without a Sprint 1.1 receipt, a build from another source or generator, and an adapter whose sources or OCUDU build changed after its receipt.
 - **The gate runner** refuses an uncommitted tree, an empty test run, a skipped test on a simulation host, and an evidence directory that already exists.
 
 ### Open items
 
-- **Next sprint.** S2.1 `grant_fixture` exports one legal uplink grant and its transmit reference. It is the first project-owned component.
+- **Sprint 2.1 gate.** `make accept-s2.1` has not run on the Spark. It needs the accepted Sprint 1.1 build and the full environment. The AArch64 compile of the adapter and its link against the CUDA build are first exercised there.
+- **Next sprints.** S2.2 `episode_pair` generates the matched target-present and target-absent channels on the grant's subcarriers and symbol times. S2.3 `grid_apply` applies them natively. Both start from the Sprint 2.1 record.
 - **Timing.** The Sprint 1.2 latencies were taken with desktop applications open and are 19 to 30 percent above the paper's. Tuning is deferred until the project features are implemented. Before a latency or speedup claim, measure on a quiet host, repeat the run to bound the CPU spread and state the SINR.
 - **Other hosts.** Sprints 0 and 1 are accepted on one Spark. The second Spark needs its own `make accept-s0` and `make accept-s1` runs. The GB300 needs `make accept-s0` and `bash scripts/accept_s1_1.sh --machine local` with its own CPU target. The Sprint 1.2 gate measures the Table II row, which is assigned to a GB10.
 - **Evidence location.** The run directories are on the Spark under `results/runs/`, which Git ignores. They are not in this repository.
@@ -129,7 +153,7 @@ python scripts/verify_environment.py --profile core
 make check
 ```
 
-Clone without `--recursive`. `make check` verifies the source pins, runs the unit suite and replays the four-update fixture. Four tests need NumPy and are skipped on a core host. Run `python -m pip install 'numpy>=2.2.6'` first to include them.
+Clone without `--recursive`. `make check` verifies the source pins, runs the unit suite and replays the four-update fixture. Five tests need NumPy and are skipped on a core host. Run `python -m pip install 'numpy>=2.2.6'` first to include them.
 
 ### Simulation host
 
@@ -155,6 +179,16 @@ make accept-s1.2
 
 `make accept-s1.1` is the Sprint 1.1 gate. It first installs the OCUDU development libraries that dpkg reports missing (`scripts/install_native_deps.sh`, safe to repeat, asks for sudo only when something is missing). It shows the CMake output while it runs, builds Release with CUDA architecture 121 and `neoverse-v2` on Spark, compares the host with the environment DeepSig measured, requires compiled CUDA kernels and linked device code, and starts `gnb` and `pusch_e2e_pipeline_test` from the environment. Name the simulation backends only on a host that passed them in Sprint 0. The evidence goes to a new directory under `results/runs/`. `make native-build` runs the build alone, with host-specific targets for other machines. `make accept-s1.2` is the Sprint 1.2 gate. It measures the build that Sprint 1.1 accepted and never builds. It runs the one-layer DeepSig Table II profile on CPUs 5-9,15-19, then the short four-RX smoke of the original advisor profile. It requires 200 CRC passes on the CPU and on the GPU path, agreement of the decoded bytes and resident GPU work on every measured frame, and it records the local timings next to the published ones without grading them. A passing run ends with the Sprint 1.2 and the Sprint 1 verdicts. `make accept-s1` runs both gates in order, and `make paper-baseline` runs the paper profile alone. The source, hardware and runtime dependencies for these commands are documented in the [native runbook](docs/dev/NATIVE_BASELINE.md). On split deployments run the full Sionna check on the scene host and the native build and receiver check on the DSP host.
 
+### Grant fixture (Sprint 2.1)
+
+```bash
+source isac/bin/activate
+python tests/unit/test_grant_fixture.py -v
+make accept-s2.1
+```
+
+The first command is the unit gate and needs only the core environment. `make accept-s2.1` is the integration gate. It builds the native fixture adapter into `build/ocudu-adapter` with the compile flags and the link line of the pinned `pusch_e2e_pipeline_test`, compares the pinned OCUDU transmit chain with Sionna NR on the three grants in `configs/grants/`, archives each record under a new directory in `results/runs/` and prints one verdict. It uses the CPU only and never rebuilds OCUDU. `make adapter-build` runs the adapter build alone. [Grant record](docs/interfaces/GRANT.md)
+
 ## Repository map
 
 | Directory | Purpose |
@@ -163,9 +197,9 @@ make accept-s1.2
 | [docs](docs/README.md) | System design, integration boundaries, interfaces, measurement, evidence and references |
 | [ext](ext/README.md) | CUDA-OCUDU, Sionna and Sionna RT as pinned Git submodules, with the lock that owns their paths |
 | [environments](environments/README.md) | Host environment notes and the validated third-party constraints |
-| [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting |
-| [native/ocudu_adapter](native/ocudu_adapter/README.md) and [patches/ocudu](patches/ocudu/README.md) | Future native observer/replay adapters and narrow upstream patches |
-| [configs](configs/) and [experiments](experiments/README.md) | Working smoke inputs, advisor profile and publication matrix |
+| [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting, the grant record (`episodes/`) and the sensing-source registry (`sensing/sources/`) |
+| [native/ocudu_adapter](native/ocudu_adapter/README.md) and [patches/ocudu](patches/ocudu/README.md) | Native adapter built against the accepted OCUDU build (the fixture adapter of S2.1; replay and observer adapters arrive with their tickets) and narrow upstream patches |
+| [configs](configs/) and [experiments](experiments/README.md) | Working smoke inputs, grant records, integration configurations, advisor profile and publication matrix |
 | [data](data/README.md) and [results](results/README.md) | Episode provenance and run evidence |
 | [scripts](scripts/), [tests](tests/) and [CI](.github/workflows/portable.yml) | Environment, pin and acceptance gates, portable regressions and the hosted CPU checks |
 

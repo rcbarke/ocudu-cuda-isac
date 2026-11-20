@@ -77,6 +77,10 @@ The first baseline uses Type-1 DM-RS, non-transform-precoded new PUSCH data and 
 
 The stock non-transform-precoded test uses a PDSCH-side builder for its compatible test grid. Its byte counter compares CPU and GPU decoded data. For a replayed UE, cross-check the transmitted PUSCH data and DMRS against a true uplink reference and compare both receiver outputs with the retained original transport block.
 
+Receive ports at the pin must be listed as 0 to N-1 in order. For a contiguous data mask, `pusch_demodulator_impl::get_ch_data_re` reads grid port `i` for the `i`-th listed port, while the channel estimator reads the listed port number. With a list such as `[1]` or `[0, 2]` the host decode of a noiseless grid fails. The grant record therefore refuses any other list. The resident CUDA path additionally takes only 1, 2, 4 or 8 receive ports (`pusch_processor_impl.cpp`), and any other count falls back to the host.
+
+S2.1 made that cross-check against Sionna NR. The PDSCH-built grid is a legal PUSCH grid for one codeword, with one exception. The test sets `pdsch_pdu.ref_point = PRB0`, which starts the DM-RS sequence at the first block of the bandwidth part. `dmrs_pusch_estimator_impl.cpp` generates the PUSCH reference from CRB 0 (`DMRS_REF_POINT_K_TO_POINT_A`), as TS 38.211 6.4.1.1.3 requires. The two agree only for a bandwidth part that starts at CRB 0, which is the test's compile-time setting. The fixture adapter sets `CRB0`. The DM-RS amplitude in the pin is `10**(3/20)` for two CDM groups without data, taken in dB from `get_sch_to_dmrs_ratio_dB`, and the resource grid stores every value as complex bf16. [Grant record and alignment](../interfaces/GRANT.md)
+
 ## Observation handoff to implement
 
 1. The adapter binds the episode's input symbols, port map, slot/symbol indices, PUSCH allocation, DM-RS sequence and payload to the same upstream invocation. The received grid includes the direct UE–receiver path, target/clutter contributions and receiver noise. Keep geometric truth in the evaluator.

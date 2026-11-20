@@ -26,7 +26,15 @@ The **paper** profile uses 51 PRBs at 30 kHz SCS, MCS 27 from the 256-QAM table,
 
 Each command prints a unique evidence directory. The gate writes `results/runs/s12-<host>-<UTC time>/` with `summary.txt`, `paper/` and `smoke/`. Require the successful stage/status, native log with real CRC successes, zero CPU/GPU byte mismatches, and all measured frames on the resident/owned-grid path. Read `table-ii.json` for the paper profile’s actual means and timing differences. The supplied branch and paper measurement commit differ. The stock test generates its own input and compares CPU/GPU decoded bytes. S2 establishes replay against retained original TX payloads before sensing results are attributed to a real PUSCH observation. [Acceptance and regrade commands](../dev/NATIVE_BASELINE.md)
 
-## 3. Demonstrate receiver-linked sensing after the native adapter is implemented
+## 3. Build the adapter and archive the grant record
+
+```bash
+make accept-s2.1
+```
+
+The gate builds the project's fixture adapter out of tree against the build that step 1 accepted, feeds one known transport block to the pinned OCUDU transmit chain and to Sionna NR for each grant in `configs/grants/`, compares the two grids and archives the grant, the bytes and both grids. It ends with `Sprint 2.1: ACCEPTED on this DGX Spark.` It runs on the CPU. [Grant record](../interfaces/GRANT.md)
+
+## 4. Demonstrate receiver-linked sensing after the native adapter is implemented
 
 | Step | Evidence to retain |
 | --- | --- |

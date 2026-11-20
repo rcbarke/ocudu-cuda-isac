@@ -1,0 +1,63 @@
+{
+  "schema": "pusch-grant/v1",
+  "grant_id": "two-prb-offset",
+  "carrier": {
+    "scs_khz": 30,
+    "cyclic_prefix": "normal",
+    "grid_size_rb": 51,
+    "carrier_hz": 3500000000,
+    "n_cell_id": 7
+  },
+  "bwp": {
+    "start_rb": 10,
+    "size_rb": 24
+  },
+  "slot": {
+    "sfn": 0,
+    "slot": 17
+  },
+  "rnti": 4660,
+  "n_id": 101,
+  "allocation": {
+    "mapping_type": "A",
+    "prb_start": 5,
+    "prb_count": 2,
+    "symbol_start": 0,
+    "symbol_count": 14
+  },
+  "mcs": {
+    "table": "qam64",
+    "index": 10
+  },
+  "codeword": {
+    "rv": 0,
+    "new_data": true
+  },
+  "layers": 1,
+  "dmrs": {
+    "config_type": 1,
+    "length": 1,
+    "type_a_position": 2,
+    "additional_position": 1,
+    "symbols": [
+      2,
+      11
+    ],
+    "ports": [
+      0
+    ],
+    "scrambling_id": 203,
+    "n_scid": 0,
+    "cdm_groups_without_data": 2
+  },
+  "tx": {
+    "antenna_ports": 1,
+    "precoding": "identity"
+  },
+  "rx_ports": [
+    0
+  ],
+  "tb": {
+    "hex": "800146ef1478347373ddde334be21a9be52b0f42bba975d7d6b1377764115ac9c0d296e97c372a6ad539ea5e9408d67d"
+  }
+}
