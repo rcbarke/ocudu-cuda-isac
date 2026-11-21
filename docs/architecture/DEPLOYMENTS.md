@@ -12,7 +12,7 @@ The demo can start with a known, scheduled PUSCH and a decoder CRC. Add core tra
 
 ## Mode 1 · Sharing the GB10 with MPS
 
-Start the CUDA PHY and sensing worker as distinct clients of the same MPS service. Verify the server/client attachment using the control interface provided with the installed MPS version. Preserve separate process IDs, GPU identity, CUDA and driver versions, per-client settings and queue limits. Compare DSP alone, sensing replay alone, then both under the same offered load. Launching another CUDA process by itself does not demonstrate that MPS is active. [NVIDIA MPS deployment guide](https://docs.nvidia.com/deploy/mps/latest/when-to-use-mps.html)
+Start the CUDA PHY and sensing worker as distinct clients of the same MPS service. Verify the server/client attachment using the control interface provided with the installed MPS version. Preserve separate process IDs, GPU identity, CUDA and driver versions, per-client settings and queue limits. Compare DSP alone, sensing replay alone, then both under the same offered load. Launching another CUDA process by itself does not demonstrate that MPS is active. A sensor that is not a client of the server shares the GPU by time slicing, which the cuSense measurements put at about 0.5 ms per inference step, with tails up to 1.3 ms on a Spark, against 58 us under MPS. The launcher therefore refuses to label an arm as MPS unless both process IDs are in the server's client list, and time slicing is run only as its own labeled control. On the Spark, create the sensor's CUDA context before the receiver starts, as the cuSense deployment does. [NVIDIA MPS deployment guide](https://docs.nvidia.com/deploy/mps/latest/when-to-use-mps.html) [Process layout](RUNTIME.md#process-layout)
 
 Use ordinary MPS scheduling for the initial comparison. An active-thread-percentage ceiling constrains available execution resources but does not reserve a particular set of SMs. Static SM partitioning is a separate option on supported configurations that can assign disjoint SM sets. MPS v3 also supports memory-capacity limits under CUDA 13.4+, Linux cgroup v2 and its documented UVM restrictions. Record these as distinct experiments if used. Neither a concurrency ceiling nor an allocation-capacity limit establishes dedicated memory bandwidth or a latency bound. [MPS execution provisioning](https://docs.nvidia.com/deploy/mps/latest/when-to-use-mps.html) · [MPS v3 memory partitioning](https://docs.nvidia.com/deploy/mps/latest/mpsv3-memory-partitioning.html)
 
@@ -60,6 +60,8 @@ S5.5 varies one of these at a time on the collocated Spark and reads the effecti
 | Payload | The receiver's estimate (O3) in FP16 (19,584 bytes per slot at the demonstration profile) or complex64, comb LS in complex64 (19,584 bytes), or the full grid (274,176 bytes) |
 | MPS | Default, active-thread percentage, static SM partition, client priority, memory limit |
 | Stream priority | The pin's PUSCH and PDSCH CUDA stream priority overrides |
+| Ring wait mode | `spin`, `wait`, `spin_then_wait` |
+| Sensor release | `immediate`, or `after_radio`: after the calibrated remaining service time of the last uplink slot of the window |
 
 The GB10 shares memory between CPU and GPU. A GPU memory figure is therefore also a system memory figure, and both are recorded.
 

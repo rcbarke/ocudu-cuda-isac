@@ -6,7 +6,7 @@ It is C++17 on the CPU. It includes nothing from OCUDU and uses no CUDA, so two 
 
 | Side | Linked by | Role |
 |---|---|---|
-| Producer | The OCUDU adapter, `native/ocudu_adapter/transport/` | Creates the segment, writes slots, publishes without waiting, counts drops, reclaims credits |
-| Consumer | The sensor, `native/sense_core/host/` | Maps the segment read-only, reads a slot between two generation checks, returns its credit |
+| Producer | The OCUDU adapter, `native/ocudu_adapter/transport/` | Creates the ring, writes slots in sequence order, publishes with one store and no system call, counts drops, reads the consumer's released count |
+| Consumer | The sensor, `native/sense_core/host/` | Maps the ring read-only, reads slots in sequence order between two generation checks, releases in order through its own cursor page |
 
 `include/obs/record.h` will be the byte-level definition of the record. The reference reader `ocudu_cuda_isac.sensing.obs`, written with the Python standard library, reads the same segment and must pass the same unit vectors. The socket and verbs transports of S7 and the bridge of S8.1 carry the same record.

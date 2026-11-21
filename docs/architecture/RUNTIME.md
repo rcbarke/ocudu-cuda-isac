@@ -15,7 +15,7 @@ This project measures real-time sensing beside a CUDA receiver on DGX systems. E
 | Offline | Episodes, evaluation, calibration | `src/ocudu_cuda_isac/episodes/`, `evaluation/` | Python, Sionna, Sionna RT | Never in a slot loop | Moves unchanged |
 | Tooling | Gates, launchers, KPI stream, page | `scripts/`, `gui/`, `src/ocudu_cuda_isac/telemetry/` | Python, shell | Outside every timed path | Moves unchanged |
 
-Of the 55 tickets in the plan, one changes receiver source (S5.2). Sensing is never written into the receiver's `lib/phy/cuda`: that directory does not exist on Aerial-OCUDU, so code placed there is the one part of the project that cannot be carried over. It would also put sensing inside the slot deadline and remove the two-client layout that M1 to M3 measure.
+Of the 55 tickets in the plan, one changes receiver source (S5.2). Sensing is never written into the receiver's `lib/phy/cuda`: that directory does not exist on Aerial-OCUDU, so code placed there is the one part of the project that cannot be carried over. It would also put sensing inside the slot deadline and remove the two-client layout that M1 to M3 measure. [Process layout](#process-layout)
 
 The reference system is built the same way. In the pinned Aerial tree (`ext/aerial-cuda-accelerated-ran`, tag 26.2.0) the L1 only exports the estimate:
 
@@ -26,6 +26,55 @@ The reference system is built the same way. In the pinned Aerial tree (`ext/aeri
 | `cuPHY-CP/data_lake/data_lake.cpp`, `e3_agent.hpp` | The worker copies into ping-pong shared-memory rows. The E3 Agent notifies subscribed dApps. `e3::StreamType` and `SharedMemoryHeader` are the wire contract. |
 
 The sensing application is a separate process. The tree holds no cuSense code, and the pinned sample applications (`ext/aerial-sample-apps`, v1.2.0) hold three PRB-power dApps and no cuSense dApp, checkpoint or native engine. S5.2 with S3.2 is the same export half on DeepSig-OCUDU. [Aerial ports](../integration/AERIAL.md)
+
+## Process layout
+
+On every DeepSig-OCUDU placement the receiver and the sensor are two processes, joined by one first-in, first-out ring per observation stream. On one Spark they are two clients of one MPS server. The alternative is one process, with the sensing kernels and the TensorRT engine on a stream of the receiver's own CUDA context. It is not built on this host. The layout was reviewed on 2026-11-21 against the published systems below and confirmed for the demonstration and for the papers. Tickets: [S3.2, S3.6](../dev/DEVELOPMENT.md#phase-s3), [S4.1](../dev/DEVELOPMENT.md#phase-s4), [S5.5](../dev/DEVELOPMENT.md#phase-s5).
+
+| Question | Two processes under MPS | One process, sensing on a stream of the receiver's context |
+|---|---|---|
+| Do the kernels of the two workloads share the GPU at the same time | Yes. MPS runs the kernels of its clients concurrently. | Yes. Streams of one context run concurrently. |
+| What separates the two | Address spaces, CUDA runtimes, CPU threads, a crash and a restart of the sensor. A fatal GPU fault still reaches every client of the server. | Nothing. One CUDA runtime with its locks, one set of device scheduling flags, one fate. The pin sets `cudaDeviceScheduleYield` for its process and waits by polling stream state. |
+| Hand-off of an estimate | One asynchronous copy to host memory, the ring, one ingest copy | A device pointer and an event. No copy. |
+| Ordering between the two | MPS client priority (two levels), an active-thread ceiling or a static SM partition on the sensor. Hints and ceilings, not guarantees. | CUDA stream priority. A hint, not a guarantee. |
+| Where it runs | One Spark, two Sparks, GB300 instances, and as a dApp beside Aerial's L1 | One GPU of one host. A process cannot span two GPU instances or two hosts, and project code cannot enter Aerial's L1. |
+| Receiver build | One read-only patch (S5.2) | The receiver links the core and TensorRT |
+| What a paper can measure | The radio's tails with the tap off, capture only and concurrent, per sharing mode and per placement | One cell |
+
+Neither layout removes contention for the GPU. Both let sensing kernels overlap the receiver's. The single process saves the export path, on the order of 100 us at the median on a Spark by the cuSense breakdown, against a sensing budget of milliseconds: the window of the demonstration closes about 1.5 ms after its first sample and its proposed deadline is 5 ms. It pays for that with the isolation, with every placement but one, and with the comparison the papers are built on.
+
+### What prior systems establish
+
+| System | Layout | Hand-off | Reported |
+|---|---|---|---|
+| cuSense on the Aerial dApp framework. [Villa et al.](https://arxiv.org/abs/2512.06493v3) | A separate process beside the L1, sharing the GPU by MPS or MIG | Device-to-host copy, ping-pong host shared memory, one indication per slot | The framework adds about 84 us per slot on a GH200. On a DGX Spark with MPS the native TensorRT step takes 58 us and the closed loop 187 us at the median. With time slicing every GPU engine takes about 0.5 ms, with tails up to 1.3 ms on the Spark. MPS is within about 10 percent of MIG. cuSense itself: 241 us. The L1 "reported no errors". Its service-time tails are not reported. |
+| OCUDU dApp platform. [O'Shea et al.](https://arxiv.org/abs/2609.07843), [interface study](https://arxiv.org/abs/2609.07805) | Coupling is an axis. In the DU process, on the PHY lane's stream, for work whose result must return inside the slot. Observers and advisory work may sit in the DU process, in a supervised process on a shared-memory ring, or behind E3. | Ring: try-lock, copy, eventfd, three system calls per publication. GPU payloads through a CUDA IPC pool. | On a GB10: ring producer 1.97 us at the median, 2.34 us quiet against 167 us with a cell on the air at the 99.9th percentile. Consumer wake 99 us against 1,620 us. GPU-resident inline floor 119 us against 801 us. Sensing use cases are classed as observers and are feasible at every position. The comparison of the PHY with the runtime disabled and enabled is stated as pending. |
+| InterfO-RAN, ARCHES, Aerial Framework. [Neasamoni Santhi et al.](https://arxiv.org/abs/2507.23177), [ARCHES](https://arxiv.org/abs/2604.23397), [Cohen-Arazi et al.](https://arxiv.org/abs/2510.01533v1) | Inside the PHY pipeline | Device tensors | A model that replaces or augments a PHY stage: an interference detector on the received I/Q, an AI channel estimator switched against MMSE at slot boundaries, pipeline modules lowered to TensorRT. |
+
+1. A consumer of PHY outputs whose deadline is longer than a slot runs outside the receiver, on both stacks this project targets. The in-process position is used where a result must return to the receiver inside the slot. Sensing here returns nothing to the receiver.
+2. The sharing mode matters more than the process count. MPS and MIG keep a small engine within tens of microseconds of each other. A sensor that silently falls back to time slicing loses about half a millisecond per step.
+3. The cost of the queue is scheduling, not bytes. Publication costs 2 us until the host is busy, and then the system calls and the wake carry the tail.
+4. Being inside the receiver's process does not protect a GPU stage from the receiver's load.
+5. Neither stack reports what the sensing load does to the radio's tails. That measurement needs the two-client layout with its three arms, and it is the systems result of protocol A.
+
+Figures of the two OCUDU dApp platform papers are taken from version 1 of each and are checked against the text again before a paper cites them.
+
+### How contention is handled
+
+The receiver is never slowed, queued or reconfigured for the sensor. Every control sits on the sensor's side, and none of them is queue depth.
+
+| Step | Control | Costs |
+|---|---|---|
+| Always | Both processes are proven clients of one MPS server. One GPU submission per window, with no CUDA call while a window is open (S3.6). A spinning consumer on its own core. Everything allocated and the engine warmed before the first slot. | Nothing in the slot |
+| Then, only if the concurrent arm moves the radio's tail beyond the rule of S4.6, one at a time | `mps_priority`: the sensor below normal | Nothing when the GPU is free |
+| | `mps_thread_pct` or `mps_static_sm`: a ceiling on the sensor | Sensor service time |
+| | Sensor release `after_radio`: the sensor submits its window after the calibrated remaining service time of the last uplink slot | That allowance, out of the slack after the uplink burst |
+
+S4.1 runs this order for the demonstration and S4.6 freezes the result. S5.5 sweeps every control for the paper.
+
+### The in-process control cell
+
+`placement: in_process` is defined and not scheduled. In it the staged harness, which is the project's own process, links the native core and hands it a `device` view of the estimate on a second stream of lowest priority. The core, the plan and the engine are unchanged. Its one use is as a control: the cost of the export path and the worth of the process boundary on one GPU, measured against `one_spark` with every other axis held. It would run on the staged harness only, with S5.5. The DU of S5 is not rebuilt for it. Aerial Framework (S10.2) is the in-process host of this project, by that framework's design.
 
 ## Timed stages are compiled
 
@@ -55,14 +104,14 @@ native/sense_core/
 | One input | The core consumes an [observation view](../interfaces/OBSERVATION.md#the-observation-view): a pointer, the record header, a layout name, a dtype and a memory kind. It never sees a grid reader, an E3 message or a file. | The same fixture reaches the core through the OCUDU layout and the Aerial layout and gives the same cube (S3.6) |
 | One registry | A native unit carries the name of its Python reference. A plan is a list of names. The manifest stores the names with the hash of each unit. | Plan creation refuses an unknown name |
 | Parity | Each native unit reproduces its reference on the card's vectors and on recorded observations. FP32 and FP16 tolerances are declared separately. Decisions at the frozen threshold are compared, and every flip is listed with its score margin. | `runtime_parity.json` and the parity files of S6.12 and S6.13 |
-| Bounded execution | A plan allocates at configure time and never afterwards. It runs on a stream that the caller supplies, signals completion with an event and never synchronizes the device. An overrun is counted and its decision is published as late. A backlog appears as held credits and counted drops at the ring, never as a delay in the receiver. | A counting allocator and a fake clock in the unit tests |
+| Bounded execution | A plan allocates at configure time and never afterwards. It runs on a stream that the caller supplies, signals completion with an event and never synchronizes the device. An overrun is counted and its decision is published as late. A backlog appears as held credits and counted drops at the ring, never as a delay in the receiver. A sensor that is more than one window behind skips to the newest complete window and counts what it passed. | A counting allocator and a fake clock in the unit tests |
 | Precision | Each unit states its working precision. An ingest unit converts the payload dtype once. | The plan manifest |
 | Engines | An engine is built on the GPU that runs it, from the ONNX export of a frozen artifact. It carries the artifact hash, the TensorRT version and the GPU it was built for, and it is refused anywhere else. | Engine load in S3.6 and S10.1 |
 | C boundary | The public API is C with opaque handles, as the PUSCH API of the pinned receiver and the cuPHY API of the pinned Aerial tree are. Sources stay within C++17 and CUDA C++17, the common subset of the two stacks. | The API header compiles as C and as C++20 |
 | Binding | `ocudu_cuda_isac.sensing.runtime` exposes plans, views and decisions to Python for tests, parity checks and offline scoring. No timed run imports it. | The sensor host starts on a host without Python |
 | Receipt | `scripts/native_core.py` builds the core out of tree and writes `isac-core.json` with the hashes of sources, library, host, binding and engines, the toolchain, the CUDA architecture and the TensorRT version. | `make core-build`, then `verify`, as the adapter does |
 
-The sensor process on DeepSig-OCUDU hosts is `sense_host`. It attaches to the observation ring as its only consumer, turns each record into a view, runs the plan named by the run profile and writes `decisions.jsonl`. Its file writes happen after the publication time is taken.
+The sensor process on DeepSig-OCUDU hosts is `sense_host`. It attaches to the observation ring as its only consumer, turns each record into a view, runs the plan named by the run profile and writes `decisions.jsonl`. It reads the records of a window in place and submits to the GPU once per window. Its file writes happen after the publication time is taken.
 
 ## Stage registry
 

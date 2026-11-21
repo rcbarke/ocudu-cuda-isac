@@ -50,22 +50,28 @@ The two Aerial layouts are those of `dapps/docs/data_representation.md` in the p
 
 ## The ring `obs-ring/v1`
 
-One producer and one consumer share one segment of POSIX shared memory. A second consumer gets its own segment, and the producer's extra copy is counted. Each observation stream has its own segment as well: in the demonstration, O3 for `sense_host` and O2 for the reference sensor of the delay-Doppler branch.
+One producer and one consumer share one ring in POSIX shared memory. The ring is the only queue between the receiver and a sensor, and it is first in, first out. A second consumer gets its own ring, and the producer's extra copy is counted. Each observation stream has its own ring as well: in the demonstration, O3 for `sense_host` and O2 for the reference sensor of the delay-Doppler branch. The queue was reviewed on 2026-11-21 against the published queues of the two reference stacks. [Process layout](../architecture/RUNTIME.md#process-layout)
 
 | Rule | Detail |
 |---|---|
-| Single writer | Only the producer writes the segment. The consumer maps it read-only. The observation path is read-only by construction, and a faulty consumer cannot alter what the receiver published. |
-| Fixed size | The segment is created once with a header, a slot count and a slot size taken from the run profile. Nothing is allocated after start. The header carries a magic value, the layout version, the sizes, the producer's process, the epoch and a hash of the record definition. A consumer built from another definition is refused. |
+| One writer per mapping | The producer creates the ring segment and is its only writer. The consumer maps it read-only. The consumer creates a cursor page of two cache lines and is its only writer. The producer maps it read-only. The observation path is read-only by construction, and a faulty consumer cannot alter what the receiver published. |
+| Fixed size | The segment is created once with a header, a slot count and a slot size taken from the run profile. The slot count is a power of two. Nothing is allocated after start. The header carries a magic value, the layout version, the sizes, the producer's process, the epoch and a hash of the record definition. A consumer built from another definition is refused. |
+| Order | First in, first out. The record with `sequence` n lies in slot n modulo the slot count. The producer publishes in sequence order. The consumer reads in sequence order and releases in sequence order. The ring offers no other order. |
+| Counts | `published`, in the ring header, is the number of records the producer has completed in this epoch. `released`, in the cursor page, is the number the consumer has finished with. Each is a 64-bit count on its own cache line, written by one side with a single aligned store. `published - released` records are held. A credit is a free slot: the slot count minus the records held. |
 | Slot | A generation counter, the record header, the validity bits and the payload. The producer raises the generation to an odd value before it writes a slot and to the next even value when the slot is complete. |
-| Publication | The producer publishes a slot only after the completion event of the copy that filled it. It then sends `PUBLISH` with the slot and its generation. It never waits: a full ring, an absent consumer or a full control channel is a counted drop, and the radio job continues. |
-| Read | The consumer checks the generation named by `PUBLISH`, reads the slot, and checks the generation again. A mismatch is a counted stale read, and no decision uses that record. |
-| Credit | The consumer sends `RELEASE` with the slot and generation when its work on the record is complete. The producer reuses a slot only after its release. A release for an old generation or an old epoch restores nothing. |
-| Epoch | A consumer that attaches or reattaches starts a new epoch. The producer reclaims the slots of the old epoch once the old consumer's channel is closed. A consumer that hangs keeps its credits, the ring fills, and drops are counted. |
-| Control channel | A local sequenced-packet socket in the run directory, with fixed-size messages `HELLO`, `PUBLISH`, `RELEASE` and `BYE`. The producer sends without blocking. |
-| Notification | The socket message is the default. A consumer that polls the published count in the segment header is a second mode, compared in S5.5. |
+| Admission | Before it writes, the producer loads `released` and compares. With no credit the new observation is dropped and counted, nothing in the ring is overwritten, and the radio job continues. Admission is two loads and a compare. |
+| Publication | The producer fills the slot it acquired and, after the completion event of the copy that filled it, stores `published`. That store is the publication. Between the admission and that store the producer makes no system call, takes no lock and allocates nothing. It never waits: a full ring or an absent consumer is a counted drop. |
+| Read | The consumer loads `published` and reads the slots up to it in order. For each it checks the generation, reads, and checks the generation again. A mismatch is a counted stale read, and no decision uses that record. |
+| Release | The consumer stores `released = n` when its work on every record below n is complete. A window that is read in place holds its oldest record, so releases follow the window. The producer treats a `released` that moves backwards or passes `published` as a fault of the consumer: it closes the epoch and counts it. |
+| Depth | The run profile sets the slot count: the records a plan holds in place, plus one uplink burst, plus one, rounded up to a power of two. For the O3 stream of the demonstration that is 3 + 3 + 1, so 8 slots. Depth bounds the age of what the consumer can still read. A deeper ring adds age and no safety, so a backlog is never a reason to enlarge it. |
+| Wait mode | `spin`: the consumer polls `published` on its own core with a pause between loads, and the producer never enters the kernel. `wait`: the consumer sets a waiting flag in its cursor page, checks `published` once more and sleeps on an eventfd. The producer loads the flag after its publication store and writes the eventfd, without blocking, only while the flag is set. Timed runs use `spin`. Gates and tests that reserve no core use `wait`. The effective mode is recorded with the run. |
+| Epoch | A consumer that attaches or reattaches starts a new epoch with a new cursor page. The producer reclaims the slots of the old epoch once the old consumer's channel is closed. A consumer that hangs stops releasing, the ring fills, and drops are counted. |
+| Control channel | A local sequenced-packet socket in the run directory, with fixed-size messages `HELLO`, `EPOCH` and `BYE`. It passes the descriptors of the cursor page and of the eventfd, and it detects a consumer that has gone. It carries no message per observation. |
 | Memory | The payload area is host memory. Where the host supports it, the producer registers it with CUDA so that its asynchronous copy lands in the slot, and the consumer registers its read-only mapping for ingest. The effective path is read back and recorded as the `memory_path` entry of the run. |
 
 Every eligible observation ends in one of three counted states: published and released, dropped with its reason, or pending at the declared cutoff. S3.2 owns that accounting.
+
+**What the producer pays.** In the receiver's path one publication is the admission, the write of a slot by a copy that had to be made in any case, and one store. The reason is measured. The supervised ring of the OCUDU dApp platform, also a shared-memory ring beside a CUDA PHY on a GB10, makes three system calls per publication. Its authors report 1.97 us at the median for a 68 kB publication on a quiet host and with a cell on the air, but 2.34 us against 167 us at the 99.9th percentile, and a wake of the sleeping consumer of 99 us against 1,620 us at the 99.9th percentile. The bytes cost the same in both conditions. The tails come from the kernel and the scheduler. This ring therefore keeps system calls out of the producer, and the consumer of a timed run does not sleep. S3.2 measures both wait modes on the Spark, and the published figures are recorded beside them and not graded. [O'Shea et al.](https://arxiv.org/abs/2609.07805)
 
 Two readers implement the consumer side and pass the same unit vectors. `ocudu_cuda_isac.sensing.obs` is the reference reader, written with the Python standard library, so that the `reference` runtime needs no native binding. The consumer in `native/obs_ring/` is the one `sense_host` links.
 
@@ -100,9 +106,14 @@ The core returns a decision record, which `sense_host` appends to `decisions.jso
 | Capacity two, no release: publish A and B, then C | A and B admitted, C dropped and counted, the producer returned without waiting |
 | The producer overwrites its scratch buffer after publishing B | B in the ring is unchanged |
 | A read that straddles a rewrite of the slot | Counted as a stale read. No record is delivered. |
-| `RELEASE` twice, or for an old generation | One credit restored, never two |
+| The same `released` count stored twice, or a count from an old epoch | One credit restored per record, never two |
+| `released` moves backwards, or passes `published` | The epoch is closed and the fault is counted. No slot is reused on the strength of that count. |
+| Three publications, then the consumer reads | Sequences n, n+1 and n+2, from consecutive slots, in that order |
+| 1,000 publications to a spinning consumer | The producer made no system call between admission and publication, by the count of the library's own system-call shim |
+| A waiting consumer, flag set and then cleared | One eventfd write for the publication that found the flag set, none afterwards |
+| The consumer sets the flag while the producer publishes | The record is seen at the consumer's second check or by the eventfd. No publication is slept through. |
 | The consumer exits while holding a credit | New epoch, slots reclaimed after the channel closes, no credit from the old epoch accepted |
 | A consumer built with another record definition | Refused at attach, with both hashes in the message |
-| The consumer tries to write to its mapping | The write is refused |
+| The consumer tries to write to the ring, or the producer to the cursor page | The write is refused |
 | The same slot read by the reference reader and by the native consumer | Equal header fields and equal payload bytes |
 | Element `[1][3][2][5]` of an `ocudu_o3_fp16` payload | DMRS symbol 1, receive port 2, subcarrier 41 of the allocation |

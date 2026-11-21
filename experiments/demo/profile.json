@@ -94,6 +94,39 @@
       }
     }
   },
+  "process_layout": {
+    "decided": "2026-11-21",
+    "receiver_and_sensor": "two processes, two clients of one MPS server",
+    "in_process_placement": "defined as a control cell, not scheduled",
+    "queue": {
+      "contract": "obs-ring/v1",
+      "order": "fifo",
+      "rings": "one per observation stream: O3 to sense_host, O2 to the reference sensor",
+      "slots_o3": 8,
+      "slots_rule": "records held in place by the plan, plus one uplink burst, plus one, rounded up to a power of two",
+      "wait_mode_timed": "spin",
+      "wait_mode_audit": "wait",
+      "producer_system_calls_per_publication": 0,
+      "full_ring": "the new observation is dropped and counted; the radio job continues"
+    },
+    "sensor": {
+      "gpu_submissions_per_window": 1,
+      "cuda_context_created_before_receiver": true,
+      "release": "immediate",
+      "behind_by_more_than_one_window": "skip to the newest complete window and count the records passed"
+    },
+    "contention_controls": {
+      "status": "proposed",
+      "applied_to": "the sensor client only",
+      "applied_when": "the concurrent arm moves the radio tail beyond the rule declared in S4.6",
+      "order": [
+        "mps_priority",
+        "mps_thread_pct",
+        "release_after_radio"
+      ],
+      "frozen_by": "S4.6 slo_calibration"
+    }
+  },
   "kpi_page": {
     "record_schema": "kpi/v1",
     "aggregation_window_s": 0.5,
@@ -150,6 +183,9 @@
     "actual_symbol_and_opportunity_times",
     "radio_deadline_ns_and_derivation",
     "separate_mps_client_ids",
+    "mps_client_list_with_both_process_ids",
+    "ring_wait_mode_depth_and_drop_counts",
+    "sensor_release_and_contention_control_in_effect",
     "actual_model_hash_and_threshold",
     "unique_tx_payloads",
     "received_grid_hashes",
