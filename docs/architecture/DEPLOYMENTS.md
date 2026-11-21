@@ -61,6 +61,7 @@ S5.5 varies one of these at a time on the collocated Spark and reads the effecti
 | MPS | Default, active-thread percentage, static SM partition, client priority, memory limit |
 | Stream priority | The pin's PUSCH and PDSCH CUDA stream priority overrides |
 | Ring wait mode | `spin`, `wait`, `spin_then_wait` |
+| Process boundary | Two processes under MPS, two processes under time slicing, and one process with the sensing stream at the lowest or the default priority. Staged harness only. |
 | Sensor release | `immediate`, or `after_radio`: after the calibrated remaining service time of the last uplink slot of the window |
 
 The GB10 shares memory between CPU and GPU. A GPU memory figure is therefore also a system memory figure, and both are recorded.

@@ -92,8 +92,9 @@ The native core takes a view and nothing else. An adapter fills it and keeps the
 | DeepSig-OCUDU, two hosts | A received frame | `host_pinned` |
 | Standalone E3 Agent, Aerial-OCUDU | The E3 shared-memory row that an indication references | `host_shared` |
 | Aerial Framework | The inner receiver's estimate tensor | `device` |
+| DeepSig-OCUDU staged harness, in-process control cell (S5.5) | The receiver's `d_estimates_fp16` | `device` |
 
-A `device` view lets an adapter hand over a buffer with no copy. An adapter in the receiver's own process could use it for an in-process placement. That placement is not scheduled. It would be a new entry on the placement axis with its own ticket.
+A `device` view lets an adapter hand over a buffer with no copy. The in-process control cell of S5.5 uses it: an adapter in the harness's own process hands the core the receiver's estimate buffer with its completion event, and no ring is involved. [Control cell](../architecture/RUNTIME.md#the-in-process-control-cell)
 
 ## Decisions
 

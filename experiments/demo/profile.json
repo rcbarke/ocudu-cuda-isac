@@ -97,7 +97,7 @@
   "process_layout": {
     "decided": "2026-11-21",
     "receiver_and_sensor": "two processes, two clients of one MPS server",
-    "in_process_placement": "defined as a control cell, not scheduled",
+    "in_process_placement": "control cell of S5.5 on the staged harness, after the demonstration; not part of this profile",
     "queue": {
       "contract": "obs-ring/v1",
       "order": "fifo",

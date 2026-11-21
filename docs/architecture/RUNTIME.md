@@ -29,7 +29,7 @@ The sensing application is a separate process. The tree holds no cuSense code, a
 
 ## Process layout
 
-On every DeepSig-OCUDU placement the receiver and the sensor are two processes, joined by one first-in, first-out ring per observation stream. On one Spark they are two clients of one MPS server. The alternative is one process, with the sensing kernels and the TensorRT engine on a stream of the receiver's own CUDA context. It is not built on this host. The layout was reviewed on 2026-11-21 against the published systems below and confirmed for the demonstration and for the papers. Tickets: [S3.2, S3.6](../dev/DEVELOPMENT.md#phase-s3), [S4.1](../dev/DEVELOPMENT.md#phase-s4), [S5.5](../dev/DEVELOPMENT.md#phase-s5).
+On every DeepSig-OCUDU placement the receiver and the sensor are two processes, joined by one first-in, first-out ring per observation stream. On one Spark they are two clients of one MPS server. The alternative is one process, with the sensing kernels and the TensorRT engine on a stream of the receiver's own CUDA context. It is built once, on the staged harness, as the control cell of S5.5, and is not a deployment of this project. The layout was reviewed on 2026-11-21 against the published systems below and confirmed for the demonstration and for the papers. Tickets: [S3.2, S3.6](../dev/DEVELOPMENT.md#phase-s3), [S4.1](../dev/DEVELOPMENT.md#phase-s4), [S5.5](../dev/DEVELOPMENT.md#phase-s5).
 
 | Question | Two processes under MPS | One process, sensing on a stream of the receiver's context |
 |---|---|---|
@@ -74,7 +74,18 @@ S4.1 runs this order for the demonstration and S4.6 freezes the result. S5.5 swe
 
 ### The in-process control cell
 
-`placement: in_process` is defined and not scheduled. In it the staged harness, which is the project's own process, links the native core and hands it a `device` view of the estimate on a second stream of lowest priority. The core, the plan and the engine are unchanged. Its one use is as a control: the cost of the export path and the worth of the process boundary on one GPU, measured against `one_spark` with every other axis held. It would run on the staged harness only, with S5.5. The DU of S5 is not rebuilt for it. Aerial Framework (S10.2) is the in-process host of this project, by that framework's design.
+`placement: in_process` is scheduled in S5.5, after the demonstration (decided 2026-11-21). In it the staged harness, which is the project's own process, links the native core and hands it a `device` view of the estimate on a second stream of lowest priority. The core, the plan and the engine are unchanged, and the executable is a separate target, so the two-process binaries are not touched. Its one use is as a control: the cost of the export path and the worth of the process boundary on one GPU, measured against `one_spark` with every other axis held. Aerial Framework (S10.2) is the in-process host of this project, by that framework's design, but it changes the host stack with the layout, so it cannot isolate the boundary.
+
+The cell is measured by the method of the cuSense paper, so that its numbers read beside that paper's tables: one run of 60 s per cell and arm with the first 2 s discarded, engines warmed before the run, GPU steps timed with CUDA events, and the median and the 99th percentile of every step of the data path.
+
+| Cell | Layout and sharing | Steps that exist |
+|---|---|---|
+| Baseline | Two processes, MPS | Copy out of the GPU, publish, consumer delay, ingest, kernels, engine, decision |
+| Labeled control | Two processes, time slicing | The same |
+| Control | One process, sensing stream at the lowest priority | Ingest, kernels, engine, decision |
+| Control | One process, sensing stream at the default priority | The same |
+
+Each cell runs with the tap off, capture only and concurrent. The cuSense boundary starts at the notification of the last record of the window in the two-process cells, and at the completion event of the last estimate in the in-process cells. Beside the latencies the ticket reports what the cuSense paper leaves out: the radio's service-time tails per arm, and what the receiver does when the sensing stage fails. The result holds for one GPU on the staged harness. The DU of S5 is not rebuilt for it.
 
 ## Timed stages are compiled
 
@@ -147,6 +158,7 @@ These entries mirror the serving options that the cuSense paper compares on one 
 |---|---|---|---|
 | DeepSig-OCUDU on one Spark, and on the GB300 | `sense_host`, from the observation ring | Host shared memory | S3.2, S3.6, S8.1 |
 | DeepSig-OCUDU on two Sparks | `sense_host`, from socket or verbs frames | Pinned host memory | S7.1, S7.2 |
+| DeepSig-OCUDU staged harness, in-process control cell | `pilot_ls_inproc`, from the receiver's estimate buffer | Device memory | S5.5 |
 | Standalone E3 Agent on the Spark (port rehearsal) | The dApp adapter, from E3 shared memory | Host shared memory | S11.2, built in M1 |
 | Aerial Framework | The pipeline adapter, from the inner receiver's estimate | Device memory | S10.2 |
 | Aerial-OCUDU over the air | The dApp adapter, from E3 shared memory | Host shared memory | S11.2 |
@@ -180,6 +192,7 @@ The port is rehearsed before any Aerial hardware exists. The pinned Aerial tree 
 | Sensing meets a deadline beside the CUDA PHY at a fixed false-alarm point | A `native` run, service levels calibrated on that runtime and host state, the reduction of every opportunity | S3.6, S5.6, S9.2 |
 | The compiled core runs below the PyTorch reference | Both runtimes on identical records and arms, with identical decisions or listed flips | S3.6: `runtime_parity.json`, `runtime_latency.json` |
 | Sensing changes the radio's tails by a stated amount under MPS, across two hosts or under MIG | `native` runs with the tap off, capture only and concurrent at the same offered trace | S4.1, S5.5, S7.3, S8.2 |
+| The process boundary costs a stated latency and protects the radio by a stated amount on one GPU | The four cells of the in-process control with their three arms, equal decisions, the per-step table and the fault runs. Staged harness only. | S5.5: `process_boundary.json` |
 | A classical chain and a learned model are compared at one deadline | Native units for every entry in both chains | S6.12, S6.13, S6.5 |
 | A receiver stage or a training domain changes detection | Paired records. Either runtime, when the parity file shows the same decisions. | S6.7 |
 | One sensing core runs beside DeepSig-OCUDU and on the Aerial stacks | The link test, the same vectors on each host, equal decisions from the ring and from the standalone E3 Agent, then the live runs | S3.6, S11.2, S10.2, S10.3 |
