@@ -1,6 +1,8 @@
 """Check offline dependency acquisition with small synthetic source archives."""
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -64,6 +67,24 @@ class SourcesTest(unittest.TestCase):
         sources.receipt_path(self.root, self.item).write_text(json.dumps({}))
         with self.assertRaisesRegex(ValueError, "manifest differs"):
             sources.verify_snapshot(self.root, self.item)
+
+    def test_reference_archive_is_optional_and_a_dependency_archive_is_required(self):
+        reference = {**self.item, "path": "ext/reference", "commit": "c" * 40}
+        (self.root / "ext").mkdir()
+        lock = self.root / "ext/lock.json"
+        lock.write_text(json.dumps({"dependencies": [self.item], "references": [reference]}))
+        with mock.patch.object(sources, "ROOT", self.root), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            sources.main([str(self.root)])
+        self.assertEqual(output.getvalue().splitlines(),
+                         [f"ext/ocudu {self.commit} (archive verified)",
+                          f"ext/reference {'c' * 40} (reference source, no archive supplied)"])
+        self.assertTrue((self.target / "source.cc").is_file())
+        self.assertFalse((self.root / "ext/reference").exists())
+        lock.write_text(json.dumps({"dependencies": [reference], "references": []}))
+        with mock.patch.object(sources, "ROOT", self.root), \
+                self.assertRaisesRegex(ValueError, "Missing exact ext/reference ZIP"):
+            sources.main([str(self.root)])
 
     def test_nonempty_destination_preserved_on_failure(self):
         self.target.mkdir(parents=True)

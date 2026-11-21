@@ -4,7 +4,7 @@ PYTHON ?= python3
 help:
 	@echo "make env             Create the local isac virtual environment"
 	@echo "make check           Run the portable tests and four-opportunity replay"
-	@echo "make hydrate         Fetch all three locked external Git worktrees"
+	@echo "make hydrate         Fetch the locked external Git worktrees: three dependencies, two reference sources"
 	@echo "make env-full        Install the pinned Sionna and RT sources in isac"
 	@echo "make accept-s0       Run every Sprint 0 gate and archive the evidence (BACKENDS=\"cpu cuda\")"
 	@echo "make native-deps     Install the missing OCUDU development libraries with apt-get (safe to repeat)"
@@ -29,9 +29,11 @@ env-full:
 pins:
 	$(PYTHON) scripts/check_pins.py
 
+# The Aerial reference source tracks about 400 MB of test vectors and engines with Git LFS. Nothing here
+# reads them, so they stay pointer files. No dependency uses Git LFS.
 hydrate: pins
-	git submodule update --init --checkout
-	$(PYTHON) scripts/check_pins.py --worktrees
+	GIT_LFS_SKIP_SMUDGE=1 git submodule update --init --checkout
+	$(PYTHON) scripts/check_pins.py --worktrees --references
 
 test:
 	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests -v

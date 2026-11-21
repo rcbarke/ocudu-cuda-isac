@@ -130,9 +130,11 @@ def locked_sources():
 
 def pinned_sources():
     """Verify every locked checkout against its pin and return the three source identities."""
-    from check_pins import verify_sources  # sibling script, importable when run from scripts/
+    from check_pins import NAMES, verify_sources  # sibling script, importable when run from scripts/
 
-    return {source["name"]: source for source in verify_sources(ROOT, worktrees=True)}
+    # The lock also pins reference sources. They are read, never installed, and stay out of this report.
+    return {source["name"]: source for source in verify_sources(ROOT, worktrees=True)
+            if source["name"] in NAMES}
 
 
 def file_digest(path):

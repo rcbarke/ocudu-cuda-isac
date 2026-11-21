@@ -8,3 +8,9 @@
 [submodule "ext/sionna-rt"]
 	path = ext/sionna-rt
 	url = https://github.com/NVlabs/sionna-rt.git
+[submodule "ext/aerial-cuda-accelerated-ran"]
+	path = ext/aerial-cuda-accelerated-ran
+	url = https://github.com/NVIDIA/aerial-cuda-accelerated-ran.git
+[submodule "ext/aerial-sample-apps"]
+	path = ext/aerial-sample-apps
+	url = https://github.com/NVIDIA/aerial-sample-apps.git

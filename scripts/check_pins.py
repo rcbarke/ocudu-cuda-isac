@@ -11,7 +11,12 @@ from source_archives import verify_snapshot
 ROOT = Path(__file__).resolve().parents[1]
 # Logical dependency names used by the tools. ext/lock.json maps each one to its checkout path.
 NAMES = ("ocudu", "sionna", "sionna-rt")
-FORMAT = 3
+# Reference sources are pinned by the same lock, .gitmodules entry and gitlink. They are read, and
+# nothing builds or installs them in the isac environment. A worktree check covers the dependencies;
+# it covers a reference source when --references is given or --only names that source.
+REFERENCES = ("aerial-cuda-accelerated-ran", "aerial-sample-apps")
+LOCKED = NAMES + REFERENCES
+FORMAT = 4
 FIELDS = ("name", "path", "url", "commit", "archive_sha256", "snapshot_manifest_sha256")
 
 
@@ -23,18 +28,23 @@ def load_lock(root):
     """Return the lock entries keyed by logical name after validating their shape."""
     lock = json.loads((root / "ext/lock.json").read_text())
     if lock.get("format") != FORMAT:
-        raise ValueError(f"ext/lock.json: expected format {FORMAT}, which names every dependency; "
-                         f"found format {lock.get('format')!r}")
-    items = lock["dependencies"]
+        raise ValueError(f"ext/lock.json: expected format {FORMAT}, which names every dependency and "
+                         f"lists the reference sources; found format {lock.get('format')!r}")
+    groups = (("dependencies", NAMES), ("references", REFERENCES))
+    for key, _ in groups:
+        if not isinstance(lock.get(key), list):
+            raise ValueError(f"ext/lock.json: {key!r} must be a list")
+    items = [item for key, _ in groups for item in lock[key]]
     for item in items:
         missing = [field for field in FIELDS if not isinstance(item.get(field), str)]
         if missing:
             raise ValueError(f"ext/lock.json: entry {item.get('path', item.get('name'))!r} lacks "
                              + ", ".join(missing))
-    names = sorted(item["name"] for item in items)
-    if names != sorted(NAMES):
-        raise ValueError("ext/lock.json must name exactly " + ", ".join(NAMES) + "; found "
-                         + ", ".join(names))
+    for key, expected in groups:
+        names = sorted(item["name"] for item in lock[key])
+        if names != sorted(expected):
+            raise ValueError(f"ext/lock.json {key} must name exactly " + ", ".join(expected) + "; found "
+                             + (", ".join(names) or "none"))
     paths = [item["path"] for item in items]
     for path in paths:
         parts = PurePosixPath(path).parts
@@ -54,7 +64,7 @@ def load_lock(root):
 def declared_submodules(root):
     """Map every path declared in .gitmodules to its URL, whatever the submodule is called."""
     if not (root / ".gitmodules").is_file():
-        raise ValueError(".gitmodules is missing. Declare the three locked sources as submodules "
+        raise ValueError(".gitmodules is missing. Declare the locked sources as submodules "
                          "(see ext/README.md).")
     listing = subprocess.run(
         ["git", "config", "--file", ".gitmodules", "--null", "--get-regexp", r"^submodule\..*\.(path|url)$"],
@@ -67,8 +77,13 @@ def declared_submodules(root):
     return {entry.get("path"): entry.get("url") for entry in settings.values()}
 
 
-def verify_sources(root, worktrees=False, only=None):
-    """Yield the verified identity of each dependency. Raise ValueError on the first mismatch."""
+def verify_sources(root, worktrees=False, only=None, references=False):
+    """Yield the verified identity of each locked source. Raise ValueError on the first mismatch.
+
+    The lock, the submodule declaration and the gitlink are checked for every source. With
+    ``worktrees`` the installed tree of each dependency is checked too, and that of a reference
+    source when ``references`` is set or ``only`` names it.
+    """
     entries = load_lock(root)
     paths = sorted(item["path"] for item in entries.values())
     declared = declared_submodules(root)
@@ -80,7 +95,7 @@ def verify_sources(root, worktrees=False, only=None):
             raise ValueError("Committed submodules (" + (", ".join(gitlinks) or "none")
                              + ") differ from the lock paths (" + ", ".join(paths)
                              + "). Commit the submodules or correct the path in ext/lock.json.")
-    for name in NAMES:
+    for name in LOCKED:
         item = entries[name]
         path, sha = item["path"], item["commit"]
         if path not in declared:
@@ -93,7 +108,7 @@ def verify_sources(root, worktrees=False, only=None):
         if only and name != only:
             continue
         kind = "parent gitlink" if metadata else "source-export declaration"
-        if worktrees:
+        if worktrees and (name in NAMES or references or name == only):
             checkout = root / path
             if (checkout / ".git").exists():
                 if (git("rev-parse", "HEAD", cwd=checkout) != sha or
@@ -106,24 +121,28 @@ def verify_sources(root, worktrees=False, only=None):
         yield {"name": name, "path": path, "url": item["url"], "commit": sha, "kind": kind}
 
 
-def check(root, worktrees=False, only=None):
-    """Yield one summary line per verified dependency."""
-    for source in verify_sources(root, worktrees, only):
+def check(root, worktrees=False, only=None, references=False):
+    """Yield one summary line per verified source."""
+    for source in verify_sources(root, worktrees, only, references):
         yield f"{source['path']} {source['commit']} ({source['kind']})"
 
 
 def main(argv=None, root=ROOT):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worktrees", action="store_true", help="verify the actual installed source trees")
-    parser.add_argument("--only", choices=NAMES, help="limit installed-source verification to one dependency")
-    parser.add_argument("--path", choices=NAMES, help="print the locked checkout directory of one dependency")
+    parser.add_argument("--references", action="store_true",
+                        help="with --worktrees, also verify the trees of the reference sources")
+    parser.add_argument("--only", choices=LOCKED, help="limit installed-source verification to one source")
+    parser.add_argument("--path", choices=LOCKED, help="print the locked checkout directory of one source")
     options = parser.parse_args(argv)
-    if options.path and (options.worktrees or options.only):
-        parser.error("--path cannot be combined with --worktrees or --only")
+    if options.path and (options.worktrees or options.only or options.references):
+        parser.error("--path cannot be combined with --worktrees, --references or --only")
+    if options.references and not options.worktrees:
+        parser.error("--references needs --worktrees")
     if options.path:
         print(root / load_lock(root)[options.path]["path"])
         return
-    for line in check(root, options.worktrees, options.only):
+    for line in check(root, options.worktrees, options.only, options.references):
         print(line)
 
 

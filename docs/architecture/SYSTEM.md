@@ -9,8 +9,8 @@ One fixed UE illuminates an environment with zero or one moving target. A calibr
 | 1. Generate an episode | Offline Sionna RT → offline store | Evaluate complex CFR at the occupied baseband frequencies and actual symbol times. Store axes, dtype, calibration, units, reference, solver settings and hashes. Keep scene truth with the evaluator. |
 | 2. Replay | Grant/stimulus + episode → project adapter | Use the existing legal transmit grid and matching DMRS. Form each RX grid as the sum of per-port channel times signal plus receiver-specific noise. H already includes Doppler phase. Put Y in an available OCUDU grid and signal its readiness. |
 | 3. Execute | OCUDU grid → pinned PUSCH processor | Preserve the real scheduler or harness grant, allocator, grid ownership, CPU/CUDA selectors and decoder. Record true CRC and compare recovered bytes against the transmitted block. |
-| 4. Observe | Owned ingress or estimator output → bounded queue | Release only a completed snapshot. Attach the actual pilot positions, sequence ID, array order, clock domain and first/last sample times. A full ring drops observer work. Move raw Y or CE only on the declared observation route. |
-| 5. Sense | Second CUDA process → publication | In M1 attach DSP and sensor as different MPS clients. Build one causal radar cube from the pilot history and publish a presence score, a location map where the model has one, and support metadata. Join each publication to its origin before assessing deadlines. |
+| 4. Observe | Owned ingress or estimator output → bounded queue | Release only a completed snapshot. Attach the actual pilot positions, sequence ID, array order, clock domain and first/last sample times. A full ring drops observer work. Move raw Y or CE only on the declared observation route. The receiver process alone writes the ring, and the sensor maps it read-only. |
+| 5. Sense | Second CUDA process → publication | In M1 attach DSP and sensor as different MPS clients. Build one causal radar cube from the pilot history and publish a presence score, a location map where the model has one, and support metadata. Join each publication to its origin before assessing deadlines. The sensor is the native core in every timed run, the demonstration included. Its Python reference defines each stage and runs beside it for comparison. |
 | 6. Evaluate | Publications and receiver events → offline evaluation | Join truth on opaque IDs. Keep first contributing sample, output publication and receiver-result availability distinct. Compare target-present and target-absent episodes plus matched DSP-only runs. |
 
 ### Data the model can see
@@ -40,7 +40,11 @@ The path above does not depend on which reference signal is observed, how the UE
 | UE realization | None attached. A Sionna RT radar CFR applied to a legal grant at the receiver replaces the 5GC, the UE and the PRACH connection. | An OAI software UE with an OAI 5GC on the split-8 ZeroMQ boundary (S6.10), then Pixel 7 UEs over the air (S11) |
 | Host | DeepSig-OCUDU staged harness | DeepSig-OCUDU DU as monolithic, split 8 and split 7.2x (S5.4), Aerial Framework (S10), Aerial-OCUDU over the air (S11) |
 
-The sensing core sees only the observation record. Each host has one adapter that produces that record. Simulators are used offline to generate episodes and never run in a slot loop. [Port contract](ABLATIONS.md) · [Aerial ports](../integration/AERIAL.md)
+The sensing core sees only the observation record. Each host has one adapter that produces that record. Simulators are used offline to generate episodes and never run in a slot loop. [Port contract](ABLATIONS.md) · [Aerial ports](../integration/AERIAL.md) · [code levels](RUNTIME.md) · [observation contract](../interfaces/OBSERVATION.md)
+
+## Code levels
+
+The receiver is changed by one read-only patch, which exports its estimate. Project C++ adapts each host. Sensing runs in a native core of CUDA kernels and TensorRT engines whenever it is timed, and its Python reference defines and checks every stage. The core takes an observation view and has no host, so the same source runs beside DeepSig-OCUDU, as an Aerial Framework module and as an Aerial dApp. [Code levels and the native core](RUNTIME.md)
 
 ## KPI plane
 

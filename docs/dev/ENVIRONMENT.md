@@ -58,17 +58,19 @@ ocudu-isac-replay --help
 
 ## S0.2 — Install and exercise the pinned upstreams
 
-**Entry and outputs.** Use the active S0.1 interpreter. This sprint materializes the three pinned source trees and installs both simulation distributions. `ext/ocudu-deepsig-cuda-inline` supplies C++/CUDA source to the subsequent S1 build. The full S1 build exposes `gnb` and `pusch_e2e_pipeline_test` in `isac/bin/`. The simulation check returns a JSON report and a failure exit code if the requested CPU or CUDA backend cannot run.
+**Entry and outputs.** Use the active S0.1 interpreter. This sprint materializes the three pinned dependency trees and installs both simulation distributions. `ext/ocudu-deepsig-cuda-inline` supplies C++/CUDA source to the subsequent S1 build. The full S1 build exposes `gnb` and `pusch_e2e_pipeline_test` in `isac/bin/`. The simulation check returns a JSON report and a failure exit code if the requested CPU or CUDA backend cannot run.
 
 **Acquire the source.** Use one documented route, then verify actual file contents or checked-out commits. The direct `ext/sionna-rt` checkout supplies RT. Both 2.2.0 wheels were built from the supplied archives with the nested RT checkout empty. An isolated package-only install resolved `sionna.phy` from Sionna and `sionna.rt` from the direct RT wheel. The numerical runtime check below additionally exercises their binary dependencies. [Dependency acquisition and lock](../../ext/README.md)
 
 ```bash
 # With access to the upstream Git remotes
 make hydrate
-# Alternatively, for a fresh checkout with the three supplied upstream ZIPs
+# Alternatively, for a fresh checkout with the three supplied dependency ZIPs
 # python scripts/source_archives.py /absolute/path/to/archives
 python scripts/check_pins.py --worktrees > "$run_dir/sources.txt"
 ```
+
+`make hydrate` also fetches the two reference sources, with their Git LFS objects left as pointer files. The worktree check above covers the three dependencies, which is all that the simulation and native gates need. [Reference sources](../../ext/README.md#reference-sources)
 
 **Install.** The pinned Sionna 2.2.0 package declares Python ≥3.11, torch ≥2.9.1, NumPy ≥2.2.6, SciPy ≥1.15.3, h5py ≥3.15.1, matplotlib ≥3.10.8 and importlib-resources ≥6.5.2. The pinned RT 2.2.0 package requires Mitsuba 3.9.1 and Dr.Jit 1.5.0. Pip resolves the full declared dependency lists. Read each checkout's top-level `pyproject.toml` for the effective constraints. On a GPU host, provision a torch distribution supporting the actual GPU SM, Python ABI, CPU architecture and driver. On a CPU-only host select a CPU torch wheel if desired. Install a compatible locally staged torch wheel with `python -m pip install /path/to/compatible-torch.whl` before the full bootstrap, or use the vendor's pip command for that host. Record the wheel or index and its version. [PyTorch platform selector](https://pytorch.org/get-started/locally/)
 
@@ -107,6 +109,16 @@ The bootstrap invokes pip with **both local simulation paths in one install tran
 make accept-s1.1 BACKENDS="cpu cuda"    # S1.1: build, grade, start both executables, archive
 bash scripts/run_spark_baseline.sh --profile paper --skip-build
 ```
+
+## Native sensing core
+
+**Entry.** S3.6 builds `native/sense_core/` on a host that passed S1.1, with the same compiler and CUDA toolkit and with `nvcc` targeting that host's GPU architecture, 121 on the Spark. The core needs no OCUDU build and no simulator. It adds three things to a host: a TensorRT build with headers for the installed CUDA major version, ONNX in `isac` for the export step, and pybind11 for the binding. [Code levels and the native core](../architecture/RUNTIME.md)
+
+**What is known.** `environments/full-constraints.txt` pins PyTorch 2.15.0 with the cuFFT and cuSOLVER libraries and names no TensorRT, ONNX or pybind11 package. The pinned sample applications install `tensorrt_cu13` 10.14.1.48.post1, `onnx` 1.21 or later and `pybind11` 2.13 or later for their dApps, and the cuSense paper reports TensorRT engines running on a DGX Spark. Whether such a build installs on `spark-ecf8` beside CUDA 13.5 and driver 580.178.04 has not been established from this repository.
+
+**Probe first.** The demonstration requires the TensorRT backend, so on `spark-ecf8` this probe is checkpoint D0 of the critical path. The first step of S3.6 on a host records the TensorRT version and its origin, builds a one-layer engine on the GPU, executes it and reads back the device the engine reports. Pin the versions the probe accepted in `environments/` with that patch, and extend the environment report with them. A host whose probe fails records the reason. Its kernels still build, because TensorRT is an optional component of the core, and its models run through the LibTorch backend of the pinned PyTorch distribution once the probe has confirmed that the distribution ships the C++ headers and libraries that backend needs. The backend is named in every manifest.
+
+**Rules.** Nothing is installed from the reference sources under `ext/`. The sensor host is a native executable and must start on a host with no Python. The binding is for tests and offline scoring, and no timed run imports it. An engine is rebuilt on every GPU that runs it and is refused elsewhere.
 
 ## Sprint 0 acceptance on one host
 

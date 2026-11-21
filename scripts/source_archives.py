@@ -1,4 +1,4 @@
-"""Install the three exact development-source ZIPs into ext/ and verify their files."""
+"""Install the exact development-source ZIPs into ext/ and verify their files."""
 import argparse
 import hashlib
 import json
@@ -107,19 +107,25 @@ def import_one(root, item, archive):
         staged.replace(target)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, help="directory containing the original dependency ZIPs")
-    args = parser.parse_args()
-    items = json.loads((ROOT / "ext/lock.json").read_text())["dependencies"]
+    args = parser.parse_args(argv)
+    lock = json.loads((ROOT / "ext/lock.json").read_text())
+    # Every dependency needs its ZIP. A reference source is imported when its ZIP is in the directory.
+    items = [(item, True) for item in lock["dependencies"]]
+    items += [(item, False) for item in lock.get("references", [])]
     candidates = {}
     for path in sorted(args.directory.glob("*.zip")):
         with zipfile.ZipFile(path) as archive:
             candidates.setdefault(archive.comment, []).append(path)
-    for item in items:
+    for item, required in items:
         key = item["commit"].encode("ascii")
         choices = candidates.get(key, [])
         source = next((path for path in choices if digest_file(path) == item["archive_sha256"]), None)
+        if source is None and not required:
+            print(f"{item['path']} {item['commit']} (reference source, no archive supplied)")
+            continue
         if source is None:
             raise ValueError(f"Missing exact {item['path']} ZIP with SHA-256 {item['archive_sha256']}")
         target = ROOT / item["path"]

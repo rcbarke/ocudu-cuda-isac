@@ -8,7 +8,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-21 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row), Sprint 2.1 (`grant_fixture`, the first project-owned component) and Sprint 2.2 (`episode_pair`: the uplink grant fixture of an episode, the matched channel pair on it and the episode set) are accepted on one DGX Spark.** S2.3 `grid_apply` is next. S2.3 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built)
+As of 2026-11-21 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row), Sprint 2.1 (`grant_fixture`, the first project-owned component) and Sprint 2.2 (`episode_pair`: the uplink grant fixture of an episode, the matched channel pair on it and the episode set) are accepted on one DGX Spark.** S2.3 `grid_apply` is next. S2.3 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date, and again for the code level of every ticket: sensing that is timed runs in a native core of CUDA kernels and TensorRT engines, and the demonstration shows that latency. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built) · [code level of every ticket](docs/dev/DEVELOPMENT.md#code-level-of-every-ticket)
 
 ### Sprint 0 acceptance
 
@@ -267,12 +267,13 @@ The first command is the unit gate and needs only the core environment. `make ac
 |---|---|
 | [docs/dev](docs/dev/DEVELOPMENT.md) | Sprint cards, host setup, paper baseline and reproduction |
 | [docs](docs/README.md) | System design, integration boundaries, interfaces, measurement, evidence and references |
-| [ext](ext/README.md) | CUDA-OCUDU, Sionna and Sionna RT as pinned Git submodules, with the lock that owns their paths |
+| [ext](ext/README.md) | CUDA-OCUDU, Sionna and Sionna RT as pinned Git submodules, two NVIDIA Aerial repositories pinned as read-only reference sources, and the lock that owns their paths |
 | [environments](environments/README.md) | Host environment notes and the validated third-party constraints |
 | [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting, the grant record, the grant schedule, the channel episodes and the episode set (`episodes/`) and the sensing-source registry (`sensing/sources/`) |
 | [native/ocudu_adapter](native/ocudu_adapter/README.md) and [patches/ocudu](patches/ocudu/README.md) | Native adapter built against the accepted OCUDU build (the fixture adapter of S2.1; replay and observer adapters arrive with their tickets) and narrow upstream patches |
 | [configs](configs/) and [experiments](experiments/README.md) | Working smoke inputs, grant records, integration configurations, advisor profile and publication matrix |
 | [data](data/README.md) and [results](results/README.md) | Episode provenance and run evidence |
 | [scripts](scripts/), [tests](tests/) and [CI](.github/workflows/portable.yml) | Environment, pin and acceptance gates, portable regressions and the hosted CPU checks |
+| [native/sense_core](native/sense_core/README.md) and [native/obs_ring](native/obs_ring/README.md) | Specified, not yet built: the native sensing core that every timed sensing stage runs in (S3.6, S6.12, S6.13) and the observation ring between the receiver and the sensor (S3.2). [Code levels](docs/architecture/RUNTIME.md) |
 
 M1 shares one Spark under MPS, M2 uses two Sparks with a measured CX7 observation path, and M3 uses two GPU instances on one GB300 with a full-GPU control. See [deployments](docs/architecture/DEPLOYMENTS.md), the [advisor demonstration](docs/demo/ADVISOR_DEMO.md) and the [upstream reuse ledger](docs/integration/UPSTREAM.md).

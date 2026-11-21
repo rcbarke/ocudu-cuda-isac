@@ -293,6 +293,22 @@ class EnvironmentGateTests(unittest.TestCase):
             self.assertEqual(environment.main(["--profile", "core", "--with-native"]), 1)
             self.assertIn("must name every dependency", json.loads(output.getvalue())["error"])
 
+    def test_report_lists_the_dependencies_and_no_reference_source(self):
+        names = ("ocudu", "sionna", "sionna-rt")
+        yielded = [{"name": name, "kind": "Git worktree"} for name in names]
+        yielded += [{"name": "aerial-sample-apps", "kind": "parent gitlink"}]
+        calls = []
+
+        def verify_sources(root, worktrees=False):
+            calls.append((root, worktrees))
+            return iter(yielded)
+
+        double = types.SimpleNamespace(NAMES=names, verify_sources=verify_sources)
+        with mock.patch.dict(sys.modules, {"check_pins": double}):
+            sources = environment.pinned_sources()
+        self.assertEqual(list(sources), list(names))
+        self.assertEqual(calls, [(environment.ROOT, True)])
+
     def test_installed_files_must_equal_the_pinned_source_tree(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp).resolve()

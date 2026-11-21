@@ -18,7 +18,8 @@
     "gpu_sharing": "mps_default",
     "placement": "one_spark",
     "split": "staged_harness",
-    "host": "deepsig_ocudu"
+    "host": "deepsig_ocudu",
+    "runtime": "native"
   },
   "radio": {
     "ue_count": 1,
@@ -54,6 +55,14 @@
     "run_structure": "comparable in kind with the cuSense campaign: open indoor space, one walking person, equal numbers of target-present and target-absent runs"
   },
   "sensing": {
+    "runtime": {
+      "entry": "native",
+      "engine_backend": "tensorrt",
+      "meaning": "The graded cuSense-like branch runs in the native core: CUDA kernels and a TensorRT engine in sense_host, with no Python in the process. Its latency is shown, and recorded beside the published figure without being graded.",
+      "comparison_arm": "the same pipeline on the reference runtime, PyTorch in a Python sensor, on the same records",
+      "delay_doppler_branch": "reference runtime on the CPU until S6.12, so that the timed arms hold two CUDA clients",
+      "requires": "the TensorRT probe of S3.6 on the Spark (checkpoint D0); a LibTorch showing is labeled and does not stand in for it"
+    },
     "input": "the receiver's own estimate (O3, S5.2) for the cuSense-like branch; observer pilot LS (O2) for the delay-Doppler branch, as parity reference and as fallback",
     "graded_presence_branch": "cusense_like",
     "branches": {
@@ -108,12 +117,13 @@
     "graded": false,
     "published_mean_position_error_cm": 73,
     "published_live_inference_us": 241,
+    "published_live_inference_serving_option": "native: CUDA preprocessing and a TensorRT engine in the dApp, GH200 with MIG",
+    "latency_comparison_requires_runtime": "native",
     "source": "arXiv:2512.06493v3",
     "differences_to_list": [
       "simulated scene against an over-the-air room",
       "20 MHz against 100 MHz",
       "GB10 against GH200",
-      "inference engine",
       "latency boundary"
     ],
     "aim": "comparable performance in software, judged as S1.2 judged the DeepSig Table II timing"

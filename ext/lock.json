@@ -1,5 +1,5 @@
 {
-  "format": 3,
+  "format": 4,
   "dependencies": [
     {
       "name": "ocudu",
@@ -30,6 +30,28 @@
       "role": "offline scene to CFR generation",
       "archive_sha256": "b7eb30d36bde4f02a3d6354e5476257539abe8b3a81d22d8fafb99ba7626e042",
       "snapshot_manifest_sha256": "1bcc47df0eaa6017db033917f28fa542d735e1c208e83ea444d3d020215a4284"
+    }
+  ],
+  "references": [
+    {
+      "name": "aerial-cuda-accelerated-ran",
+      "path": "ext/aerial-cuda-accelerated-ran",
+      "url": "https://github.com/NVIDIA/aerial-cuda-accelerated-ran.git",
+      "commit": "4f65f97c1d5f701ce911f7dda8f1b1f3f0c7693c",
+      "source_ref": "26.2.0",
+      "role": "reference only: Data Lake and E3 Agent wire contract, standalone E3 Agent, cuPHY estimate export, pyAerial layering; never built or installed in isac",
+      "archive_sha256": "85771a42be7d60786be23e5ed67f3dc1518f2efe3de2c5b1c6fedc52cad08410",
+      "snapshot_manifest_sha256": "608291088c204c2e14a1ec2a711d57ef214aff9ab4b99396b9b8db4860748e6a"
+    },
+    {
+      "name": "aerial-sample-apps",
+      "path": "ext/aerial-sample-apps",
+      "url": "https://github.com/NVIDIA/aerial-sample-apps.git",
+      "commit": "718394fdf564deddb04fcca4f4f3c2e9f7b33463",
+      "source_ref": "v1.2.0",
+      "role": "reference only: E3 Manager, inference-engine interface, shared-memory data layouts and reference dApps; never built or installed in isac",
+      "archive_sha256": "bd97d12ddef2634c44c86e311cc48795a66ae0a62747ce854c42d1b47778a50b",
+      "snapshot_manifest_sha256": "60fe2bde9d3f88d3b31ee0e2f9046a2d4165b27d13a71447b52544c432fd86ca"
     }
   ]
 }

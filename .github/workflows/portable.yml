@@ -27,7 +27,7 @@ jobs:
         # 3.11 is the declared floor. 3.12 is the lab interpreter on Ubuntu 24.04.
         python: ["3.11", "3.12", "3.13"]
     steps:
-      # The three ext/ sources stay unfetched. These checks read the pins, not the source trees.
+      # The ext/ sources stay unfetched. These checks read the pins, not the source trees.
       - name: Check out the parent repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

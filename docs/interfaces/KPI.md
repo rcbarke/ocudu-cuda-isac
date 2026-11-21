@@ -54,7 +54,7 @@ Quantiles use the nearest-rank rule and always carry their sample count. Cumulat
 | Panel | KPI | Definition | Source |
 |---|---|---|---|
 | Header | Run, commit, profile, arm | Run ID, parent commit, radio profile, `dsp-only`, `ai-only` or `concurrent` | Manifest |
-| Header | Model and threshold | Artifact hash and the frozen threshold | Manifest |
+| Header | Model and threshold | Artifact hash, the frozen threshold, and the sensing runtime with its engine backend | Manifest |
 | Header | Service levels | The calibrated radio allowance and sensing deadlines, their calibration run and the proposals they replaced | `slo_calibration.json` |
 | Radio | CRC pass | Transport blocks with a true CRC pass over scheduled blocks | `radio.jsonl` |
 | Radio | Payload match | Decoded bytes equal to the known transmitted bytes, and the mismatch count | `radio.jsonl` |
@@ -67,6 +67,7 @@ Quantiles use the nearest-rank rule and always carry their sample count. Cumulat
 | Sensing | Presence score | Latest score against the frozen threshold, and the decision | `decisions.jsonl` |
 | Sensing | Timely, late, dropped, missing | Counts over eligible opportunities | `decisions.jsonl`, `events.jsonl` |
 | Sensing | Sensing latency | First contributing sample to publication: acquisition, post-window time and their sum, against the calibrated deadline (S4.6) | `decisions.jsonl` |
+| Sensing | Native latency | The cuSense-like branch in the native core: last notification to decision, which is cuSense's boundary, and end to end, with the engine backend named and the same pipeline on the reference runtime beside it | `decisions.jsonl` |
 | Sensing | Delay–Doppler map | Power over the declared grid with the strongest cell in ns of excess bistatic delay and signed Hz | `decisions.jsonl` |
 | Sensing | Location map | The cuSense-like grid, with its peak in metres | `decisions.jsonl` |
 | Sensing | Detections and false alarms | Shown only in the evaluator view, with denominators | Offline join |
