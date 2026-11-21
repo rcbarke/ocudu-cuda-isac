@@ -54,7 +54,23 @@ run=$(ls -d results/runs/s22-* | tail -1)
 python -m ocudu_cuda_isac.episodes.episode show "$run/episode_pair/reference_pair/store" --case b --opportunity 0 --rx 3
 ```
 
-## 5. Demonstrate receiver-linked sensing after the native adapter is implemented
+## 5. Apply the channel into the receiver grid
+
+```bash
+python tests/unit/test_grid_apply.py -v
+make accept-s2.3
+```
+
+The gate takes the pair and the six grant grids from the newest accepted run of step 4, rebuilds the adapter with the native channel application and computes `Y = g (sum(H X) + W)` for all 24 opportunities and both cases with the grid gain of the entry, 2,942.4. Each grid is written through the pinned resource grid writer, read back and compared with a complex128 reference in Python, element by element. The gate also sends the six grant grids through a unity channel, changes the grant on a coordinate-coded channel and shows that every gain rule and binding rule is refused. It ends with `Sprint 2.3: ACCEPTED on this DGX Spark.` It runs on the CPU and links no decoder. The gate has not run on the Spark yet. A development host rehearsed it against a CPU-only build of the pinned source, on the bytes of the accepted pair. [Channel application and rehearsal](../interfaces/GRID_APPLY.md#rehearsal-and-what-the-spark-still-has-to-show)
+
+```bash
+# Read one stored grid back
+run=$(ls -d results/runs/s23-* | tail -1)
+python -m ocudu_cuda_isac.episodes.grid_apply show "$run/grid_apply/reference_pair/native" --sequence 0 --rx 3 --symbol 2 --subcarrier 0
+sha256sum "$run/grid_apply/reference_pair/native/ingress/0000.c64"
+```
+
+## 6. Demonstrate receiver-linked sensing after the native adapter is implemented
 
 | Step | Evidence to retain |
 | --- | --- |

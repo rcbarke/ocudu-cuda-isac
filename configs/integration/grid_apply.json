@@ -1,0 +1,34 @@
+{
+  "schema": "integration-config/grid_apply/v1",
+  "selector": "grid_apply",
+  "adapter_build": "build/ocudu-adapter",
+  "tolerance": {
+    "unit_scale_absolute": 1e-06,
+    "unit_scale_relative": 1e-05,
+    "gain_rule_relative": 1e-06,
+    "storage_relative": 0.00390625,
+    "unit_power": 1e-06,
+    "noise_db": 0.1,
+    "power_relative": 1e-09
+  },
+  "pair": {
+    "entry": "episode_pair/reference_pair/store",
+    "grant_stores": [
+      "episode_pair/grant_fixture"
+    ],
+    "expect": {
+      "opportunities": 24,
+      "grants": 6,
+      "grid_gain": 2942.4243526773034,
+      "g_sigma": 0.0316228,
+      "snr_db": 30,
+      "rehearsal_sha256": {
+        "run_digest": "62f9e9d2dbe096154945bbb417b6983c48232dcc1d34feac086b87e977f02c3a",
+        "first_grid": "6a0a3c28258f7c04bad1e40430d4ab76a7bb630b6849e0a35a6cb60050c55716"
+      }
+    }
+  },
+  "allocation": {
+    "changed_grant": "two-prb-offset"
+  }
+}

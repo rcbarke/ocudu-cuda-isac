@@ -20,13 +20,30 @@ The Spark built the adapter inside the accepted Sprint 2.1 run `s21-spark-ecf8-2
 | Directory | Ticket | Contents |
 |---|---|---|
 | `fixtures/` | S2.1 | `grant_fixture`: reads a `pusch-grant/v1` record and its transport block, builds the transmit grid with the transmit chain of the pinned test and writes it in carrier coordinates. It can feed that grid, without noise, to the host PUSCH processor and compare the decoded bytes. [Grant record](../../docs/interfaces/GRANT.md) |
-| `replay/` | S2.3 | Allocation-aware channel application |
+| `replay/` | S2.3 | `grid_apply`: reads a `grid-apply-plan/v1` file, applies `Y = g (sum(H X) + W)` with the grid gain of the episode into a pinned resource grid, reads each grid back and writes the stored grids with their descriptors. Its arithmetic, gain rules, owned grids and digest are in `replay_core`, which includes nothing of OCUDU. [Channel application](../../docs/interfaces/GRID_APPLY.md) |
 | `receiver/` | S2.4 | Dispatch of one grid to the CPU and the CUDA PUSCH processor |
 | `observer/` | S3.1, S5.2 | Pilot LS and the export of the receiver's own estimate |
 | `transport/` | S3.2, S7, S8 | Bounded observation ring and its transports |
 | `du/`, `ingress/` | S5.1, S5.4, S6.10 | Scheduler binding, split ingress adapters and the ZeroMQ channel broker |
 
-Only `fixtures/` exists so far. A new subdirectory adds its targets with `add_subdirectory` in `CMakeLists.txt`. A target that needs OCUDU links `ocudu_pin_fixture`. A CPU-only unit target links only its module and its doubles.
+`fixtures/` and `replay/` exist so far. A new subdirectory adds its targets with `add_subdirectory` in `CMakeLists.txt`. A target that needs OCUDU links `ocudu_pin_fixture`. A CPU-only unit target links only its module and its doubles: `replay/` builds that way on its own, with `cmake -S native/ocudu_adapter/replay`, and the unit gate `tests/unit/test_grid_apply.py` does so. The receipt lists both executables and every file of this directory, so a build from before Sprint 2.3 is refused and the gates rebuild.
+
+## `grid_apply`
+
+```bash
+build/ocudu-adapter/replay/grid_apply --plan FILE --output-dir OUT [--no-prestore]
+build/ocudu-adapter/replay/grid_apply --self-test
+```
+
+`OUT` must exist and must not hold a result. The plan comes from `python -m ocudu_cuda_isac.episodes.grid_apply plan`. The tool writes `OUT/ingress/` (one `o1-grid/v1` descriptor and one stored grid per opportunity), `OUT/prestore/` and `OUT/native.json`. It exits with status 2 for a refused plan, before a file is written, and with status 1 for any other error. `--self-test` runs the unit vectors through the pinned grid. The adapter build runs it and the 14 cases of the host-free core as CTest cases, 19 with those of `grant_fixture`.
+
+| File in `replay/` | Links OCUDU | Contents |
+|---|---|---|
+| `replay_core.h`, `replay_core.cpp` | No | The kernel, the gain rules, the array reader, the owned grids and their states, the session, the readback digest |
+| `tests/replay_core_test.cpp` | No | Unit cases against doubles |
+| `pinned_grid.h` | Yes | The pinned resource grid behind the grid interface of the core |
+| `replay_plan.h` | Headers only | Reader of the plan |
+| `grid_apply.cpp` | Yes | The tool |
 
 ## `grant_fixture`
 

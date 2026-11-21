@@ -41,3 +41,4 @@ target_link_libraries(ocudu_pin_fixture INTERFACE
 
 enable_testing()
 add_subdirectory(fixtures)
+add_subdirectory(replay)

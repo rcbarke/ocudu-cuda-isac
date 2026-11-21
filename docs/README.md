@@ -13,6 +13,7 @@
 | [Replay contract](interfaces/REPLAY.md) | Runnable host fixture, tensor conventions and verification |
 | [Grant record](interfaces/GRANT.md) | The uplink grant record, carrier coordinates, the sensing source, the stimulus store entry and how the two transmit references are aligned |
 | [Channel episodes](interfaces/EPISODE.md) | The uplink grant schedule of an episode, the matched target-absent and target-present pair on the grant's subcarriers and symbol times, its analytic check, noise and gain, and the demonstration episode set |
+| [Channel application](interfaces/GRID_APPLY.md) | The native step that fills the receiver grid: `Y = g (sum(H X) + W)` with the grid gain of the episode, the replay plan, the owned grids and their states, the stored-grid descriptor and what the receiver side may read |
 | [Observation contract](interfaces/OBSERVATION.md) | The observation record, the shared-memory ring between the receiver and the sensor, payload layouts and the view the native core consumes |
 | [KPI stream and live page](interfaces/KPI.md) | KPI record and catalog, page rules and commands for the demonstration |
 | [Offline RT exporter](interfaces/RT_EXPORT.md) | The four-time, twelve-tone diagnostic pair, kept as a regression of the axis order |
