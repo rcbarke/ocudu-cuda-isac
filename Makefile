@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2.1 native-deps native-build adapter-build paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2.1 accept-s2.2 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -14,6 +14,9 @@ help:
 	@echo "make accept-s1       Run the Sprint 1.1 gate, then the Sprint 1.2 gate (BACKENDS=\"cpu cuda\", JOBS=8)"
 	@echo "make adapter-build   Build the project's native adapter out of tree against the accepted OCUDU build"
 	@echo "make accept-s2.1     Build the adapter, compare both transmit references of each grant, archive the records"
+	@echo "make accept-s2.2     Build the grant fixture of an episode, trace the matched pair and a small set, grade and archive"
+	@echo "make episode-pair    Trace the reference pair alone into a new directory under data/episodes (CONFIG=, OUT=)"
+	@echo "make episode-set     Trace an episode set into a new directory under data/episodes (CONFIG=, OUT=, VARIANT=)"
 	@echo "make paper-baseline  Execute the DeepSig one-layer comparison alone on Spark"
 	@echo "make spark-baseline  Execute the short four-RX smoke alone on Spark"
 
@@ -63,6 +66,21 @@ adapter-build:
 
 accept-s2.1:
 	bash scripts/accept_s2_1.sh
+
+accept-s2.2:
+	bash scripts/accept_s2_2.sh
+
+# Offline channel generation. The output directory must be new. VARIANT selects the Mitsuba variant.
+VARIANT ?= llvm_ad_mono_polarized
+STAMP := $(shell date -u +%Y%m%dT%H%M%SZ)
+
+episode-pair:
+	$(PYTHON) scripts/export_rt_episode.py --pair $(or $(CONFIG),configs/episodes/reference_pair.json) \
+	    --output-dir $(or $(OUT),data/episodes/reference-pair-$(STAMP)) --variant $(VARIANT)
+
+episode-set:
+	$(PYTHON) scripts/export_rt_episode.py --set $(or $(CONFIG),configs/episodes/demo_set.json) \
+	    --output-dir $(or $(OUT),data/episodes/demo-set-$(STAMP)) --variant $(VARIANT)
 
 paper-baseline:
 	bash scripts/run_spark_baseline.sh --profile paper --skip-build

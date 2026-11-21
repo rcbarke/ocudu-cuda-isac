@@ -11,8 +11,9 @@
 | [Aerial ports](integration/AERIAL.md) | Three-computer ladder, the Aerial Framework port, the swap to Aerial-OCUDU for over-the-air work, what each host supplies |
 | [Replay contract](interfaces/REPLAY.md) | Runnable host fixture, tensor conventions and verification |
 | [Grant record](interfaces/GRANT.md) | The uplink grant record, carrier coordinates, the sensing source, the stimulus store entry and how the two transmit references are aligned |
+| [Channel episodes](interfaces/EPISODE.md) | The uplink grant schedule of an episode, the matched target-absent and target-present pair on the grant's subcarriers and symbol times, its analytic check, noise and gain, and the demonstration episode set |
 | [KPI stream and live page](interfaces/KPI.md) | KPI record and catalog, page rules and commands for the demonstration |
-| [Offline RT exporter](interfaces/RT_EXPORT.md) | Produce a paired bistatic CFR in a provisioned Sionna RT environment |
+| [Offline RT exporter](interfaces/RT_EXPORT.md) | The four-time, twelve-tone diagnostic pair, kept as a regression of the axis order |
 | [Measurement protocol](research/EVALUATION.md) | Deadlines, denominators, splits, scientific controls and uncertainty |
 | [References](research/REFERENCES.md) | Primary papers, repositories, datasets and product documentation |
 | [Evidence and reproduction](dev/REPRODUCE.md) | Run manifest, artifacts, independent rerun and failure retention |

@@ -1,0 +1,138 @@
+{
+  "schema": "episode-set-config/v1",
+  "set_id": "smoke-set",
+  "status": "proposed",
+  "grant": "../grants/demo_51prb_4rx.json",
+  "schedule": {
+    "tdd": {
+      "pattern": "DDDDDDSUUU",
+      "ul_slots": [
+        7,
+        8,
+        9
+      ]
+    },
+    "start_sfn": 0,
+    "payload": "fixed"
+  },
+  "scene": {
+    "kind": "open_room",
+    "size_m": [
+      8.0,
+      13.0,
+      3.2
+    ],
+    "materials": {
+      "floor": "concrete",
+      "ceiling": "ceiling_board",
+      "walls": "plasterboard"
+    },
+    "thickness_m": 0.1
+  },
+  "endpoints": {
+    "ue_tx_m": [
+      5.2,
+      12.3,
+      1.0
+    ],
+    "gnb_rx_m": [
+      4.0,
+      0.6,
+      2.0
+    ],
+    "gnb_yaw_rad": 1.5707963267948966
+  },
+  "array": {
+    "spacing_wavelengths": 0.5,
+    "pattern": "iso",
+    "polarization": "V"
+  },
+  "target": {
+    "model": "tr38901_human",
+    "center_height_m": 0.875
+  },
+  "solver": {
+    "seed": 42,
+    "background": {
+      "max_depth": 2,
+      "samples_per_src": 100000,
+      "max_num_paths_per_src": 100000,
+      "los": true,
+      "specular_reflection": true,
+      "refraction": false
+    },
+    "scattered": {
+      "max_depth": 2,
+      "samples_per_sp": 100000,
+      "buffer_size_per_sp": 100000,
+      "los": true,
+      "specular_reflection": true,
+      "refraction": false
+    }
+  },
+  "area": {
+    "x_m": [
+      0.61,
+      7.39
+    ],
+    "y_m": [
+      1.47,
+      11.53
+    ]
+  },
+  "position_grid": {
+    "rows": 50,
+    "cols": 34
+  },
+  "noise": {
+    "snr_db": 30,
+    "seed": 20261121
+  },
+  "min_training_coverage": 0.001,
+  "trajectories": [
+    {
+      "id": "smoke-training-lawnmower",
+      "group": "training",
+      "kind": "lawnmower",
+      "axis": "y",
+      "lanes": 3,
+      "margin_m": 0.5,
+      "speed_m_s": 1.2,
+      "start_s": 0.0,
+      "episodes": 3,
+      "periods": 2,
+      "stride_s": 4.0
+    },
+    {
+      "id": "smoke-validation-line",
+      "group": "validation",
+      "kind": "line",
+      "from_m": [
+        1.5,
+        3.0
+      ],
+      "to_m": [
+        6.0,
+        9.0
+      ],
+      "speed_m_s": 1.2,
+      "start_s": 0.5,
+      "episodes": 1,
+      "periods": 2,
+      "stride_s": 0.0
+    },
+    {
+      "id": "smoke-held-out-random",
+      "group": "held_out",
+      "kind": "random",
+      "seed": 7,
+      "waypoints": 6,
+      "margin_m": 0.5,
+      "speed_m_s": 1.2,
+      "start_s": 1.0,
+      "episodes": 1,
+      "periods": 2,
+      "stride_s": 0.0
+    }
+  ]
+}

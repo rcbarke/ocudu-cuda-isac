@@ -1,0 +1,61 @@
+{
+  "schema": "episode-pair-config/v1",
+  "episode_id": "reference-pair-20m",
+  "grant": "../grants/demo_51prb_4rx.json",
+  "schedule": {
+    "tdd": {
+      "pattern": "DDDDDDSUUU",
+      "ul_slots": [7, 8, 9]
+    },
+    "start_sfn": 0,
+    "periods": 8,
+    "payload": "fixed"
+  },
+  "scene": {
+    "kind": "free_space"
+  },
+  "endpoints": {
+    "ue_tx_m": [0, 0, 1.5],
+    "gnb_rx_m": [20, 0, 3],
+    "gnb_yaw_rad": 0.0
+  },
+  "array": {
+    "spacing_wavelengths": 0.5,
+    "pattern": "iso",
+    "polarization": "V"
+  },
+  "target": {
+    "model": "constant_rcs_cuboid",
+    "sigma_m2": 1.0,
+    "size_m": [0.3, 0.3, 0.3],
+    "motion": {
+      "kind": "constant_velocity",
+      "position_m": [10, 25, 1.5],
+      "velocity_m_s": [0, 2, 0]
+    }
+  },
+  "solver": {
+    "seed": 42,
+    "background": {
+      "max_depth": 0,
+      "samples_per_src": 64,
+      "max_num_paths_per_src": 64,
+      "los": true,
+      "specular_reflection": false,
+      "refraction": false
+    },
+    "scattered": {
+      "max_depth": 1,
+      "samples_per_sp": 64,
+      "buffer_size_per_sp": 64,
+      "los": true,
+      "specular_reflection": false,
+      "refraction": false
+    }
+  },
+  "noise": {
+    "snr_db": 30,
+    "seed": 20261120
+  },
+  "analytic_model": "free-space-point-target/v1"
+}

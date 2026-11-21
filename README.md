@@ -8,7 +8,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-20 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row) and Sprint 2.1 (`grant_fixture`, the first project-owned component) are accepted on one DGX Spark.** S2.2 `episode_pair` and S2.3 `grid_apply` are next. S2.2 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built)
+As of 2026-11-20 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row) and Sprint 2.1 (`grant_fixture`, the first project-owned component) are accepted on one DGX Spark.** Sprint 2.2 (`episode_pair`: the uplink grant fixture of an episode, the matched pair on it and the episode set) is implemented and unit accepted. Its integration gate, `make accept-s2.2`, has not run on the Spark yet. S2.3 `grid_apply` is next. S2.3 to S11 are specified and not yet implemented. The plan was audited on 2026-11-20 against the evaluation plan of that date. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built)
 
 ### Sprint 0 acceptance
 
@@ -103,6 +103,27 @@ Three properties of the pinned receiver were established in this sprint and are 
 
 The archived records are portable. A rehearsal on an x86_64 host, with a CPU-only build of the pinned OCUDU source, produced the same bytes as the Spark for all three grants: the grant, the transport block, the indices, the reference symbols and both grids. The gate prints that comparison and does not grade it.
 
+### Sprint 2.2: implemented, gate pending on the Spark
+
+Sprint 2.2 gives the receiver its channel. `src/ocudu_cuda_isac/episodes/schedule.py` is the uplink grant fixture of an episode: it places PUSCH opportunities on the uplink slots of the TDD pattern and gives every slot index one legal grant, the base grant for its own slot and the same record with another slot otherwise. `episode.py` stores a matched pair on that schedule: the channel without the target, the channel with it and one noise realization, on the subcarriers, symbol times and antenna order of the grant record. `rt_channel.py` traces both with the pinned Sionna RT, and `episode_set.py` cuts walking trajectories into the demonstration episode set. [Episodes, schedule, set and analytic check](docs/interfaces/EPISODE.md)
+
+`make accept-s2.2` grades four cases.
+
+| Case | What it requires |
+|---|---|
+| Diagnostic | The four-time, twelve-tone exporter still runs. Its direct path equals free space and its return has the delay and Doppler shift of the geometry |
+| Grant fixture | 24 opportunities on slots 7 to 9 and 17 to 19 over eight periods. The grant of slot 7 equals the record Sprint 2.1 archived. The grants of the five other slots are realized by the accepted fixture adapter: same data symbols, their own pilots, original bytes back from the host receiver |
+| Reference pair | A 1 m2 reflector 25 m off the midpoint of a 20 m link, moving outward at 2 m/s. The stored pair reads back with the standard library. The absent case equals the free-space path and the difference of the cases equals the bistatic radar return, at every opportunity, port, symbol and subcarrier. The return's phase is checked at two unequal intervals. On the pilot mask the return appears within one bin of 180 ns and -43 Hz. A damaged copy is refused |
+| Episode set | Five matched pairs in a room with the TR 38.901 human target. Whole trajectories are assigned to training, validation and held-out groups before tracing, and every position has its grid cell |
+
+The steps were rehearsed on a development host: x86_64, the pinned Sionna RT 2.2.0 on the LLVM variant. All 26 checks passed there in 33 seconds. The traced return was within 9.3e-04 of the radar equation at all 822,528 coordinates of the pair, and a repeat wrote the same bytes. The fixture adapter was a double in that rehearsal, because that host has no OCUDU build, so the receiver check of the five added grants is first exercised on the Spark. It is no lab evidence. Sprint 2.2 is integrated when `make accept-s2.2` prints its verdict on the Spark.
+
+Three facts from this sprint bind the next tickets. [Details](docs/interfaces/EPISODE.md)
+
+- **Slot grants.** Opportunities 5 ms apart alternate between slot 7 and slot 17 of the frame, and their DM-RS differ. One transmit grid per slot index is needed, and the gate archives all six.
+- **Amplitude.** The stored channel is physical: the direct path of the reference pair has amplitude 3.4e-04. The entry records the factor that gives the receiver grid unit signal power. S2.3 should apply it, because the pinned CUDA receiver keeps its estimates in 16-bit floats.
+- **Doppler across the band.** The return's phase advances by `2 pi nu (1 + f / f_c) dt`. Over 5 ms the band edges differ from the carrier by 3.6 mrad, which a check must allow for.
+
 ### Verified configuration
 
 | Item | Value on the accepted host |
@@ -131,11 +152,14 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 - **S1.1** refuses another platform under the Spark profile, an `nvcc` that cannot emit the GPU architecture, a cache value that differs from the recipe (including `CUDA_ACCEL_FOUND=FALSE`), a CUDA source compiled for another architecture, a PUSCH test compiled without `ENABLE_CUDA` or the CPU target, an executable without linked device code, binaries that differ from the build receipt, and an OCUDU source that is not pristine. A missing development library stopped two real runs in the configure step.
 - **S1.2** refuses, in the unit suite and in a rehearsal against a stand-in for the native test: a workload other than the Table II row, fewer than 200 CRC passes on either path, a CRC disagreement, a byte mismatch, an output guard failure, a GPU path without resident timing or the producer-owned grid on every measured frame, a missing or non-finite service time, a transcript that is truncated, repeated or of zero iterations, a run that was not pinned to CPUs 5-9,15-19 or could see another GPU, and a build that Sprint 1.1 did not accept. A GPU path that is slower than the CPU path is recorded and not refused. An uncommitted tree stopped one real run.
 - **S2.1** refuses, in the unit suite: a grant with an invalid DM-RS or receive port, an allocation outside the bandwidth part, a repeated pilot, DM-RS symbols the standard does not give for the allocation, and a payload that does not match the transport block size, each before a grid is allocated. A store entry is refused when a file differs from its hash, when a stored index or reference symbol is not the grant's own, when a grid occupies an element the grant does not, and when a pilot differs from its reference symbol. Against doubles of both transmit references the integration driver fails the check that names the fault: a differing transport block size or coding, a shifted or incomplete grid, a wrong pilot or data symbol, a failed receiver CRC, and a reference that cannot run, which is a failure and never a skip. The adapter builder refuses an OCUDU build without a Sprint 1.1 receipt, a build from another source or generator, and an adapter whose sources or OCUDU build changed after its receipt. The accepted run holds one real negative: the grid built with the pinned test's DM-RS reference point fails the receiver's CRC on the offset grant.
+- **S2.2** refuses, in the unit suite: a schedule on a slot that is not an uplink slot, a pattern that does not repeat in a frame and a payload rule other than the fixed block. An episode entry is refused when a byte changed, when an array is missing, incomplete or has other axes, when its opportunities, grants or axes differ from what the embedded grant yields, when a value is not finite and when the present case equals the absent one. A set is refused when an episode is outside the group of its trajectory, when a trajectory is in two groups and when the assignment changed. Against doubles of the ray tracer and the adapter the integration driver fails the check that names the fault: a channel that moves the other way, a reversed receive order, a disagreement with the solver, a failed receiver CRC, pilots of another slot and a missing Sprint 2.1 record.
 - **The gate runner** refuses an uncommitted tree, an empty test run, a skipped test on a simulation host, and an evidence directory that already exists.
 
 ### Open items
 
-- **Next sprints.** S2.2 `episode_pair` generates the matched target-present and target-absent channels on the grant's subcarriers and symbol times. S2.3 `grid_apply` applies them natively. Both start from the accepted Sprint 2.1 record, and their cards carry its findings as rules: carrier coordinates and the grant's symbol times, receive planes 0 to N-1, the bf16 storage of the grid and the DM-RS amplitude. [Cards](docs/dev/DEVELOPMENT.md#phase-s2)
+- **Sprint 2.2 gate.** `make accept-s2.2` has not run on the Spark. It needs the accepted Sprint 1.1 build, the accepted Sprint 2.1 run and the full environment. The AArch64 trace, the adapter's realization of the five added slot grants and their receiver check are first exercised there.
+- **Demonstration set.** `configs/episodes/demo_set.json` is a proposal: 350 matched pairs, about 7 GB, a grid of 50 by 34 cells over 6.78 by 10.06 m, nine trajectories. Freeze the grid, the trajectories and the sizes before S3.5 trains on it. Every opportunity carries the same transport block, and the target-absent runs differ by their noise only.
+- **Next sprint.** S2.3 `grid_apply` applies the stored channel and noise to the transmit grids natively. Its card carries the rules of Sprint 2.1 and Sprint 2.2. [Cards](docs/dev/DEVELOPMENT.md#phase-s2)
 - **Noiseless fixtures.** The grid's storage leaves about 56 dB between a resource element's signal and its rounding error. A weak-target result needs the episode's noise above that floor, or its margin to the floor stated. S2.2 records the scattered-to-direct power per resource element for that purpose.
 - **Grid payload.** The observation payload `grid_c64` of the memory ablation is a widened copy of a grid that the receiver stores in four bytes per value. Whether S5.5 adds the stored form as its own entry is open.
 - **Timing.** The Sprint 1.2 latencies were taken with desktop applications open and are 19 to 30 percent above the paper's. Tuning is deferred until the project features are implemented. Before a latency or speedup claim, measure on a quiet host, repeat the run to bound the CPU spread and state the SINR.
@@ -204,6 +228,21 @@ sha256sum "$run/grant_fixture/two-prb-offset/store/tb.bin"
 
 The first command is the unit gate and needs only the core environment. `make accept-s2.1` is the integration gate. It builds the native fixture adapter into `build/ocudu-adapter` with the compile flags and the link line of the pinned `pusch_e2e_pipeline_test`, compares the pinned OCUDU transmit chain with Sionna NR on the three grants in `configs/grants/`, archives each record under a new directory in `results/runs/` and prints one verdict. It uses the CPU only and never rebuilds OCUDU. `make adapter-build` runs the adapter build alone. [Grant record](docs/interfaces/GRANT.md)
 
+### Episode pair (Sprint 2.2, gate pending)
+
+```bash
+source isac/bin/activate
+python tests/unit/test_episode_pair.py -v
+make accept-s2.2
+
+# Read the stored pair back
+run=$(ls -d results/runs/s22-* | tail -1)
+python -m ocudu_cuda_isac.episodes.episode show "$run/episode_pair/reference_pair/store" --case b --opportunity 0 --rx 3
+sha256sum "$run/episode_pair/reference_pair/store/b_h.npy"
+```
+
+The first command is the unit gate and needs only the core environment. `make accept-s2.2` is the integration gate. It needs the accepted Sprint 2.1 run under `results/runs/`, rebuilds the fixture adapter the way that gate did, realizes the grants of the schedule, traces the pair and the smoke set on the CPU and prints one verdict. `make episode-pair` and `make episode-set` trace alone, into a new directory under `data/episodes/`. [Episodes](docs/interfaces/EPISODE.md)
+
 ## Repository map
 
 | Directory | Purpose |
@@ -212,7 +251,7 @@ The first command is the unit gate and needs only the core environment. `make ac
 | [docs](docs/README.md) | System design, integration boundaries, interfaces, measurement, evidence and references |
 | [ext](ext/README.md) | CUDA-OCUDU, Sionna and Sionna RT as pinned Git submodules, with the lock that owns their paths |
 | [environments](environments/README.md) | Host environment notes and the validated third-party constraints |
-| [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting, the grant record (`episodes/`) and the sensing-source registry (`sensing/sources/`) |
+| [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting, the grant record, the grant schedule, the channel episodes and the episode set (`episodes/`) and the sensing-source registry (`sensing/sources/`) |
 | [native/ocudu_adapter](native/ocudu_adapter/README.md) and [patches/ocudu](patches/ocudu/README.md) | Native adapter built against the accepted OCUDU build (the fixture adapter of S2.1; replay and observer adapters arrive with their tickets) and narrow upstream patches |
 | [configs](configs/) and [experiments](experiments/README.md) | Working smoke inputs, grant records, integration configurations, advisor profile and publication matrix |
 | [data](data/README.md) and [results](results/README.md) | Episode provenance and run evidence |

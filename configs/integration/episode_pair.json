@@ -1,0 +1,53 @@
+{
+  "schema": "integration-config/episode_pair/v1",
+  "selector": "episode_pair",
+  "adapter_build": "build/ocudu-adapter",
+  "variant": "llvm_ad_mono_polarized",
+  "tolerance": {
+    "solver_cfr_relative": 0.0005,
+    "direct_relative": 0.0002,
+    "echo_relative": 0.01,
+    "phase_rad": 0.01,
+    "path_validity_relative": 0.02,
+    "diagnostic_delay_ns": 0.5,
+    "diagnostic_doppler_hz": 0.5,
+    "peak_snr_db_min": 15.0,
+    "ratio_db": 0.5
+  },
+  "diagnostic": {
+    "expect": {
+      "excess_delay_ns": 5.31,
+      "doppler_hz": -8.7
+    }
+  },
+  "pair": {
+    "config": "configs/episodes/reference_pair.json",
+    "expect": {
+      "opportunities": 24,
+      "grants": 6,
+      "dmrs_spacing_us": 321.09,
+      "next_slot_gap_us": 178.91,
+      "span_mhz": [-9.18, 9.15],
+      "occupied_bandwidth_mhz": 18.36,
+      "scattered_to_direct_db": -42.2,
+      "base_x_sha256": "a18b72ae9b9ea84fcfe979cd48085db46709021717bea6b2f633ae99a7940beb",
+      "rehearsal_sha256": {
+        "a_h.npy": "8b7ef3971f4c797584a7462c177d35fac7e94722b5d0e88690993cc544fb240a",
+        "b_h.npy": "744702180dddaea17462cab4bab5af212d5caff04a13512c8f81ff15422ed90d",
+        "w.npy": "2b5b46bb1051c23f1c175736ac47cd6abc77ee6fc8c429851284716459218b96"
+      }
+    }
+  },
+  "set": {
+    "config": "configs/episodes/smoke_set.json",
+    "expect": {
+      "episodes": 5,
+      "target": "tr38901_human",
+      "by_group": {
+        "training": 3,
+        "validation": 1,
+        "held_out": 1
+      }
+    }
+  }
+}

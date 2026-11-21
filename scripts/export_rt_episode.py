@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Offline Sionna RT 2.2.0 exporter for a paired bistatic channel episode."""
+"""Offline Sionna RT 2.2.0 exporter for paired bistatic channel episodes.
+
+Without --pair or --set it writes the four-time, twelve-tone diagnostic pair (rt-cfr-pair/v1), an
+axis test that is kept as a regression. --pair CONFIG writes one matched pair on the subcarriers,
+symbol times and antenna order of an uplink grant schedule (channel-episode/v1). --set CONFIG
+writes an episode set (channel-episode-set/v1). Both come from
+src/ocudu_cuda_isac/episodes/rt_channel.py.
+"""
 
 import argparse
 import hashlib
@@ -10,7 +17,9 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+ROOT = Path(__file__).resolve().parents[1]
 RT_VERSION = "2.2.0"
+VARIANTS = ("llvm_ad_mono_polarized", "cuda_ad_mono_polarized")
 SPEED_OF_LIGHT_M_S = 299_792_458.0
 CARRIER_HZ = 3_500_000_000
 TIME_STEP_NS = 500_000
@@ -164,9 +173,42 @@ def write_pair(destination, absent_cfr, present_cfr, software, variant):
         staging.rename(destination)
 
 
+def export_aligned(args, parser):
+    """Write a grant-aligned pair or an episode set and print what was written."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from ocudu_cuda_isac.episodes import rt_channel
+    from ocudu_cuda_isac.episodes.episode import EpisodeError
+
+    variant = args.variant or VARIANTS[0]
+    try:
+        if args.pair:
+            manifest = rt_channel.export_pair(args.pair, args.output_dir, variant)
+            shown = {"episode": str(args.output_dir), "episode_id": manifest["episode_id"],
+                     "opportunities": len(manifest["opportunities"]), "grants": sorted(manifest["grants"]),
+                     "sha256": {name: entry["sha256"] for name, entry in sorted(manifest["files"].items())}}
+        else:
+            def progress(done, total, item):
+                print(f"episode {done} of {total}: {item['episode_id']} ({item['group']})", flush=True)
+
+            manifest = rt_channel.export_set(args.episode_set, args.output_dir, variant, progress)
+            shown = {"set": str(args.output_dir), "set_id": manifest["set_id"], "counts": manifest["counts"],
+                     "coverage": manifest["coverage"], "assignment_sha256": manifest["assignment_sha256"]}
+    except EpisodeError as exc:
+        parser.exit(2, f"episode: {exc}\n")
+    print(json.dumps(shown, indent=2))
+    print(args.output_dir / "manifest.json")
+    return 0
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True, help="new directory for the episode")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--output-dir", type=Path, required=True, help="new directory for the episode or the set")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--pair", type=Path, help="episode-pair-config/v1 file: one grant-aligned matched pair")
+    mode.add_argument("--set", dest="episode_set", type=Path, help="episode-set-config/v1 file: an episode set")
+    parser.add_argument("--variant", choices=VARIANTS,
+                        help="Mitsuba variant. Default: llvm_ad_mono_polarized with --pair or --set, Sionna RT's own "
+                             "choice for the diagnostic")
     args = parser.parse_args(argv)
     try:
         installed = version("sionna-rt")
@@ -176,6 +218,10 @@ def main(argv=None):
             parser.error(f"output directory already exists: {args.output_dir}")
         import mitsuba as mi
 
+        if args.pair or args.episode_set:
+            return export_aligned(args, parser)
+        if args.variant:
+            mi.set_variant(args.variant)
         software = {name: version(name) for name in ("sionna-rt", "mitsuba", "drjit", "numpy")}
         absent = trace_scene(False)
         present = trace_scene(True)
