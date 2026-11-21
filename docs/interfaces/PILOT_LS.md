@@ -2,7 +2,7 @@
 
 Sprint 3.1 (`pilot_ls`) attaches the first observer to the receiver replay. Before a grid is decoded, the observer reads it through the read access of the channel application core and computes, for every pilot of the grant's sensing source and every receive plane, `H = Y conj(X) / |X|^2`. The result is the stage O2 of the [stage axis](../architecture/ABLATIONS.md): observer-derived, sparse, on the DM-RS comb. The host and the CUDA PUSCH processor then decode the same grid, and every radio record must be the one that the accepted Sprint 2.4 run holds for that decode. [Sprint card](../dev/DEVELOPMENT.md#phase-s3) | [receiver replay](REPLAY_PUSCH.md) | [observation record](OBSERVATION.md) | [grant record](GRANT.md)
 
-**Status.** Delivered and unit accepted on 2026-11-21. Built and run on the DGX Spark `spark-ecf8` the same day, run `s31-spark-ecf8-20261121T171416Z`: the tool linked against the accepted build without a warning and every check of the observer and of the decodes passed. The run is not an acceptance: two checks of the gate itself were wrong and failed. Both are corrected, and the corrected driver grades the native outputs of that run with 9 of 9 cases and 23 of 23 checks. The hardware gate stays open until `make accept-s3.1` passes on the Spark. [First run on the Spark](#first-run-on-the-spark)
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-21 (UTC), run `s31-spark-ecf8-20261121T174511Z`: 35 gate lines, 9 of 9 cases and 23 of 23 checks, hardware gate closed. All 176 tapped decodes requested from the CUDA processor ran its resident path. The observer's hashes are to leave the timed path in S3.2. [Accepted run](#accepted-run) | [first run on the Spark](#first-run-on-the-spark) | [what goes on](#for-sprint-32)
 
 ## Run it
 
@@ -233,6 +233,37 @@ Before the Spark run, on an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3,
 
 The doubles compute the estimate with the Python reference, so the driver run shows that the checks are sound and nothing about the native tool. Three things were open before the Spark ran the gate, and its first run settled each: `pilot_ls` links against the accepted build and its self-test passes on the pinned grid, the native estimate on the pinned grid equals the reference bit for bit on AArch64, and the decodes with the observer attached are those of the accepted run on the resident CUDA path.
 
+## Accepted run
+
+`make accept-s3.1` passed on the DGX Spark `spark-ecf8` on 2026-11-21 (UTC) at commit `cf562d6`, run `s31-spark-ecf8-20261121T174511Z`. All 35 gate lines passed, none failed and none was skipped. The control is the accepted Sprint 2.4 run `s24-spark-ecf8-20261121T083424Z`, and the build is the one of Sprint 1.1.
+
+| | Accepted run |
+|---|---|
+| Unit suite and unit gate | 404 tests and 31 tests, none skipped |
+| Adapter | `pilot_ls` `c3a214c2869c` beside `replay_pusch` `d2bcc09539c3`, `grid_apply` `158644b5a177` and `grant_fixture` `7a0e1c8ec1a0`, which have the bytes of the Sprint 2.4 run. Compiled with the flags of the pinned test and `ENABLE_CUDA`, no compiler warning, 48 CTest cases, 24 source files bound by the receipt. |
+| Grade | 9 of 9 cases, 23 of 23 checks, judgment `pass`, hardware gate closed |
+| Control | 5 runs of the Sprint 2.4 gate with 256 radio records, none with a tap |
+| Unity | 8 grids, 15,324 estimates, every one 1.0011865 with a zero imaginary part. The offset grant on subcarriers 180 to 202. |
+| Direct path | 58,752 of 58,752 estimates on 24 grids and four receive planes equal `g H` times the pilot ratio within the rounding of the grid, `g` = 2942.4244, largest relative error 0.0029. The channel is the same on all four planes, so the plane order is not graded here. |
+| Pair, ingress | 48 of 48 observations name the readback digest of the grid that the accepted `replay_pusch` decoded, first `6a0a3c28258f7c04` |
+| Pair, estimate | 48 of 48 payloads and validity masks equal the reference bit for bit. The oracle in double precision agrees within 5.8e-08. 117,504 of 117,504 estimates are nonzero and valid. Against the oracle with reversed planes 358 of 117,504 agree. |
+| Pair, decodes | 96 of 96 radio records and 96 of 96 files of decoded bytes are the control's |
+| Payload | 48 of 48 grids differ from the grid with the fixed block, 48 of 48 estimates are the same bit for bit, 24 distinct decoded blocks |
+| Tap off | The same executable without the tap: no observer directory, 96 records equal to the control and to the tapped run |
+| Rerun | `rz-a614d5c14ca6.0023` alone: the same grid `405677ad6799c3d6`, estimate `c68371a146d7d1d3`, slot count, outcome and bytes |
+| Refusals | Fourteen plan rules, by the plan check and by the native tool, each with status 2 before a file was written |
+| Executed path | 352 decodes in 6 runs, all `decoded`: 176 on the host path and 176 on the resident path. 128 observations for 128 tapped grids, no anomaly, no grid held. |
+| Second reader | The first estimate of `rz-22963ee9d985.0000`, symbol 2, subcarrier 0, receive plane 0, is -0.960122+0.213143j. Payload `0b92af516252645c` and grid `6a0a3c28258f7c04` by `sha256sum`. |
+
+Recorded and not graded:
+
+- **Members.** The estimates of the two members of the pair differ by -41.8 dB of the estimate's power. The members share the noise, so this is the return of the target, which the episode states at -42.2 dB, and the rounding of the grid.
+- **Service time of the tap.** 1,471 us in the mean over 47 observations, 1,470 us in the median, 1,480 us at most. About nine tenths of it is the digest of the grid after the read. [The requirement that removes it](../dev/DEVELOPMENT.md#added-by-the-first-observer-run-of-2026-11-21)
+- **PUSCH service time.** With the tap 858 us on the host path and 210 us on the resident path, in the control 618 us and 265 us, each over 122 decodes on four receive ports. The tap is outside this time. The runs were made hours apart on a host that is not tuned, so the differences are no effect of the tap in either direction.
+- **Grid memory.** Every resident decode read a host resource grid, as in Sprint 2.4.
+
+The evidence is on the Spark under `results/runs/`, which Git ignores.
+
 ## First run on the Spark
 
 `make accept-s3.1` ran on `spark-ecf8` on 2026-11-21 (UTC) at commit `b339c2a`, run `s31-spark-ecf8-20261121T171416Z`, and ended NOT ACCEPTED with 20 of 22 checks. What failed was the gate, in two places. The native outputs of that run pass the corrected driver.
@@ -260,5 +291,6 @@ One measurement goes on. The tap takes 1.47 ms for 2,448 estimates, and about ni
 
 - The observation owns its payload in host memory and is complete before the first decode starts. Sprint 3.2 replaces that buffer by a slot of the ring and fills `t_publish_ns`. The fields of the record do not change.
 - `observer::observe` returns a reference that stays valid until the next call. A producer that publishes copies the header fields it needs before it observes again.
+- **No checksum in a timed path.** This sprint proves bytes, so it hashes: the observer takes the digest of the grid after its read and of its payload, and the harness takes the digest of each grid seven more times per opportunity. That is the mode `audit`. S3.2 adds the mode `timed`, in which none of them runs between a ready grid and the published record, shows that both modes give the same payload and decoded bytes, and measures the tap against a ceiling of 150 us. [Requirement and breakdown](../dev/DEVELOPMENT.md#added-by-the-first-observer-run-of-2026-11-21)
 - The tap is synchronous and sits in the dispatch thread. Its service time is recorded and is outside the PUSCH service time. Whether it moves to its own thread is decided where a paced run measures it, in S4.1.
 - `pilot_ls` is the tapped harness. A later tap is added to it, and `replay_pusch` stays the control.
