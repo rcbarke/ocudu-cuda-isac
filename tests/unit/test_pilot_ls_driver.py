@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pilot_ls_double as double  # noqa: E402
 import test_replay_pusch_driver as control_tests  # noqa: E402
 
-CHECKS = 22
+CHECKS = 23
 CASES = 9
 EXECUTABLE = '''#!{python}
 import sys
@@ -169,6 +169,9 @@ class DriverTests(unittest.TestCase):
         self.assertIn("name the source pusch_dmrs, port 0, the reference amplitude 1.412538, the stage O2, the producer "
                       "observer", lines)
         self.assertIn("29376 of 29376 estimates at the declared pilots are nonzero and 29376 validity bits are set", lines)
+        self.assertIn("PASS  S3.1 reference-pair receive planes: against the same oracle with the 4 receive planes of the "
+                      "grid in reverse order only 0 of 29376 estimates agree", lines)
+        self.assertIn("expected 12 observations of [4, 2, 306] with 19584 bytes", lines)
         self.assertIn("PASS  S3.1 reference-pair decodes: with the tap on, 24 radio records equal those of the control "
                       "reference-pair", lines)
         self.assertIn("24 of 24 files of decoded bytes are those of the control, byte for byte", lines)
@@ -244,6 +247,16 @@ class DriverTests(unittest.TestCase):
         run = self.run_once(self.out / "no-control", control=self.out)
         self.assertEqual((run["status"], run["grade"]["cases_passed"]), (1, 0))
 
+    def test_another_number_of_observations_than_the_pair_holds_fails_and_says_what_was_expected(self):
+        config = json.loads(self.config.read_text())
+        config["pair"]["expect"]["opportunities"] = 6  # one member, not both
+        path = self.out / "config.json"
+        path.write_text(json.dumps(config))
+        run = self.run_once(self.out / "count", config=path)
+        self.assertEqual(run["failed"], ["reference-pair native run"])
+        self.assertIn("12 observations on 12 grids", run["lines"])
+        self.assertIn("expected 6 observations of [4, 2, 306]", run["lines"])
+
     # ---------------------------------------------------------------- faults of the estimate
     def test_an_estimate_against_the_stored_pilot_fails_unity_and_the_reference(self):
         run = self.faulty("stored-pilot")
@@ -261,7 +274,8 @@ class DriverTests(unittest.TestCase):
 
     def test_reversed_receive_planes_fail_the_known_channel(self):
         run = self.faulty("swap-planes")
-        for check in ("direct known channel", "direct receive planes", "reference-pair reference"):
+        for check in ("direct known channel", "direct receive planes", "reference-pair reference",
+                      "reference-pair receive planes"):
             self.assertIn(check, run["failed"])
 
     def test_shifted_coordinates_fail_unity(self):

@@ -390,7 +390,7 @@ def run_direct(config, out, grader, np, tool, runs, control):
     h_of = {item["realization_id"]: np.load(item["h"]["path"], mmap_mode="r", allow_pickle=False)
             for item in channel["sources"]}
     planned = {item["opportunity_id"]: item for item in channel["opportunities"]}
-    inside = total = swapped_inside = 0
+    inside = total = swapped_inside = distinct = 0
     worst, phase_error, planes = 0.0, 0.0, 0
     for record in run.output.observations:
         item = planned[record["host"]["opportunity_id"]]
@@ -415,19 +415,31 @@ def run_direct(config, out, grader, np, tool, runs, control):
                 known_step = np.angle(np.sum(wanted[plane + 1] * np.conj(wanted[plane])))
                 phase_error = max(phase_error, float(abs(np.angle(np.exp(1j * (measured_step - known_step))))))
             swapped_inside += int(np.count_nonzero(np.abs(values[::-1] - wanted) <= allowed))
+            # Elements at which the known channel itself tells a plane from its mirror image.
+            distinct += int(np.count_nonzero(np.abs(wanted[::-1] - wanted) > 2 * allowed))
+    # A channel that is the same on mirrored planes, as a source at broadside gives, cannot show a
+    # reversed plane order. Then the reversal is not graded here: the pair, whose noise differs
+    # on every plane, shows the order in its own check.
+    telling = 2 * distinct >= total
     measured = {"estimates": total, "inside": inside, "max_relative_error": worst, "gain": gain, "planes": planes,
-                "max_phase_step_error_rad": phase_error, "inside_with_reversed_planes": swapped_inside}
+                "max_phase_step_error_rad": phase_error, "inside_with_reversed_planes": swapped_inside,
+                "elements_that_tell_mirrored_planes_apart": distinct, "reversal_graded": telling}
     grader.check(name, "known channel", total > 0 and inside == total,
                  f"{inside} of {total} estimates on {len(run.output.observations)} grids and {planes} receive planes "
                  f"equal g H times the pilot ratio, with g = {gain:.4f}, H of the archived channel and the stored pilot "
                  f"over the reference of the source, within the rounding of the grid ({tolerance['storage_relative']:g} "
                  f"of the magnitude plus {tolerance['absolute']:g}); the largest relative error is {worst:.6f}")
     if planes > 1:
-        grader.check(name, "receive planes", phase_error <= tolerance["phase_rad"] and swapped_inside < total // 2,
+        grader.check(name, "receive planes",
+                     phase_error <= tolerance["phase_rad"] and (not telling or swapped_inside < total // 2),
                      f"the phase from each receive plane to the next agrees with the known channel within "
-                     f"{phase_error:.6f} rad (allowed {tolerance['phase_rad']:g}), and with the planes in reverse order "
-                     f"only {swapped_inside} of {total} estimates stay inside the tolerance: every plane of the payload "
-                     "is the plane of the grid that its antenna map names")
+                     f"{phase_error:.6f} rad (allowed {tolerance['phase_rad']:g}); "
+                     + (f"with the planes in reverse order only {swapped_inside} of {total} estimates stay inside the "
+                        "tolerance: every plane of the payload is the plane of the grid that its antenna map names"
+                        if telling else
+                        f"the known channel is the same on mirrored planes at {total - distinct} of {total} elements, as "
+                        "for a source at broadside of the array, so this fixture cannot show a reversed plane order and "
+                        "the reversal is not graded here: the pair shows it, where the noise differs on every plane"))
     else:
         grader.check(name, "receive planes", False, "the direct path of the gate has one receive plane, expected the "
                                                     "four of the demonstration")
@@ -445,7 +457,8 @@ def run_pair(config, out, grader, np, tool, runs, control):
                  and shapes == [tuple(expect["shape"])] and sizes == [expect["payload_bytes"]],
                  f"both members of the pair with the gain and the noise of the entry, tapped before each decode: "
                  f"{clean_text(run)}; every payload has the shape {list(shapes[0]) if shapes else None} and "
-                 f"{sizes[0] if sizes else 0} bytes, in the layout {reference.LAYOUT}" if run.ok() else run.said())
+                 f"{sizes[0] if sizes else 0} bytes, in the layout {reference.LAYOUT}; expected {expect['opportunities']} "
+                 f"observations of {expect['shape']} with {expect['payload_bytes']} bytes" if run.ok() else run.said())
     if not run.ok():
         return {}, None
     output, measured = run.output, {}
@@ -479,7 +492,7 @@ def run_pair(config, out, grader, np, tool, runs, control):
                  "the slot count and the sample times the reference derives; precision: " + first["what"]["precision"])
 
     # ---- A separate sparse oracle in double precision, and nonzero estimates at the declared pilots.
-    worst, nonzero, elements, valid = 0.0, 0, 0, 0
+    worst, nonzero, elements, valid, mirrored, planes = 0.0, 0, 0, 0, 0, 0
     descriptors = output.descriptors_by_sequence()
     for record in output.observations:
         descriptor = descriptors[record["host"]["opportunity_sequence"]]
@@ -491,6 +504,9 @@ def run_pair(config, out, grader, np, tool, runs, control):
         oracle = received * np.conj(pilots)[None] / (np.abs(pilots) ** 2)[None]
         values = values_of(np, run, record)
         worst = max(worst, float(np.max(np.abs(values - oracle) / np.maximum(np.abs(oracle), 1e-30))))
+        # The same oracle with the receive planes of the grid in reverse order.
+        planes = values.shape[0]
+        mirrored += int(np.count_nonzero(np.abs(values - oracle[::-1]) <= tolerance["oracle_relative"] * np.abs(oracle[::-1])))
         nonzero += int(np.count_nonzero(values))
         elements += int(values.size)
         valid += record["validity"]["valid"]
@@ -499,6 +515,12 @@ def run_pair(config, out, grader, np, tool, runs, control):
                  f"a least-squares oracle in double precision on the pilots of the stored grids agrees within "
                  f"{worst:.2e} of the magnitude (allowed {tolerance['oracle_relative']:g}); {nonzero} of {elements} "
                  f"estimates at the declared pilots are nonzero and {valid} validity bits are set")
+    measured.update(planes=planes, agree_with_reversed_planes=mirrored)
+    grader.check(name, "receive planes", planes > 1 and mirrored < elements // 100,
+                 f"against the same oracle with the {planes} receive planes of the grid in reverse order only {mirrored} "
+                 f"of {elements} estimates agree: the noise of the entry differs on every plane, so every plane of the "
+                 "payload is the plane of the grid that its antenna map names" if planes > 1 else
+                 "the pair of the gate has one receive plane, expected the four of the demonstration")
 
     # ---- The decodes with the tap on are the decodes of the control.
     found, said = unchanged_text(run)

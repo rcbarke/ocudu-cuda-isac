@@ -806,6 +806,10 @@ class TreeTests(unittest.TestCase):
                          ("integration-config/pilot_ls/v1", "pilot_ls", ["cpu", "cuda"]))
         self.assertEqual(config["observer"], {"tap": "pilot_ls", "stage": "O2", "source": "pusch_dmrs", "epoch": 1})
         self.assertAlmostEqual(config["unity"]["expect"]["estimate"], UNITY, places=6)
+        # The pair is tapped as a whole: both members, each with the opportunities the Sprint 2.4 gate expects of one.
+        control = json.loads((ROOT / "configs/integration/replay_pusch.json").read_text())
+        self.assertEqual(config["pair"]["expect"]["opportunities"], 2 * control["pair"]["expect"]["opportunities"])
+        self.assertEqual(config["pair"]["expect"]["shape"], [4, 2, 306])
         # The strings of the record are the same in the core and in the reference.
         core = (OBSERVER / "observer_core.h").read_text()
         for text in (reference.RULE, reference.PRECISION, reference.LAYOUT):

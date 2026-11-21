@@ -2,7 +2,7 @@
 
 Sprint 3.1 (`pilot_ls`) attaches the first observer to the receiver replay. Before a grid is decoded, the observer reads it through the read access of the channel application core and computes, for every pilot of the grant's sensing source and every receive plane, `H = Y conj(X) / |X|^2`. The result is the stage O2 of the [stage axis](../architecture/ABLATIONS.md): observer-derived, sparse, on the DM-RS comb. The host and the CUDA PUSCH processor then decode the same grid, and every radio record must be the one that the accepted Sprint 2.4 run holds for that decode. [Sprint card](../dev/DEVELOPMENT.md#phase-s3) | [receiver replay](REPLAY_PUSCH.md) | [observation record](OBSERVATION.md) | [grant record](GRANT.md)
 
-**Status.** Delivered and unit accepted on a development host on 2026-11-21. The integration driver passes against doubles of the native tools. The hardware gate `make accept-s3.1` is open: the tool `pilot_ls` has passed a syntax check against the pinned OCUDU headers, with and without `ENABLE_CUDA`, and has not been linked or run. [What was checked](#checked-on-a-development-host)
+**Status.** Delivered and unit accepted on 2026-11-21. Built and run on the DGX Spark `spark-ecf8` the same day, run `s31-spark-ecf8-20261121T171416Z`: the tool linked against the accepted build without a warning and every check of the observer and of the decodes passed. The run is not an acceptance: two checks of the gate itself were wrong and failed. Both are corrected, and the corrected driver grades the native outputs of that run with 9 of 9 cases and 23 of 23 checks. The hardware gate stays open until `make accept-s3.1` passes on the Spark. [First run on the Spark](#first-run-on-the-spark)
 
 ## Run it
 
@@ -204,8 +204,8 @@ The nine cases and their checks:
 |---|---|
 | `control` | The Sprint 2.4 driver graded its run as a pass with the hardware gate closed. The plans this gate taps have the hashes its manifest names, and their radio records verify with the reader of that sprint and carry no tap. |
 | `unity` | The native runs with every radio record equal to the control's. Then one check per run: every estimate of every grant is 1.0011865 with a zero imaginary part and a set validity bit, with the shape and the first subcarrier of its grant, and the reference recomputes each payload. |
-| `direct` | The native run. Known channel: every estimate equals `g H` times the stored pilot over the reference, within `2**-8` of the magnitude plus `1e-6`, on all receive planes. Receive planes: the phase from each plane to the next agrees with the known channel, and with the planes in reverse order fewer than half of the estimates stay inside the tolerance. |
-| `reference-pair` | Native run with the shape and size of the demonstration. Ingress: every observation names the digest of the grid the control decoded, on both backends. Reference: bit for bit, with the source, the coordinates, the slot count and the sample times. Sparse oracle: a least-squares oracle in double precision agrees within `1e-6`, and every estimate at a declared pilot is nonzero. Decodes: every radio record and every file of decoded bytes is the control's. Access: no name or hash of H, W or a transport block and no label in `observer/`. |
+| `direct` | The native run. Known channel: every estimate equals `g H` times the stored pilot over the reference, within `2**-8` of the magnitude plus `1e-6`, on all receive planes. Receive planes: the phase from each plane to the next agrees with the known channel. Where the known channel tells a plane from its mirror image at half of the elements or more, fewer than half of the estimates may stay inside the tolerance with the planes in reverse order. Where it does not, as for a source at broadside of the array, the reversal is not graded here and the line says so. |
+| `reference-pair` | Native run with the shape and size of the demonstration. Ingress: every observation names the digest of the grid the control decoded, on both backends. Reference: bit for bit, with the source, the coordinates, the slot count and the sample times. Sparse oracle: a least-squares oracle in double precision agrees within `1e-6`, and every estimate at a declared pilot is nonzero. Receive planes: against the same oracle with the planes of the grid in reverse order fewer than one estimate in a hundred agrees, because the noise of the entry differs on every plane. Decodes: every radio record and every file of decoded bytes is the control's. Access: no name or hash of H, W or a transport block and no label in `observer/`. |
 | `payload` | The native run with every radio record equal to the control's. Data invariance: every grid differs from the grid of the same opportunity with the fixed block, and every estimate is that grid's estimate bit for bit. |
 | `tap-off` | The same executable without the tap writes no observer directory, its radio records equal the control's, and the records with the tap on equal the records with the tap off. |
 | `rerun` | One opportunity alone from the archived plan with `--only`: the same grid, estimate, slot count, sample times, outcome and bytes |
@@ -218,7 +218,7 @@ The gate prints three things as NOTE lines and does not grade them: the differen
 
 ## Checked on a development host
 
-The gate has not run on the Spark. On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.5.3) without an OCUDU build:
+Before the Spark run, on an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.5.3) without an OCUDU build:
 
 | | Development host |
 |---|---|
@@ -228,10 +228,33 @@ The gate has not run on the Spark. On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, 
 | Observer core on stored grids | A one-off harness linked the observer core and the plan reader, without OCUDU, and ran them on the 38 stored grids of the driver run, 4 by 14 by 612 values each: every payload, validity mask, join key, slot count and sample time equals the record of the reference. The same with `-O3` and fused multiply-add enabled. The harness is not part of the tree. |
 | `pilot_ls.cpp` | Passes a syntax check against the headers of the pinned OCUDU source at `27e84cb3`, with and without `ENABLE_CUDA`, with `-Wall -Wextra -Wshadow` and no warning. Not linked, not run. |
 | Accepted sources | The eleven native source files of Sprint 2 have the hashes of the accepted tree. The unit gate checks it. |
-| Integration driver | 9 of 9 cases and 22 of 22 checks against the doubles, on a Sprint 2.4 run that the driver of that sprint graded on its own doubles. As a rehearsal on a build without CUDA: judgment `rehearsal`, hardware gate open. |
+| Integration driver | 9 of 9 cases and 23 of 23 checks against the doubles, on a Sprint 2.4 run that the driver of that sprint graded on its own doubles. As a rehearsal on a build without CUDA: judgment `rehearsal`, hardware gate open. |
 | Faults | Each fault of `tests/unit/pilot_ls_double.py` fails the check that names it: an estimate against the stored pilot, a missing conjugate, reversed receive planes, shifted coordinates, an estimate that depends on data, a wrong validity bit, a wrong slot, an observation of another grid, a tap that writes the grid, a tap that changes a decode, a missing observation, a leak, observations without a tap, a fallback to the host path, a tool that refuses nothing, a tool that exits with an error |
 
-The doubles compute the estimate with the Python reference, so the driver run shows that the checks are sound and nothing about the native tool. Three things are open until the Spark runs the gate: that `pilot_ls` links against the accepted build and its self-test passes on the pinned grid, that the native estimate on the pinned grid equals the reference bit for bit on AArch64, and that the decodes with the observer attached are those of the accepted run on the resident CUDA path.
+The doubles compute the estimate with the Python reference, so the driver run shows that the checks are sound and nothing about the native tool. Three things were open before the Spark ran the gate, and its first run settled each: `pilot_ls` links against the accepted build and its self-test passes on the pinned grid, the native estimate on the pinned grid equals the reference bit for bit on AArch64, and the decodes with the observer attached are those of the accepted run on the resident CUDA path.
+
+## First run on the Spark
+
+`make accept-s3.1` ran on `spark-ecf8` on 2026-11-21 (UTC) at commit `b339c2a`, run `s31-spark-ecf8-20261121T171416Z`, and ended NOT ACCEPTED with 20 of 22 checks. What failed was the gate, in two places. The native outputs of that run pass the corrected driver.
+
+| | First run on the Spark |
+|---|---|
+| Unit suite and unit gate | 403 tests and 31 tests, none skipped |
+| Adapter | `pilot_ls` `c3a214c2869c` beside `replay_pusch` `d2bcc09539c3`, `grid_apply` `158644b5a177` and `grant_fixture` `7a0e1c8ec1a0`, the bytes of the accepted Sprint 2.4 run. `ENABLE_CUDA`, 48 CTest cases, no compiler warning. The tap self-test on the pinned grid passed. |
+| Unity | 15,324 estimates on 8 grids, every one 1.0011865 |
+| Direct path | 58,752 of 58,752 estimates equal `g H` times the pilot ratio within the rounding of the grid, largest relative error 0.0029 |
+| Pair | 48 of 48 observations name the grid the accepted `replay_pusch` decoded, first `6a0a3c28258f7c04`. 48 of 48 payloads and masks equal the reference bit for bit, on AArch64. The oracle in double precision agrees within 5.8e-08. 117,504 of 117,504 estimates are nonzero. |
+| Decodes | 96 of 96 radio records and files of decoded bytes of the pair are the control's. 352 decodes in 6 runs, all `decoded`, 176 on the host path and 176 on the resident CUDA path, 128 observations for 128 tapped grids |
+| Payload | 48 of 48 grids differ and 48 of 48 estimates are the same bit for bit |
+| Recorded, not graded | The estimates of the two members differ by -41.8 dB. The tap takes 1,470 us per grid. |
+
+The two faults of the gate:
+
+- **The expected number of observations was that of one member.** `configs/integration/pilot_ls.json` named 24, the count the Sprint 2.4 configuration holds per member. The run produced the 48 of both members, as it must, and the check `reference-pair native run` failed on the count while its text showed nothing wrong. The configuration now names 48, the line prints what it expected, and a unit test ties the value to the Sprint 2.4 configuration.
+- **The direct path cannot show a reversed plane order.** The check `direct receive planes` required that the estimates leave the tolerance when the planes are reversed. The target-absent channel of the reference pair is the same on all four receive planes to the last bit: the transmitter lies at broadside of the array. With the planes reversed all 58,752 estimates stayed inside, which is correct. The unit pair of the driver tests has a phase step of 0.4 rad per plane, so the fault did not show there. The check now grades the reversal only where the known channel tells mirrored planes apart, and the pair has its own check: against the oracle with the planes of the grid reversed, 358 of 117,504 estimates agree, because the noise differs on every plane. Reversed payload planes injected into the outputs of this run fail that check, the reference and the oracle.
+
+One measurement goes on. The tap takes 1.47 ms for 2,448 estimates, and about nine tenths of it is the digest that the observer takes of the whole grid after its read, 274 kB through the grid reader. The share was measured on a development host with the storage model of the grid. It is the time a fill takes for the same reason. It is outside the PUSCH service time and is not graded. A timed run leaves that digest to the evaluator, as the observation contract allows, which S3.2 and S4.1 have to do before a paced run.
+
 
 ## For Sprint 3.2
 
