@@ -323,8 +323,11 @@ class Output:
         return {descriptor["sequence"]: descriptor for descriptor in self.descriptors}
 
 
-def open_output(directory):
+def open_output(directory, schema=NATIVE_SCHEMA):
     """Verify a native output of the tapped replay and return it.
+
+    schema is the report schema of this ticket unless a later plan version names its own (an
+    audited run of Sprint 3.2 writes the same files under the schema of its plan version).
 
     The radio records, the decoded bytes and the grid descriptors are verified as Sprint 2.4
     verifies them, with the tap of the run in every record. With the tap "none" the output holds
@@ -342,7 +345,7 @@ def open_output(directory):
     if tap not in TAPS:
         raise PilotLsPlanError(f"the report names the unknown tap {tap!r}")
     try:
-        radio = rp.open_output(directory, schema=NATIVE_SCHEMA, taps=(tap,))
+        radio = rp.open_output(directory, schema=schema, taps=(tap,))
     except ReplayPuschError as error:
         raise PilotLsPlanError(str(error)) from None
     if report["receiver"]["tap"] != tap or any(record["tap"] != tap for record in radio.records):

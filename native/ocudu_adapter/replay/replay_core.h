@@ -23,6 +23,11 @@
 // This file includes nothing of OCUDU. The unit target links it with doubles only. The pinned
 // resource grid is one implementation of grid_sink (pinned_grid.h), and the plan reader is in
 // replay_plan.h. All text in this directory is ASCII.
+//
+// Amended by Sprint 3.2 (decided 2026-11-21), and by nothing else since Sprint 2.3 was accepted:
+// the hash counts its own work (sha256_count), and a grid can become ready without a readback
+// digest (evidence::timed). The arithmetic, the gain rules and every default are unchanged, so a
+// caller that names no evidence mode runs the code that was accepted.
 
 #pragma once
 
@@ -69,6 +74,27 @@ private:
 };
 
 std::string sha256_hex(const void* data, std::size_t bytes);
+
+/// What the hash did in this process so far: digests that were finished, calls that handed it
+/// data and the bytes of those calls. A timed path must leave all three unchanged.
+struct hash_count {
+  std::uint64_t digests = 0;
+  std::uint64_t updates = 0;
+  std::uint64_t bytes   = 0;
+};
+
+hash_count sha256_count();
+
+// ---------------------------------------------------------------------------------------------- evidence
+
+/// The two evidence modes of a run. One arithmetic serves both.
+///   audit  every digest: a grid is read back when it becomes ready and whenever it is checked.
+///          The gates of Sprints 2.3 to 3.1 ran this mode, and it is the default everywhere.
+///   timed  no digest. A grid is owned by the ticket of its fill, that is by its index and its
+///          generation, and the evaluator digests what was archived after the run.
+enum class evidence { audit, timed };
+
+const char* to_string(evidence mode);
 
 // ---------------------------------------------------------------------------------------------- storage
 
@@ -266,7 +292,7 @@ struct o1_descriptor {
   grid_shape  shape;
   double      grid_gain = 0.0;
   std::string storage;
-  std::string readback_sha256; ///< Set when the grid becomes ready.
+  std::string readback_sha256; ///< Set when the grid becomes ready in the mode audit. Empty in the mode timed.
 };
 
 /// Names one fill of one grid. A ticket of an earlier fill is stale.
@@ -308,8 +334,9 @@ public:
   bool try_acquire(ticket& out);
   /// The writer of a grid that is being filled.
   grid_sink& writer(const ticket& key);
-  /// filling -> ready. Reads the grid back and records its digest in the descriptor.
-  void commit(const ticket& key, o1_descriptor descriptor);
+  /// filling -> ready. In the mode audit it reads the grid back and records its digest in the
+  /// descriptor. In the mode timed it reads nothing, and the digest of the descriptor stays empty.
+  void commit(const ticket& key, o1_descriptor descriptor, evidence mode = evidence::audit);
   /// filling -> free after a failed fill. The grid is cleared.
   void abort(const ticket& key);
   /// A ready grid, for the consumer that decodes this allocation. Throws state_error for a grid

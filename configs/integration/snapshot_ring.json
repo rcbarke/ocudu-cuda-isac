@@ -1,0 +1,44 @@
+{
+  "schema": "integration-config/snapshot_ring/v1",
+  "selector": "snapshot_ring",
+  "adapter_build": "build/ocudu-adapter",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "observer": {
+    "tap": "pilot_ls",
+    "stage": "O2",
+    "source": "pusch_dmrs",
+    "epoch": 1
+  },
+  "control": {
+    "driver": "pilot_ls",
+    "run": "reference-pair"
+  },
+  "ring": {
+    "stream": "o2",
+    "window_records": 3,
+    "burst_records": 3,
+    "slots": 8,
+    "attach_timeout_ms": 30000,
+    "drain_ms": 5000
+  },
+  "tap": {
+    "ceiling_us": 150.0,
+    "explain_us": 20.0,
+    "expected_us": 10.0
+  },
+  "slow_consumer": {
+    "hold_us": 5000
+  },
+  "terminated_consumer": {
+    "exit_after": 4
+  },
+  "pair": {
+    "expect": {
+      "opportunities": 48,
+      "payload_bytes": 19584
+    }
+  }
+}

@@ -38,6 +38,14 @@
 // An observation owns its payload and its validity bits. It stays valid after the grid was
 // released and filled again. The observer only reads the grid.
 //
+// Two evidence modes, one arithmetic (Sprint 3.2, decided 2026-11-21). Both call estimate_into.
+//   audit  observe(): every digest, as Sprint 3.1 was accepted. The observation is tied to its
+//          grid by the readback digest, which is taken again after the read.
+//   timed  observe_into(): the estimate is written straight into storage of the caller, a slot of
+//          the observation ring. No hash, no allocation and no text. The join keys, the slot
+//          count and the sample times were bound before the run (prepare), and the observation is
+//          tied to its grid by the ticket of the fill: the index and the generation of the grid.
+//
 // This file includes the channel application core and nothing of OCUDU. The unit target links it
 // with doubles only. All text in this directory is ASCII.
 
@@ -53,6 +61,7 @@
 namespace isac_observer {
 
 using isac_replay::cf32;
+using isac_replay::evidence;
 using isac_replay::input_error;
 using isac_replay::state_error;
 
@@ -221,6 +230,11 @@ struct observation {
   isac_replay::ticket grid;
   std::string         ingress_sha256; ///< Readback digest of the grid the estimate was computed from.
   double              service_us = 0.0;
+  // The parts of service_us, in the order they run. Recorded, so that an audit run shows where its time goes.
+  double estimate_us       = 0.0; ///< The rows read, the least-squares values, the validity bits.
+  double grid_digest_us    = 0.0; ///< The digest of the whole grid after the read.
+  double keys_mask_us      = 0.0; ///< The record fields, the three join keys and the digest of the mask.
+  double payload_digest_us = 0.0;
 
   std::size_t payload_bytes() const { return values.size() * sizeof(cf32); }
   bool        is_valid(std::size_t element) const { return ((mask[element / 8] >> (element % 8)) & 1U) != 0; }
@@ -229,17 +243,56 @@ struct observation {
 /// The leading 64 bits of the SHA-256 of a text: an opaque integer for joins.
 std::uint64_t opaque_key(const std::string& text);
 
-/// Estimates one source on a grid that is read plane by plane. read(plane, symbol, row, count)
-/// returns subcarriers 0 to count-1 of one symbol. It fills shape, values, mask, valid and holes.
+struct estimate_counts {
+  std::size_t valid = 0;
+  std::size_t holes = 0;
+};
+
+/// Estimates one source on a grid that is read plane by plane, into storage of the caller.
+/// read(plane, symbol, row, count) returns subcarriers 0 to count-1 of one symbol. values holds
+/// rx_planes * plane_elements values, mask one bit per value, rounded up to bytes, and row holds
+/// subcarriers values of scratch. It allocates nothing. Both evidence modes run this code.
+template <typename Reader>
+estimate_counts estimate_into(const pilot_source& source, unsigned subcarriers, Reader&& read, cf32* values,
+                              std::uint8_t* mask, cf32* row);
+
+/// The same into an observation, which it sizes: shape, values, mask, valid and holes.
 template <typename Reader>
 void estimate(const pilot_source& source, unsigned subcarriers, Reader&& read, observation& out);
+
+/// Everything of one observation that is known before the run. Bound once, read per slot.
+struct bound_slot {
+  const pilot_source* source = nullptr;
+  std::string         opportunity_id;
+  std::string         episode_id;
+  std::string         grant_record_sha256;
+  // The join keys, hashed when the plan is bound and not per slot.
+  std::uint64_t episode     = 0;
+  std::uint64_t opportunity = 0;
+  std::uint64_t grant       = 0;
+  unsigned      cell = 0;
+  unsigned      ue   = 0;
+  unsigned      sfn  = 0;
+  unsigned      slot = 0;
+  std::uint64_t absolute_slot  = 0;
+  std::uint64_t t_first_sample = 0;
+  std::uint64_t t_last_sample  = 0;
+};
+
+/// What observe_into reports of one estimate.
+struct tap_result {
+  estimate_counts     counts;
+  isac_replay::ticket grid;           ///< The ticket of the fill the estimate was computed from.
+  std::int64_t        t_read_ns  = 0; ///< Host monotonic time before the first row was read.
+  std::int64_t        t_ready_ns = 0; ///< Host monotonic time at which the estimate was complete.
+};
 
 /// The observer of one run: the sources it was bound with and the observations it made.
 class observer
 {
 public:
-  /// epoch names the run of the producer. It is at least 1.
-  observer(std::string run_id_, std::uint64_t epoch_);
+  /// epoch names the run of the producer. It is at least 1. mode is the evidence mode of the run.
+  observer(std::string run_id_, std::uint64_t epoch_, evidence mode_ = evidence::audit);
 
   /// Binds the source of one grant. A second source for a grant record is refused.
   void bind(const source_spec& spec);
@@ -257,12 +310,35 @@ public:
   /// reference stays valid until the next call.
   const observation& observe(const isac_replay::o1_view& view, const slot_context& slot);
 
+  /// Binds one opportunity before the run, in the order of the schedule: its source, its join
+  /// keys, its slot count and its sample times. This is where the keys are hashed. Returns the
+  /// handle of the slot. Throws input_error as observe() does for a slot the source was not
+  /// built for and for a grant record without a source.
+  std::size_t       prepare(const slot_context& slot, const std::string& grant_record_sha256);
+  const bound_slot& prepared(std::size_t handle) const { return slots.at(handle); }
+  std::size_t       prepared_slots() const { return slots.size(); }
+
+  /// The timed path. Estimates the source of a prepared slot on a ready grid, straight into
+  /// values and mask, which hold what estimate_into names. It takes no digest, allocates nothing
+  /// and formats no text.
+  ///
+  /// Throws input_error for a grid of another grant record, another size or another slot than
+  /// the prepared one, and state_error for a grid that was released or filled again before or
+  /// while it was read: the ticket of the fill is checked before the first row and after the
+  /// last. A grid whose values were changed under an unchanged ticket is not found here. The
+  /// audit mode and the digest that the evaluator takes after the run find it.
+  tap_result observe_into(std::size_t handle, const isac_replay::o1_view& view, cf32* values, std::uint8_t* mask);
+
   const std::vector<observation>& observations() const { return made; }
   std::uint64_t                   epoch() const { return epoch_id; }
+  evidence                        mode() const { return evidence_mode; }
 
 private:
   std::string                         run_id;
   std::uint64_t                       epoch_id;
+  evidence                            evidence_mode;
+  std::vector<bound_slot>             slots;
+  std::vector<cf32>                   scratch_row; ///< Of observe_into, sized when a source is bound.
   std::map<std::string, pilot_source> bindings;
   std::vector<observation>            made;
   // Frame wraps seen so far, per episode, so that the absolute slot never decreases inside one.
@@ -273,9 +349,49 @@ private:
     bool          seen  = false;
   };
   std::map<std::string, episode_clock> clocks;
+  std::map<std::string, episode_clock> bound_clocks; ///< The same count for prepare(), which runs before the run.
+  static std::uint64_t absolute_slot_of(episode_clock& clock, const slot_context& slot, unsigned scs_khz);
 };
 
 // ---------------------------------------------------------------------------------------------- template
+
+template <typename Reader>
+estimate_counts estimate_into(const pilot_source& source, unsigned subcarriers, Reader&& read, cf32* values,
+                              std::uint8_t* mask, cf32* row)
+{
+  const std::size_t planes  = source.rx_planes();
+  const std::size_t rows    = source.symbols().size();
+  const std::size_t columns = source.subcarriers().size();
+  const std::size_t count   = planes * rows * columns;
+  estimate_counts   counts;
+  for (std::size_t byte = 0; byte != (count + 7) / 8; ++byte) {
+    mask[byte] = 0;
+  }
+  const cf32* reference = source.spec().reference.data(); // one port
+  for (std::size_t plane = 0; plane != planes; ++plane) {
+    for (std::size_t symbol_row = 0; symbol_row != rows; ++symbol_row) {
+      read(static_cast<unsigned>(plane), source.symbols()[symbol_row], row, subcarriers);
+      for (std::size_t column = 0; column != columns; ++column) {
+        const std::size_t element = (plane * rows + symbol_row) * columns + column;
+        const long long   which   = source.pilot_at(symbol_row, column);
+        bool              ok      = false;
+        cf32              value(0.0F, 0.0F);
+        if (which >= 0) {
+          value = pilot_ls(row[source.subcarriers()[column]], reference[which], &ok);
+        }
+        if (ok) {
+          values[element]   = value;
+          mask[element / 8] = static_cast<std::uint8_t>(mask[element / 8] | (1U << (element % 8)));
+          ++counts.valid;
+        } else {
+          values[element] = cf32(0.0F, 0.0F);
+          ++counts.holes;
+        }
+      }
+    }
+  }
+  return counts;
+}
 
 template <typename Reader>
 void estimate(const pilot_source& source, unsigned subcarriers, Reader&& read, observation& out)
@@ -288,30 +404,10 @@ void estimate(const pilot_source& source, unsigned subcarriers, Reader&& read, o
   out.strides = {rows * columns, columns, 1};
   out.values.assign(count, cf32(0.0F, 0.0F));
   out.mask.assign((count + 7) / 8, 0);
-  out.valid = 0;
-  out.holes = 0;
-  const cf32*       reference = source.spec().reference.data(); // one port
-  std::vector<cf32> row(subcarriers);
-  for (std::size_t plane = 0; plane != planes; ++plane) {
-    for (std::size_t symbol_row = 0; symbol_row != rows; ++symbol_row) {
-      read(static_cast<unsigned>(plane), source.symbols()[symbol_row], row.data(), subcarriers);
-      for (std::size_t column = 0; column != columns; ++column) {
-        const std::size_t element = (plane * rows + symbol_row) * columns + column;
-        const long long   which   = source.pilot_at(symbol_row, column);
-        bool              ok      = false;
-        if (which >= 0) {
-          out.values[element] = pilot_ls(row[source.subcarriers()[column]], reference[which], &ok);
-        }
-        if (ok) {
-          out.mask[element / 8] = static_cast<std::uint8_t>(out.mask[element / 8] | (1U << (element % 8)));
-          ++out.valid;
-        } else {
-          out.values[element] = cf32(0.0F, 0.0F);
-          ++out.holes;
-        }
-      }
-    }
-  }
+  std::vector<cf32>     row(subcarriers);
+  const estimate_counts counts = estimate_into(source, subcarriers, read, out.values.data(), out.mask.data(), row.data());
+  out.valid                    = counts.valid;
+  out.holes                    = counts.holes;
 }
 
 } // namespace isac_observer

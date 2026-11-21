@@ -45,21 +45,21 @@ import test_grid_apply as apply_tests  # noqa: E402
 
 OBSERVER = ROOT / "native/ocudu_adapter/observer"
 CASES = ("kernel", "amplitude_scale", "data_invariance", "pilot_hole", "refusals", "antenna_map", "coordinates",
-         "record", "ownership", "binding", "slot_times")
+         "record", "ownership", "timed", "binding", "slot_times")
 # The reference amplitude of two CDM groups without data, per component, in single precision.
 COMPONENT = reference.single(10 ** (3 / 20) / 2 ** 0.5)
 UNITY = reference.single(1.0 / COMPONENT)
 # The native sources that Sprint 2 accepted. This ticket adds a tool beside them and edits none:
-# replay_pusch stays the control, with the executable the accepted runs name.
+# replay_pusch stays the control, with the executable the accepted runs name. Sprint 3.2 amended
+# the two host-free cores of that list, replay_core and dispatch_core, by the requirement of
+# 2026-11-21 (the hash counts its own work, a grid can be owned by the ticket of its fill). Their
+# new hashes are pinned in tests/unit/test_snapshot_ring.py, and the seven files below are as
+# Sprint 2 accepted them.
 ACCEPTED_SOURCES = {
     "fixtures/grant_fixture.cpp": "48e36372e08973b9331446292f723941bf8a64864419360266d575623a6537d8",
-    "replay/replay_core.h": "1ca17a0b3090dd9052bbcc4e613adcc283fb4224aadf8ffec79e7a43a64ff9bd",
-    "replay/replay_core.cpp": "9e2dd6c94fac4c3bd663e2a87b0833b386d8b71bf43b2760f4d62ea2abc866c7",
     "replay/replay_plan.h": "6b6ead72396b9ba5d1639b055eee395966355f7e3f53890064b07f3c20b8a981",
     "replay/pinned_grid.h": "465d265f46ca40c9613e77c0e3c9eec192a2f16b837a39c601e74bc65814ecc0",
     "replay/grid_apply.cpp": "62d76c8e3b105bb92e9874981889508a22ebd37bedd932ee26abcab300754f17",
-    "receiver/dispatch_core.h": "95fcb0ea84ab34abce4976d706ab5d65e1158e9b89b9dd8e8d704daab840e603",
-    "receiver/dispatch_core.cpp": "a6bcb39180e824c28b7ac1d7a0d78f8c33f1f084a7f1183be4362a8219d4ed75",
     "receiver/grant_pdu.h": "f75d4ac1b0fe5ff17ba225b1b8b487dbf70bb6064482ce9c9b74d6f5f1f181aa",
     "receiver/receiver_plan.h": "b49f5a90f1070cf2a8966d45828817e9a265abf4eef3e72fe9ff6319ffdd0fca",
     "receiver/replay_pusch.cpp": "d6719fe8081415587a819f0c6b2c83b27e3933053ba68bb8a48303168dc86ec2",
@@ -754,6 +754,7 @@ class TreeTests(unittest.TestCase):
         adapter = ROOT / "native/ocudu_adapter"
         for relative, digest in ACCEPTED_SOURCES.items():
             self.assertEqual(hashlib.sha256((adapter / relative).read_bytes()).hexdigest(), digest, relative)
+        self.assertEqual(len(ACCEPTED_SOURCES), 7)
 
     def test_the_tool_taps_the_ready_grid_before_the_processors_and_only_reads_it(self):
         tool = (OBSERVER / "pilot_ls.cpp").read_text()

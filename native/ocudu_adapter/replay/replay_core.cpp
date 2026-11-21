@@ -3,6 +3,7 @@
 
 #include "replay_core.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -60,6 +61,29 @@ const std::uint32_t SHA256_K[64] = {
 
 // ---------------------------------------------------------------------------------------------- hashing
 
+namespace {
+
+// Counted in the hash itself, so that no caller can hash without being counted.
+std::atomic<std::uint64_t> hash_digests{0};
+std::atomic<std::uint64_t> hash_updates{0};
+std::atomic<std::uint64_t> hash_bytes{0};
+
+} // namespace
+
+hash_count sha256_count()
+{
+  hash_count now;
+  now.digests = hash_digests.load(std::memory_order_relaxed);
+  now.updates = hash_updates.load(std::memory_order_relaxed);
+  now.bytes   = hash_bytes.load(std::memory_order_relaxed);
+  return now;
+}
+
+const char* to_string(evidence mode)
+{
+  return mode == evidence::timed ? "timed" : "audit";
+}
+
 sha256::sha256()
 {
   static const std::uint32_t initial[8] = {0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
@@ -114,6 +138,8 @@ void sha256::update(const void* data, std::size_t bytes)
   }
   const std::uint8_t* input = static_cast<const std::uint8_t*>(data);
   length += bytes;
+  hash_updates.fetch_add(1, std::memory_order_relaxed);
+  hash_bytes.fetch_add(bytes, std::memory_order_relaxed);
   if (filled != 0) {
     const std::size_t take = std::min(bytes, sizeof(buffer) - filled);
     std::memcpy(buffer + filled, input, take);
@@ -151,6 +177,10 @@ std::string sha256::hex()
     update(tail, pad + 8);
     length   = message_length;
     finished = true;
+    // The padding is not data of a caller. The finished digest is counted once.
+    hash_updates.fetch_sub(1, std::memory_order_relaxed);
+    hash_bytes.fetch_sub(pad + 8, std::memory_order_relaxed);
+    hash_digests.fetch_add(1, std::memory_order_relaxed);
     static const char digits[] = "0123456789abcdef";
     for (unsigned i = 0; i != 8; ++i) {
       for (int shift = 28; shift >= 0; shift -= 4) {
@@ -565,10 +595,14 @@ grid_sink& o1_pool::writer(const ticket& key)
   return *slot_for(key, grid_state::filling, "write").grid;
 }
 
-void o1_pool::commit(const ticket& key, o1_descriptor descriptor)
+void o1_pool::commit(const ticket& key, o1_descriptor descriptor, evidence mode)
 {
-  slot_t& slot               = slot_for(key, grid_state::filling, "commit");
-  descriptor.readback_sha256 = readback_sha256(*slot.grid, descriptor.shape);
+  slot_t& slot = slot_for(key, grid_state::filling, "commit");
+  if (mode == evidence::audit) {
+    descriptor.readback_sha256 = readback_sha256(*slot.grid, descriptor.shape);
+  } else {
+    descriptor.readback_sha256.clear(); // owned by its ticket: no grid is read back in a timed path
+  }
   slot.descriptor            = std::move(descriptor);
   slot.state                 = grid_state::ready;
 }

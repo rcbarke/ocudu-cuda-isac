@@ -44,7 +44,7 @@ target_link_libraries(observer_core_test PRIVATE observer_core)
 set_target_properties(observer_core_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_compile_options(observer_core_test PRIVATE -O1 -ffp-contract=off -Wall -Wextra -Wshadow)
 set(OBSERVER_CORE_CASES kernel amplitude_scale data_invariance pilot_hole refusals antenna_map coordinates
-    record ownership binding slot_times)
+    record ownership timed binding slot_times)
 foreach(case IN LISTS OBSERVER_CORE_CASES)
   add_test(NAME observer_core_${case} COMMAND observer_core_test ${case})
 endforeach()
@@ -53,14 +53,16 @@ endforeach()
 if(TARGET ocudu_pin_fixture)
   # The tool is compiled exactly like replay_pusch, with the flags of the pinned test and no other.
   # It computes no estimate itself: observer::observe does, inside the core and with its flags.
+  # Sprint 3.2: it also links the producer glue of transport/ and, through it, the observation ring.
   add_executable(pilot_ls pilot_ls.cpp)
-  target_link_libraries(pilot_ls PRIVATE observer_core dispatch_core replay_core ocudu_pin_fixture)
+  target_link_libraries(pilot_ls PRIVATE obs_publisher observer_core dispatch_core replay_core ocudu_pin_fixture)
 
   add_test(NAME pilot_ls_help COMMAND pilot_ls --help)
   set_tests_properties(pilot_ls_help PROPERTIES PASS_REGULAR_EXPRESSION "--plan FILE --output-dir DIR")
   add_test(NAME pilot_ls_refuses_missing_arguments COMMAND pilot_ls --no-grids)
   set_tests_properties(pilot_ls_refuses_missing_arguments PROPERTIES WILL_FAIL TRUE)
-  # A known grant through the pinned grid and the pinned host processor, with the tap off and on.
+  # A known grant through the pinned grid and the pinned host processor, with the tap off and on,
+  # and once more in the mode timed through a ring without a consumer.
   # It requests no CUDA processor, so the adapter build starts no work on a device.
   add_test(NAME pilot_ls_host_tap COMMAND pilot_ls --self-test)
   set_tests_properties(pilot_ls_host_tap PROPERTIES

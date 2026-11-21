@@ -227,7 +227,8 @@ std::uint64_t opaque_key(const std::string& text)
   return value;
 }
 
-observer::observer(std::string run_id_, std::uint64_t epoch_) : run_id(std::move(run_id_)), epoch_id(epoch_)
+observer::observer(std::string run_id_, std::uint64_t epoch_, evidence mode_) :
+  run_id(std::move(run_id_)), epoch_id(epoch_), evidence_mode(mode_)
 {
   if (run_id.empty()) {
     throw input_error("an observer needs the identifier of its run");
@@ -244,6 +245,9 @@ void observer::bind(const source_spec& spec)
     throw input_error("the grant " + spec.grant_id + " has two sensing sources: one source is bound to a grant record");
   }
   bindings.emplace(spec.grant_record_sha256, std::move(compiled));
+  if (scratch_row.size() < spec.grid_subcarriers) {
+    scratch_row.resize(spec.grid_subcarriers); // the scratch of the timed path exists before the run
+  }
 }
 
 bool observer::bound(const std::string& grant_record_sha256) const
@@ -260,8 +264,103 @@ const pilot_source& observer::source_of(const std::string& grant_record_sha256) 
   return found->second;
 }
 
+std::uint64_t observer::absolute_slot_of(episode_clock& clock, const slot_context& slot, unsigned scs_khz)
+{
+  // The absolute slot does not wrap with the frame number: a frame or a slot that goes back
+  // inside one episode is the next period of frame numbers.
+  if (clock.seen && (slot.sfn < clock.sfn || (slot.sfn == clock.sfn && slot.slot < clock.slot))) {
+    ++clock.wraps;
+  }
+  clock.seen = true;
+  clock.sfn  = slot.sfn;
+  clock.slot = slot.slot;
+  return (clock.wraps * SFN_PERIOD + slot.sfn) * slots_per_frame(scs_khz) + slot.slot;
+}
+
+std::size_t observer::prepare(const slot_context& slot, const std::string& grant_record_sha256)
+{
+  const auto found = bindings.find(grant_record_sha256);
+  if (found == bindings.end()) {
+    throw input_error("changed allocation: no sensing source is bound to the grant record of " + slot.opportunity_id);
+  }
+  const pilot_source& source = found->second;
+  const source_spec&  spec   = source.spec();
+  if (slot.slot != spec.slot) {
+    throw input_error("the opportunity " + slot.opportunity_id + " lies in slot " + std::to_string(slot.slot) +
+                      ", and its reference symbols were generated for slot " + std::to_string(spec.slot) +
+                      ": the DM-RS depends on the slot index");
+  }
+  if (slot.sfn >= SFN_PERIOD) {
+    throw input_error("the opportunity " + slot.opportunity_id + " names a frame number outside 0 to 1023");
+  }
+  bound_slot item;
+  item.source              = &source;
+  item.opportunity_id      = slot.opportunity_id;
+  item.episode_id          = slot.episode_id;
+  item.grant_record_sha256 = grant_record_sha256;
+  item.episode             = opaque_key(slot.episode_id);
+  item.opportunity         = opaque_key(slot.opportunity_id);
+  item.grant               = opaque_key(grant_record_sha256);
+  item.cell                = slot.cell;
+  item.ue                  = slot.ue;
+  item.sfn                 = slot.sfn;
+  item.slot                = slot.slot;
+  item.absolute_slot       = absolute_slot_of(bound_clocks[slot.episode_id], slot, spec.scs_khz);
+  const std::uint64_t origin = slot_start_tc(spec.scs_khz, item.absolute_slot);
+  item.t_first_sample        = origin + spec.symbol_useful_start_tc.front();
+  item.t_last_sample         = origin + spec.symbol_useful_start_tc.back() + useful_tc(spec.scs_khz);
+  slots.push_back(std::move(item));
+  return slots.size() - 1;
+}
+
+namespace {
+
+inline std::int64_t now_ns()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+} // namespace
+
+tap_result observer::observe_into(std::size_t handle, const isac_replay::o1_view& view, cf32* values, std::uint8_t* mask)
+{
+  tap_result result;
+  result.t_read_ns = now_ns();
+  const bound_slot& bound = slots[handle];
+  // A released or refilled grid throws state_error here, before anything is read. Nothing below
+  // copies the descriptor, hashes or builds a text unless a rule is broken.
+  const isac_replay::o1_descriptor& descriptor = view.descriptor();
+  const pilot_source&               source     = *bound.source;
+  const source_spec&                spec       = source.spec();
+  if (descriptor.grant_record_sha256 != bound.grant_record_sha256) {
+    throw input_error("changed allocation: the grid of " + bound.opportunity_id + " was filled for another grant record "
+                      "than its prepared slot");
+  }
+  if (descriptor.shape.symbols != spec.grid_symbols || descriptor.shape.subcarriers != spec.grid_subcarriers ||
+      descriptor.shape.rx_ports != source.rx_planes()) {
+    throw input_error("the grid of " + bound.opportunity_id + " has another size or another number of receive planes "
+                      "than its sensing source was built for");
+  }
+  if (descriptor.slot != spec.slot) {
+    throw input_error("the grid of " + bound.opportunity_id + " lies in slot " + std::to_string(descriptor.slot) +
+                      ", and its reference symbols were generated for slot " + std::to_string(spec.slot));
+  }
+  result.counts = estimate_into(
+      source, descriptor.shape.subcarriers,
+      [&view](unsigned plane, unsigned symbol, cf32* into, unsigned count) { view.get(plane, symbol, into, count); },
+      values, mask, scratch_row.data());
+  // Ownership by generation: the grid is still ready under the ticket of its fill after the read.
+  view.descriptor();
+  result.grid       = view.key();
+  result.t_ready_ns = now_ns();
+  return result;
+}
+
 const observation& observer::observe(const isac_replay::o1_view& view, const slot_context& slot)
 {
+  if (evidence_mode != evidence::audit) {
+    throw state_error("observe() takes the digests of the mode audit: a timed observer uses observe_into()");
+  }
   const auto started = std::chrono::steady_clock::now();
   // A released or refilled grid throws state_error here, before anything is read.
   const isac_replay::o1_descriptor descriptor = view.descriptor();
@@ -296,21 +395,12 @@ const observation& observer::observe(const isac_replay::o1_view& view, const slo
   estimate(source, descriptor.shape.subcarriers,
            [&view](unsigned plane, unsigned symbol, cf32* row, unsigned count) { view.get(plane, symbol, row, count); },
            made_now);
+  const auto estimated = std::chrono::steady_clock::now();
   // The estimate belongs to the grid of this digest only if the grid still has it after the read.
   if (view.digest() != descriptor.readback_sha256) {
     throw state_error("the grid of " + slot.opportunity_id + " changed while the observer read it");
   }
-
-  // The absolute slot does not wrap with the frame number: a frame or a slot that goes back
-  // inside one episode is the next period of frame numbers.
-  episode_clock& clock = clocks[slot.episode_id];
-  if (clock.seen && (slot.sfn < clock.sfn || (slot.sfn == clock.sfn && slot.slot < clock.slot))) {
-    ++clock.wraps;
-  }
-  clock.seen = true;
-  clock.sfn  = slot.sfn;
-  clock.slot = slot.slot;
-  const unsigned per_frame = slots_per_frame(spec.scs_khz);
+  const auto digested = std::chrono::steady_clock::now();
 
   made_now.run_id         = run_id;
   made_now.epoch          = epoch_id;
@@ -322,7 +412,7 @@ const observation& observer::observe(const isac_replay::o1_view& view, const slo
   made_now.ue             = slot.ue;
   made_now.sfn            = slot.sfn;
   made_now.slot           = slot.slot;
-  made_now.absolute_slot  = (clock.wraps * SFN_PERIOD + slot.sfn) * per_frame + slot.slot;
+  made_now.absolute_slot  = absolute_slot_of(clocks[slot.episode_id], slot, spec.scs_khz);
   made_now.stage          = STAGE_O2;
   made_now.producer       = PRODUCER;
   made_now.producer_steps = {STEP_PILOT_LS};
@@ -343,6 +433,7 @@ const observation& observer::observe(const isac_replay::o1_view& view, const slo
   const std::uint64_t origin  = slot_start_tc(spec.scs_khz, made_now.absolute_slot);
   made_now.t_first_sample     = origin + spec.symbol_useful_start_tc.front();
   made_now.t_last_sample      = origin + spec.symbol_useful_start_tc.back() + useful_tc(spec.scs_khz);
+  const auto described        = std::chrono::steady_clock::now();
   made_now.payload_sha256     = isac_replay::sha256_hex(made_now.values.data(), made_now.payload_bytes());
   made_now.opportunity_id      = slot.opportunity_id;
   made_now.grant_id            = descriptor.grant_id;
@@ -352,6 +443,10 @@ const observation& observer::observe(const isac_replay::o1_view& view, const slo
   const auto done              = std::chrono::steady_clock::now();
   made_now.t_ready_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(done.time_since_epoch()).count();
   made_now.service_us = std::chrono::duration<double, std::micro>(done - started).count();
+  made_now.estimate_us       = std::chrono::duration<double, std::micro>(estimated - started).count();
+  made_now.grid_digest_us    = std::chrono::duration<double, std::micro>(digested - estimated).count();
+  made_now.keys_mask_us      = std::chrono::duration<double, std::micro>(described - digested).count();
+  made_now.payload_digest_us = std::chrono::duration<double, std::micro>(done - described).count();
   made.push_back(std::move(made_now));
   return made.back();
 }

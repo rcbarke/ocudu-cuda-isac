@@ -30,7 +30,7 @@ target_link_libraries(replay_core_test PRIVATE replay_core)
 set_target_properties(replay_core_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_compile_options(replay_core_test PRIVATE -O1 -Wall -Wextra -Wshadow)
 set(REPLAY_CORE_CASES sha256 storage s03_vector unity zero_channel cancellation permutation unit_scale
-    gain_reason gain_rules grid_states session changed_grant refusals)
+    gain_reason gain_rules grid_states evidence session changed_grant refusals)
 foreach(case IN LISTS REPLAY_CORE_CASES)
   add_test(NAME replay_core_${case} COMMAND replay_core_test ${case})
 endforeach()

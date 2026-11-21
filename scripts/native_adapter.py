@@ -21,6 +21,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER = ROOT / "native/ocudu_adapter"
+# The observation ring is built with the adapter and linked by its producer glue (Sprint 3.2).
+RING = ROOT / "native/obs_ring"
 PIN_TARGET = "pusch_e2e_pipeline_test"
 PIN_TARGET_DIR = Path("tests/integrationtests/phy/upper/channel_processors")
 DEFAULT_BUILD = ROOT / "build/ocudu-adapter"
@@ -28,7 +30,8 @@ RECEIPT = "isac-adapter.json"
 RECEIPT_SCHEMA = "isac-adapter-build/v1"
 OCUDU_RECEIPT = "isac-native.json"
 EXECUTABLES = {"grant_fixture": Path("fixtures/grant_fixture"), "grid_apply": Path("replay/grid_apply"),
-               "replay_pusch": Path("receiver/replay_pusch"), "pilot_ls": Path("observer/pilot_ls")}
+               "replay_pusch": Path("receiver/replay_pusch"), "pilot_ls": Path("observer/pilot_ls"),
+               "obs_tail": Path("obs_ring/obs_tail"), "obs_feed": Path("obs_ring/obs_feed")}
 GENERATOR = "Unix Makefiles"
 
 
@@ -186,9 +189,10 @@ def pin_import(ocudu_build, source):
 
 
 def sources():
-    """Every file of the adapter tree with its hash. The receipt binds the executables to them."""
+    """Every file of the adapter tree and of the ring it links, with its hash. The receipt binds the executables to them."""
     return {str(path.relative_to(ROOT)): digest(path)
-            for path in sorted(ADAPTER.rglob("*")) if path.is_file() and "__pycache__" not in path.parts}
+            for tree in (ADAPTER, RING)
+            for path in sorted(tree.rglob("*")) if path.is_file() and "__pycache__" not in path.parts}
 
 
 def record(args, run_dir, log_name, cwd=None):

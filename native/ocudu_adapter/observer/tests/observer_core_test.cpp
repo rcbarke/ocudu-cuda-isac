@@ -136,7 +136,8 @@ source_spec comb_source(unsigned planes = 2, const std::string& record = RECORD)
 using channel_fn = std::function<cf32(unsigned plane, unsigned symbol, unsigned subcarrier)>;
 
 ticket make_ready(o1_pool& pool, const source_spec& spec, const channel_fn& channel, float data_seed,
-                  const std::string& opportunity = "op.0000", unsigned slot = SLOT, float pilot_scale = 1.0F)
+                  const std::string& opportunity = "op.0000", unsigned slot = SLOT, float pilot_scale = 1.0F,
+                  isac_replay::evidence mode = isac_replay::evidence::audit)
 {
   ticket key;
   if (!pool.try_acquire(key)) {
@@ -169,7 +170,7 @@ ticket make_ready(o1_pool& pool, const source_spec& spec, const channel_fn& chan
   descriptor.shape               = shape_of(planes);
   descriptor.grid_gain           = 1.0;
   descriptor.storage             = sink.storage();
-  pool.commit(key, descriptor);
+  pool.commit(key, descriptor, mode);
   return key;
 }
 
@@ -515,6 +516,98 @@ void case_ownership()
   CHECK(tap.observations().size() == 1);
 }
 
+void case_timed()
+{
+  using isac_replay::evidence;
+  using isac_replay::hash_count;
+  using isac_replay::sha256_count;
+  model_grid        first(2, SYMBOLS, SUBCARRIERS), second(2, SYMBOLS, SUBCARRIERS);
+  o1_pool           pool({&first, &second});
+  const source_spec spec = comb_source();
+  const channel_fn  channel = [](unsigned plane, unsigned symbol, unsigned k) {
+    return cf32(0.5F + 0.25F * static_cast<float>(plane), 0.125F * static_cast<float>(symbol) - 0.0625F * static_cast<float>(k));
+  };
+
+  // The audited observation of a grid: every digest, the parts of its time recorded.
+  observer audited("unit", 1);
+  audited.bind(spec);
+  const ticket      a    = make_ready(pool, spec, channel, 3.0F, "op.0000");
+  const observation kept = audited.observe(pool.view(a, RECORD), context("op.0000"));
+  CHECK(kept.estimate_us > 0.0 && kept.grid_digest_us > 0.0 && kept.payload_digest_us > 0.0);
+  CHECK(kept.estimate_us + kept.grid_digest_us + kept.keys_mask_us + kept.payload_digest_us <= kept.service_us + 1.0);
+
+  // The timed observer binds its slots before the run. The join keys are hashed here.
+  observer tap("unit", 1, evidence::timed);
+  CHECK(tap.mode() == evidence::timed && audited.mode() == evidence::audit);
+  tap.bind(spec);
+  hash_count before = sha256_count();
+  const std::size_t zero = tap.prepare(context("op.0000"), RECORD);
+  const std::size_t one  = tap.prepare(context("op.0001", 1023), RECORD);
+  const std::size_t two  = tap.prepare(context("op.0002", 0), RECORD);
+  CHECK(sha256_count().digests - before.digests == 9 && zero == 0 && two == 2 && tap.prepared_slots() == 3);
+  const bound_slot& bound = tap.prepared(zero);
+  CHECK(bound.episode == kept.episode && bound.opportunity == kept.opportunity && bound.grant == kept.grant);
+  CHECK(bound.absolute_slot == kept.absolute_slot && bound.t_first_sample == kept.t_first_sample &&
+        bound.t_last_sample == kept.t_last_sample && bound.cell == 1 && bound.ue == 0x1234);
+  // The slot count does not wrap with the frame number, as in the audited path.
+  CHECK(tap.prepared(one).absolute_slot == 1023ULL * 20 + SLOT && tap.prepared(two).absolute_slot == 1024ULL * 20 + SLOT);
+  CHECK_THROWS(tap.prepare(context("op.0003"), "record-b"), input_error, "changed allocation");
+  CHECK_THROWS(tap.prepare(context("op.0003", 0, SLOT + 1), RECORD), input_error, "depends on the slot index");
+  CHECK_THROWS(tap.observe(pool.view(a, RECORD), context("op.0000")), state_error, "timed observer");
+
+  // One timed observation of the same values, into storage of the caller: no hash at all, and
+  // the payload and the validity bits of the audited one, bit for bit.
+  const ticket b = make_ready(pool, spec, channel, 3.0F, "op.0000", SLOT, 1.0F, evidence::timed);
+  const o1_view view = pool.view(b, RECORD);
+  CHECK(view.descriptor().readback_sha256.empty());
+  std::vector<cf32>         values(kept.values.size(), cf32(7.0F, 7.0F));
+  std::vector<std::uint8_t> mask(kept.mask.size(), 0xff);
+  before = sha256_count();
+  const tap_result made = tap.observe_into(zero, view, values.data(), mask.data());
+  hash_count after = sha256_count();
+  CHECK(after.digests == before.digests && after.updates == before.updates && after.bytes == before.bytes);
+  CHECK(std::memcmp(values.data(), kept.values.data(), kept.payload_bytes()) == 0 && mask == kept.mask);
+  CHECK(made.counts.valid == kept.valid && made.counts.holes == kept.holes && made.counts.valid == 16);
+  CHECK(made.grid.grid == b.grid && made.grid.generation == b.generation); // tied to the ticket of the fill
+  CHECK(made.t_ready_ns >= made.t_read_ns && made.t_read_ns > 0 && tap.observations().empty());
+
+  // A hole stays a hole with a cleared bit, and the storage is overwritten in full.
+  source_spec sparse = comb_source(2, "record-c");
+  sparse.index.erase(sparse.index.begin() + 1);
+  sparse.reference.erase(sparse.reference.begin() + 1);
+  observer holes("unit", 1, evidence::timed);
+  holes.bind(sparse);
+  const std::size_t slot_c = holes.prepare(context("op.c"), "record-c");
+  pool.release(a);
+  const ticket c = make_ready(pool, sparse, channel, 3.0F, "op.c", SLOT, 1.0F, evidence::timed);
+  std::fill(values.begin(), values.end(), cf32(7.0F, 7.0F));
+  std::fill(mask.begin(), mask.end(), 0xff);
+  const tap_result with_hole = holes.observe_into(slot_c, pool.view(c, "record-c"), values.data(), mask.data());
+  CHECK(with_hole.counts.valid == 14 && with_hole.counts.holes == 2 && values[1] == cf32(0.0F, 0.0F));
+  CHECK((mask[0] & 0x02U) == 0 && (mask[0] & 0x01U) != 0);
+
+  // Ownership by generation: a grid that was released, or filled again, is not read.
+  pool.release(b);
+  CHECK_THROWS(tap.observe_into(zero, view, values.data(), mask.data()), state_error, "is free, not ready");
+  const ticket d = make_ready(pool, spec, channel, 4.0F, "op.0001", SLOT, 1.0F, evidence::timed);
+  CHECK(d.grid == b.grid && d.generation == b.generation + 1);
+  CHECK_THROWS(tap.observe_into(zero, view, values.data(), mask.data()), state_error, "stale generation");
+  // A grid of another grant record or of another slot than the prepared one is refused.
+  CHECK_THROWS(holes.observe_into(slot_c, pool.view(d, RECORD), values.data(), mask.data()), input_error,
+               "changed allocation");
+  pool.release(d);
+  const ticket e = make_ready(pool, spec, channel, 4.0F, "op.0001", SLOT + 1, 1.0F, evidence::timed);
+  CHECK_THROWS(tap.observe_into(one, pool.view(e, RECORD), values.data(), mask.data()), input_error, "lies in slot");
+
+  // A changed grid is still found in the mode audit: its digest differs after the change.
+  pool.release(e);
+  const ticket f = make_ready(pool, spec, channel, 5.0F, "op.0002");
+  const cf32   other[SUBCARRIERS] = {};
+  first.put(0, 2, other, SUBCARRIERS);
+  second.put(0, 2, other, SUBCARRIERS);
+  CHECK_THROWS(audited.observe(pool.view(f, RECORD), context("op.0002")), state_error, "changed while the observer read it");
+}
+
 void case_binding()
 {
   model_grid        first(2, SYMBOLS, SUBCARRIERS), second(2, SYMBOLS, SUBCARRIERS);
@@ -602,6 +695,7 @@ const named_case CASES[] = {
     {"coordinates", case_coordinates},
     {"record", case_record},
     {"ownership", case_ownership},
+    {"timed", case_timed},
     {"binding", case_binding},
     {"slot_times", case_slot_times},
 };

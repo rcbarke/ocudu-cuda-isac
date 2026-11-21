@@ -43,7 +43,7 @@ target_link_libraries(dispatch_core_test PRIVATE dispatch_core)
 set_target_properties(dispatch_core_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_compile_options(dispatch_core_test PRIVATE -O1 -Wall -Wextra -Wshadow)
 set(DISPATCH_CORE_CASES compare decoded valid_crc_wrong_byte crc_fail swapped_completions decoder_error
-    duplicate_delivery silent_timeout owned_input changed_input guard accounting)
+    duplicate_delivery silent_timeout owned_input changed_input timed guard accounting)
 foreach(case IN LISTS DISPATCH_CORE_CASES)
   add_test(NAME dispatch_core_${case} COMMAND dispatch_core_test ${case})
 endforeach()

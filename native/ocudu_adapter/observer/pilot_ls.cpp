@@ -29,10 +29,27 @@
 // (observer_core.h). The outcome rule, the unique keys and the ownership of the grids are in the
 // dispatch core of Sprint 2.4 (dispatch_core.h). The processors and the dispatch loop below are
 // those of receiver/replay_pusch.cpp, kept as they were accepted.
+//
+// Sprint 3.2 (snapshot_ring) adds the plan version pilot-ls-plan/v2, with two things.
+//
+// The observation ring. A plan that names a ring makes this tool the producer of one obs-ring/v1
+// ring in DIR/ring/: every observation is published as an obs/v1 record, or dropped and counted
+// when the consumer left no credit. The decodes never wait for the ring.
+//
+// The evidence mode. "audit" is the run of Sprint 3.1: every digest in the loop. "timed" computes
+// no SHA-256 between the first fill and the drain of the ring: a grid becomes ready without a
+// readback digest and is owned by the ticket of its fill, the observer writes its estimate
+// straight into the slot of the ring, a decode is admitted and resolved without a digest, and the
+// grids, the decoded bytes and every record are written after the last opportunity. Only there,
+// on the evaluator side, the stored grids and the decoded bytes are digested, so that the files of
+// a timed run are read by the same readers as those of an audit run. One arithmetic serves both
+// modes: the same plan gives the same grids, the same estimates and the same decoded bytes.
 // Built out of the OCUDU tree against the accepted Sprint 1.1 build. ASCII only.
 
 #include "dispatch_core.h"
 #include "grant_pdu.h"
+#include "obs/ring.h"
+#include "obs_publisher.h"
 #include "observer_core.h"
 #include "observer_plan.h"
 #include "pinned_grid.h"
@@ -65,6 +82,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -99,6 +117,11 @@ using json = nlohmann::json;
 namespace {
 
 constexpr const char* NATIVE_SCHEMA  = "pilot-ls-native/v1";
+constexpr const char* NATIVE_SCHEMA_2 = "pilot-ls-native/v2"; // of a pilot-ls-plan/v2 run
+constexpr const char* RING_DIR        = "ring";
+constexpr const char* PUBLICATION_SCHEMA = "obs-publication/v1";
+constexpr const char* RING_SCHEMA        = "obs-ring-report/v1";
+constexpr const char* RING_MEMORY        = "host_shared";
 constexpr const char* OBS_SCHEMA     = "obs-descriptor/v1";
 constexpr const char* OBSERVER_DIR   = "observer";
 constexpr const char* OBSERVER_HOST  = "ocudu-deepsig staged harness";
@@ -262,12 +285,35 @@ json observation_record(const isac_observer::observation& made, std::size_t oppo
             {"service_us", made.service_us}}}};
 }
 
+/// Count, mean, least and largest of a list of times in microseconds.
+json time_stats(const std::vector<double>& times, const char* excluded)
+{
+  json stats = {{"count", times.size()}, {"excluded", excluded}};
+  if (!times.empty()) {
+    double total = 0.0, least = times[0], most = times[0];
+    for (double value : times) {
+      total += value;
+      least = std::min(least, value);
+      most  = std::max(most, value);
+    }
+    stats["mean"] = total / static_cast<double>(times.size());
+    stats["min"]  = least;
+    stats["max"]  = most;
+  }
+  return stats;
+}
+
+json hash_json(const isac_replay::hash_count& from, const isac_replay::hash_count& to)
+{
+  return {{"digests", to.digests - from.digests}, {"updates", to.updates - from.updates}, {"bytes", to.bytes - from.bytes}};
+}
+
 void usage()
 {
   std::cout << "Usage: pilot_ls --plan FILE --output-dir DIR [--only OPPORTUNITY_ID]... [--no-grids]\n"
                "                [--phy-debug]\n"
                "       pilot_ls --self-test\n"
-               "Decodes the receiver replay that a pilot-ls-plan/v1 file names, as replay_pusch does, and with\n"
+               "Decodes the receiver replay that a pilot-ls-plan/v1 or v2 file names, as replay_pusch does, and with\n"
                "the tap \"pilot_ls\" exports the stage O2 from every ready grid before it is decoded:\n"
                "" << isac_observer::RULE << " on the pilots of the grant's sensing source. It writes\n"
                "  DIR/ingress/ingress.jsonl  one o1-grid/v1 descriptor per opportunity\n"
@@ -278,9 +324,17 @@ void usage()
                "  DIR/radio/radio.jsonl      one radio/v1 record per planned decode\n"
                "  DIR/radio/NNNN.BACKEND.bin the decoded bytes of a decode whose CRC passed\n"
                "  DIR/native.json            the report, with the comparison against the original blocks\n"
+               "A pilot-ls-plan/v2 file names the evidence mode and, with a ring, publishes every observation on the\n"
+               "obs-ring/v1 ring DIR/ring/STREAM.sock, where one consumer attaches:\n"
+               "  DIR/ring/publications.jsonl one obs-publication/v1 line per observation: published or dropped\n"
+               "  DIR/ring/ring.json         the ring, its counts and what was pending at the cutoff\n"
+               "In the mode timed nothing is hashed between the first fill and the drain of the ring, observer/ is\n"
+               "not written, because the estimate exists only in the slot, and every file is written after the\n"
+               "last opportunity.\n"
                "DIR must exist and must not hold a result. --only repeats named opportunities of the plan exactly.\n"
                "--phy-debug prints the path decision of the pinned processor for every PDU.\n"
-               "--self-test decodes a two-block grant through the host processor with the tap off and on.\n"
+               "--self-test decodes a two-block grant through the host processor with the tap off and on, and once\n"
+               "more in the mode timed through a ring.\n"
                "Exit status 2 for a refused plan, 1 for a decode without a completion or any other error.\n";
 }
 
@@ -615,7 +669,8 @@ int run_self_test()
 
   // Fills a grid with the transmit grid on every receive plane, or leaves it empty, and makes it ready.
   // With rotate, receive plane 1 carries the transmit grid times j.
-  auto ready = [&](bool transmitted, const std::string& opportunity, bool rotate = false) {
+  auto ready = [&](bool transmitted, const std::string& opportunity, bool rotate = false,
+                   isac_replay::evidence how = isac_replay::evidence::audit) {
     ticket key;
     if (!grids.try_acquire(key)) {
       throw std::runtime_error("the self-test has no free grid");
@@ -647,7 +702,7 @@ int run_self_test()
     descriptor.shape               = shape;
     descriptor.grid_gain           = 1.0;
     descriptor.storage             = sink.storage();
-    grids.commit(key, descriptor);
+    grids.commit(key, descriptor, how);
     return key;
   };
 
@@ -656,6 +711,9 @@ int run_self_test()
   settings.tap      = "none";
   processor_backend host("cpu", "auto", 0, *pool_of_workers.executor, pool_of_workers.threads, settings,
                          coding.codeblocks, {&first, &second});
+  // A second host processor for the ledger of the timed mode, which numbers its jobs from one again.
+  processor_backend timed_host("cpu", "auto", 1, *pool_of_workers.executor, pool_of_workers.threads, settings,
+                               coding.codeblocks, {&first, &second});
   const joined_workers join(pool_of_workers);
   decode_setup      setup;
   setup.pdu        = make_pdu(grant, coding, grant.sfn, grant.slot);
@@ -670,6 +728,7 @@ int run_self_test()
   for (const char* opportunity : {"sent", "other-block", "empty", "tapped", "rotated"}) {
     host.expect(opportunity, setup);
   }
+  timed_host.expect("timed", setup);
 
   const ticket     sent    = ready(true, "sent");
   const dispatched decoded = dispatch(book, host, key_of("sent"), sent, record, original, limit);
@@ -798,7 +857,72 @@ int run_self_test()
   const dispatched after_turn = dispatch(book, host, key_of("rotated"), rotated_key, record, original, limit);
   test.expect(after_turn.result == outcome::decoded && book.release_grid(rotated_key) && book.held_grids() == 0,
               "the host processor decodes the rotated grid as well, and no grid stays held");
+  // ---- The timed mode on the pinned grid: a ring of two slots without a consumer, the estimate
+  // written into the slot, the decode admitted and resolved by the ticket of the fill. Nothing
+  // is hashed from the fill to the released grid.
+  {
+    const isac_observer::pilot_source compiled(source);
+    isac_transport::ring_needs        needs;
+    needs.include(compiled);
+    obs::ring_config config; // no control channel: nothing attaches in the self-test
+    config.slot_count       = 2;
+    config.host_capacity    = needs.host_bytes;
+    config.mask_capacity    = needs.mask_bytes;
+    config.payload_capacity = needs.payload_bytes;
+    obs::producer             ring(config);
+    isac_observer::observer   timed_tap("self-test", 1, isac_replay::evidence::timed);
+    timed_tap.bind(source);
+    isac_transport::publisher out(ring, timed_tap, isac_replay::evidence::timed);
+    where.opportunity_id     = "timed";
+    const std::size_t handle = out.prepare(where, record, 0);
+    out.reserve(4);
+    ledger timed_book(grids, isac_replay::evidence::timed);
+    job_key timed_key;
+    timed_key.opportunity_id = "timed";
+    timed_key.backend        = "cpu";
+
+    const isac_replay::hash_count before = isac_replay::sha256_count();
+    const ticket      timed_grid = ready(true, "timed", false, isac_replay::evidence::timed);
+    const o1_view     timed_view = grids.view(timed_grid, record);
+    const isac_transport::published_record timed_sent = out.publish(handle, timed_view);
+    const dispatched  timed_done = dispatch(timed_book, timed_host, timed_key, timed_grid, record, original, limit);
+    const bool        given_back = timed_book.release_grid(timed_grid);
+    const isac_replay::hash_count after = isac_replay::sha256_count();
+
+    test.expect(after.digests == before.digests && after.updates == before.updates && after.bytes == before.bytes,
+                "in the mode timed no SHA-256 is computed from the fill of the grid to its release: " +
+                    std::to_string(after.digests - before.digests) + " digests, " +
+                    std::to_string(after.bytes - before.bytes) + " bytes");
+    // The slot the record lies in: slot 0 of the segment the producer mapped.
+    const obs::segment_header& segment = ring.header();
+    const std::uint8_t*        slot    = reinterpret_cast<const std::uint8_t*>(&segment) + obs::SEGMENT_HEADER_BYTES;
+    const obs::record_header*  header  = reinterpret_cast<const obs::record_header*>(slot + obs::SLOT_PREFIX_BYTES);
+    test.expect(timed_sent.outcome == isac_transport::publication::published && timed_sent.sequence == 0 && timed_sent.valid == 48 &&
+                    timed_sent.window_calls == 0 && segment.published.load() == 1 && header->evidence == obs::EVIDENCE_TIMED &&
+                    header->digest_kind == obs::DIGEST_NONE && header->payload_bytes == 48 * sizeof(cf32) &&
+                    header->shape[0] == 2 && header->shape[1] == 2 && header->shape[2] == 12 && header->valid == 48,
+                "the timed observation is published as one obs/v1 record of 2 by 2 by 12 values without a digest, "
+                "with no system call between its admission and its publication");
+    test.expect(std::memcmp(slot + segment.payload_offset, flat.values.data(), 48 * sizeof(cf32)) == 0 &&
+                    std::memcmp(slot + segment.mask_offset, flat.mask.data(), flat.mask.size()) == 0,
+                "the payload and the validity bits in the slot equal those of the audited observation, bit for bit");
+    test.expect(timed_done.result == outcome::decoded && timed_book.decoded(timed_done.token) == original.bytes &&
+                    timed_book.snapshot(timed_done.token).input_intact &&
+                    timed_book.snapshot(timed_done.token).ingress_sha256.empty() && given_back,
+                "the host processor decodes the timed grid to the original bytes, admitted and resolved by the ticket "
+                "of its fill");
+    obs::slot unused_slot;
+    const isac_transport::published_record second_sent = out.publish(handle, grids.view(ready(true, "timed-2", false,
+                                                                     isac_replay::evidence::timed), record));
+    const isac_transport::published_record third_sent  = out.publish(handle, grids.view(ready(true, "timed-3", false,
+                                                                     isac_replay::evidence::timed), record));
+    test.expect(second_sent.outcome == isac_transport::publication::published &&
+                    third_sent.outcome == isac_transport::publication::dropped && ring.counts().dropped == 1 &&
+                    !ring.try_acquire(unused_slot),
+                "a ring of two slots without a release admits two observations and drops the third at once");
+  }
   host.stop();
+  timed_host.stop();
   pool_of_workers.pool->stop();
   std::cout << "pilot_ls self-test: " << (test.failed == 0 ? "all checks passed" : "FAILED") << std::endl;
   return test.failed == 0 ? 0 : 1;
@@ -812,6 +936,57 @@ struct grant_entry {
   grant_coding coding;
   payload      original;
   std::string  record_file_sha256;
+};
+
+/// The slot rule of a ring, as obs::slots_for states it, without its exception.
+struct plan_ring_check {
+  std::uint32_t window;
+  std::uint32_t burst;
+
+  std::uint32_t slots() const
+  {
+    try {
+      return obs::slots_for(window, burst);
+    } catch (const obs::ring_error&) {
+      return 0;
+    }
+  }
+};
+
+/// The position in the plan of the opportunity behind a prepared slot.
+struct staged_sequence {
+  const std::vector<std::size_t>& chosen;
+  const std::vector<std::size_t>& handle_of;
+  std::size_t                     handle;
+
+  json sequence() const
+  {
+    for (const std::size_t candidate : chosen) {
+      if (handle_of[candidate] == handle) {
+        return candidate;
+      }
+    }
+    return nullptr;
+  }
+};
+
+/// What a timed run keeps of one decode until the last opportunity is done.
+struct timed_decode {
+  std::uint64_t token     = 0;
+  bool          first_use = false;
+};
+
+/// What a timed run keeps of one opportunity until the last one is done. Nothing of it is text.
+struct timed_slot {
+  std::size_t               sequence  = 0;
+  bool                      delivered = false;
+  ticket                    key;
+  double                    fill_us   = 0.0;
+  bool                      observed  = false;
+  std::size_t               line      = 0; ///< Of the publisher's account.
+  bool                      retained  = false;
+  bool                      released  = false;
+  std::vector<timed_decode> decodes;
 };
 
 json pdu_echo(const grant_record& grant)
@@ -886,7 +1061,8 @@ int run(int argc, char** argv)
   const std::string ingress_path = output_dir + "/" + INGRESS_DIR;
   const std::string radio_path   = output_dir + "/" + RADIO_DIR;
   const std::string observer_path = output_dir + "/" + OBSERVER_DIR;
-  if (exists(report_path) || exists(ingress_path) || exists(radio_path) || exists(observer_path)) {
+  const std::string ring_path     = output_dir + "/" + RING_DIR;
+  if (exists(report_path) || exists(ingress_path) || exists(radio_path) || exists(observer_path) || exists(ring_path)) {
     throw input_error("the output directory already holds a result. Evidence is never overwritten.");
   }
 
@@ -906,6 +1082,38 @@ int run(int argc, char** argv)
   }
   if (!tapped && (!tap.stage.empty() || !tap.layout.empty() || !tap.source.empty() || !tap.sources.empty())) {
     throw input_error("a run without a tap names no stage, no layout and no sensing source");
+  }
+  // ---- The evidence mode and the ring of a plan of version 2. A plan of version 1 has neither. ----
+  const bool timed = tap.evidence == isac_observer::EVIDENCE_TIMED;
+  if (!timed && tap.evidence != isac_observer::EVIDENCE_AUDIT) {
+    throw input_error("unknown evidence mode '" + tap.evidence + "': evidence.mode is \"audit\" or \"timed\"");
+  }
+  const isac_replay::evidence mode   = timed ? isac_replay::evidence::timed : isac_replay::evidence::audit;
+  const bool                  ringed = tap.ring.present;
+  if (ringed && !tapped) {
+    throw input_error("a run without a tap publishes nothing: the plan names a ring and no tap");
+  }
+  if (timed && tapped && !ringed) {
+    throw input_error("a timed observer writes its estimate into a slot of the ring: the plan names a tap and no ring");
+  }
+  if (ringed) {
+    const plan_ring_check rule = {tap.ring.window_records, tap.ring.burst_records};
+    if (tap.ring.slots != rule.slots()) {
+      throw input_error("ring.slots is " + std::to_string(tap.ring.slots) + ", and a window of " +
+                        std::to_string(tap.ring.window_records) + " records with a burst of " +
+                        std::to_string(tap.ring.burst_records) + " needs " + std::to_string(rule.slots()) +
+                        ": the records a window holds in place, plus one burst, plus one, rounded up to a power of two");
+    }
+    if (tap.ring.wait != "spin" && tap.ring.wait != "wait") {
+      throw input_error("ring.wait is \"spin\" or \"wait\"");
+    }
+    if (tap.ring.attach != isac_observer::ATTACH_REQUIRED && tap.ring.attach != isac_observer::ATTACH_NONE) {
+      throw input_error("ring.attach is \"required\" or \"none\"");
+    }
+    if (tap.ring.stream.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789") != std::string::npos ||
+        tap.ring.stream.size() > 16) {
+      throw input_error("ring.stream is at most 16 lower-case letters and digits");
+    }
   }
   if (tap.replay_plan.sha256.empty()) {
     throw input_error("the replay plan is bound by no hash");
@@ -1028,7 +1236,8 @@ int run(int argc, char** argv)
   }
 
   // ---- The observer: one sensing source per grant, bound by the hash that binds the grid. ----
-  isac_observer::observer watcher(tap.run_id, tap.epoch);
+  isac_observer::observer watcher(tap.run_id, tap.epoch, mode);
+  isac_transport::ring_needs ring_needs;
   for (const isac_replay::grant_spec& bound : spec.grants) {
     if (!tapped) {
       break;
@@ -1074,6 +1283,7 @@ int run(int argc, char** argv)
       }
     }
     watcher.bind(source);
+    ring_needs.include(watcher.source_of(bound.record_sha256));
   }
   if (tapped && tap.sources.size() != spec.grants.size()) {
     throw input_error("the plan lists a sensing source for a grant that the channel plan does not bind");
@@ -1116,7 +1326,7 @@ int run(int argc, char** argv)
   pinned_grid first(*factory, shape.rx_ports, ocudu::MAX_NSYMB_PER_SLOT, ocudu::MAX_NOF_SUBCARRIERS);
   pinned_grid second(*factory, shape.rx_ports, ocudu::MAX_NSYMB_PER_SLOT, ocudu::MAX_NOF_SUBCARRIERS);
   o1_pool     pool({&first, &second});
-  ledger      book(pool);
+  ledger      book(pool, mode);
 
 #ifdef ENABLE_CUDA
   const bool built_with_cuda = true;
@@ -1141,8 +1351,66 @@ int run(int argc, char** argv)
 
   make_directory(ingress_path);
   make_directory(radio_path);
-  if (tapped) {
+  if (tapped && !timed) {
     make_directory(observer_path);
+  }
+
+  // ---- The opportunities of this run, in the order of the plan, and what a slot must not look up. ----
+  std::vector<std::size_t> chosen;
+  for (std::size_t sequence = 0; sequence != replay.opportunities(); ++sequence) {
+    if (only.empty() || only.count(spec.opportunities[sequence].opportunity_id) != 0) {
+      chosen.push_back(sequence);
+    }
+  }
+  const std::size_t NO_HANDLE = static_cast<std::size_t>(-1);
+  std::vector<std::size_t> handle_of(replay.opportunities(), NO_HANDLE);
+
+  // ---- The ring: created, sized for the sources of the run, every slot of the run bound before
+  // the first fill. This is where the join keys are hashed. ----
+  std::unique_ptr<obs::producer>             ring;
+  std::unique_ptr<isac_transport::publisher> out;
+  bool                                       attached_at_start = false;
+  std::string                                socket_path;
+  if (ringed) {
+    make_directory(ring_path);
+    socket_path = ring_path + "/" + tap.ring.stream + ".sock";
+    obs::ring_config config;
+    config.socket_path      = socket_path;
+    config.slot_count       = tap.ring.slots;
+    config.host_capacity    = ring_needs.host_bytes;
+    config.mask_capacity    = ring_needs.mask_bytes;
+    config.payload_capacity = ring_needs.payload_bytes;
+    config.first_epoch      = tap.epoch;
+    try {
+      ring = std::make_unique<obs::producer>(config);
+    } catch (const obs::ring_error& error) {
+      throw std::runtime_error(std::string("the observation ring could not be created: ") + error.what());
+    }
+    out = std::make_unique<isac_transport::publisher>(*ring, watcher, mode);
+    for (const std::size_t sequence : chosen) {
+      const opportunity_spec&     item  = spec.opportunities[sequence];
+      const allocation&           bound = replay.scheduled(sequence);
+      const grant_entry&          grant = grants.at(bound.grant_id);
+      isac_observer::slot_context where;
+      where.opportunity_id = item.opportunity_id;
+      where.episode_id     = item.realization_id;
+      where.sfn            = item.sfn;
+      where.slot           = item.slot;
+      where.cell           = grant.record.record.at("carrier").at("n_cell_id").get<unsigned>();
+      where.ue             = grant.record.rnti;
+      handle_of[sequence]  = out->prepare(where, bound.record_sha256, static_cast<std::uint32_t>(sequence));
+    }
+    out->reserve(chosen.size());
+    if (tap.ring.attach == isac_observer::ATTACH_REQUIRED) {
+      attached_at_start = ring->wait_attached(std::chrono::milliseconds(tap.ring.attach_timeout_ms));
+      if (!attached_at_start) {
+        throw std::runtime_error("no consumer attached to " + socket_path + " within " +
+                                 std::to_string(tap.ring.attach_timeout_ms) + " ms, and the plan requires one");
+      }
+    } else {
+      ring->service();
+      attached_at_start = ring->attached();
+    }
   }
 
   const std::chrono::milliseconds limit(plan.receiver.timeout_ms);
@@ -1165,6 +1433,11 @@ int run(int argc, char** argv)
   bool                               all_retained   = true;
   std::size_t                        radio_sequence = 0;
   std::size_t                        unreleased     = 0;
+  // The parts of the audited observations, and the times of the ring, for the report.
+  std::vector<double> part_estimate, part_grid_digest, part_keys_mask, part_payload_digest, ring_publish, ring_estimate;
+  json                publication_lines = json::array();
+  // The hash count before the first fill. A timed run must show the same count at the drain.
+  const isac_replay::hash_count hash_bound = isac_replay::sha256_count();
 
   auto retire = [&]() {
     // The grid of the earlier opportunity was retained while the next one was filled and decoded.
@@ -1257,7 +1530,8 @@ int run(int argc, char** argv)
               {"service_us", line["timing"]["service_us"]}};
   };
 
-  for (std::size_t sequence = 0; sequence != replay.opportunities(); ++sequence) {
+  // ---- The audited run: every digest, every file as its opportunity is done. As Sprint 3.1 accepted it. ----
+  for (std::size_t sequence = 0; !timed && sequence != replay.opportunities(); ++sequence) {
     const opportunity_spec& item = spec.opportunities[sequence];
     if (!only.empty() && only.count(item.opportunity_id) == 0) {
       continue;
@@ -1363,10 +1637,23 @@ int run(int argc, char** argv)
                            {"service_us", made.service_us}};
       if (made.sequence != 0) {
         tap_times.push_back(made.service_us);
+        part_estimate.push_back(made.estimate_us);
+        part_grid_digest.push_back(made.grid_digest_us);
+        part_keys_mask.push_back(made.keys_mask_us);
+        part_payload_digest.push_back(made.payload_digest_us);
       }
       tap_valid += made.valid;
       tap_holes += made.holes;
       tap_bytes += made.payload_bytes();
+      if (ringed) {
+        // The audited observation, with the digest of its payload, is copied into a slot. Without
+        // a credit it is dropped and counted, and the decodes below start all the same.
+        const isac_transport::published_record& sent = out->publish(handle_of[sequence], made);
+        entry["observer"]["ring"] = sent.outcome == isac_transport::publication::published ? "published" : "dropped";
+        if (sent.outcome == isac_transport::publication::published && made.sequence != 0) {
+          ring_publish.push_back(sent.publish_us);
+        }
+      }
     }
 
     // ---- The same grid, the same PDU and the same original block for every backend. ----
@@ -1413,14 +1700,288 @@ int run(int argc, char** argv)
     previous_record = bound.record_sha256;
     previous_entry  = opportunities.size() - 1;
     have_previous   = true;
+    if (ring) {
+      ring->service(); // the control channel, after the decodes of this opportunity
+    }
   }
   if (have_previous) {
     retire();
   }
 
+  // ---- The timed run. Between a ready grid and the last decoder callback on it this loop takes
+  // no digest, reads no grid back, writes no file and builds no record. What it keeps of an
+  // opportunity is a few numbers in memory that was allocated above. ----
+  std::vector<timed_slot> kept(timed ? chosen.size() : 0);
+  const std::size_t       grid_values = static_cast<std::size_t>(shape.rx_ports) * shape.plane();
+  std::vector<cf32>       arena(timed && keep_grids ? chosen.size() * grid_values : 0);
+  if (timed) {
+    std::vector<job_key> names(chosen.size() * backends.size());
+    std::vector<const grant_entry*> grant_of(chosen.size());
+    for (std::size_t n = 0; n != chosen.size(); ++n) {
+      const opportunity_spec& item = spec.opportunities[chosen[n]];
+      kept[n].sequence = chosen[n];
+      kept[n].decodes.resize(backends.size());
+      grant_of[n] = &grants.at(replay.scheduled(chosen[n]).grant_id);
+      for (std::size_t b = 0; b != backends.size(); ++b) {
+        names[n * backends.size() + b].opportunity_id = item.opportunity_id;
+        names[n * backends.size() + b].backend        = backends[b]->name();
+        backends[b]->expect(item.opportunity_id, setups[chosen[n]]); // every PDU is named before the first fill
+      }
+    }
+    std::vector<char> halted(backends.size(), 0), started(backends.size(), 0);
+    std::size_t       last = 0;
+    bool              any  = false;
+    auto              retire_timed = [&](timed_slot& old) {
+      // Ownership by generation: the grid is still ready under the ticket of its fill.
+      old.retained = pool.state(old.key.grid) == isac_replay::grid_state::ready &&
+                     pool.generation(old.key.grid) == old.key.generation;
+      old.released = book.release_grid(old.key);
+      all_retained = all_retained && old.retained;
+      unreleased += old.released ? 0 : 1;
+    };
+    for (std::size_t n = 0; n != chosen.size(); ++n) {
+      const std::size_t       sequence = chosen[n];
+      const opportunity_spec& item     = spec.opportunities[sequence];
+      const allocation&       bound    = replay.scheduled(sequence);
+      timed_slot&             now      = kept[n];
+      const auto              filling  = std::chrono::steady_clock::now();
+      ticket                  key;
+      now.delivered = pool.try_acquire(key);
+      if (!now.delivered) {
+        for (std::size_t b = 0; b != backends.size(); ++b) {
+          book.skip(names[n * backends.size() + b], bound.grant_id, bound.record_sha256,
+                    "no free grid: every owned grid is held by a decode without a completion");
+          now.decodes[b].token = book.jobs().back().token;
+        }
+        continue;
+      }
+      try {
+        isac_replay::grid_sink& sink = pool.writer(key);
+        sink.clear();
+        replay.fill(sequence, sink);
+        pool.commit(key, replay.describe(sequence, bound, sink), isac_replay::evidence::timed);
+      } catch (...) {
+        pool.abort(key);
+        throw;
+      }
+      now.key     = key;
+      now.fill_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - filling).count();
+
+      // The grid is ready. The tap first: admission, the estimate in the slot, the publication.
+      const o1_view ready = pool.view(key, bound.record_sha256);
+      if (tapped) {
+        now.line     = out->account().size();
+        out->publish(handle_of[sequence], ready);
+        now.observed = true;
+      }
+      for (std::size_t b = 0; b != backends.size(); ++b) {
+        processor_backend& backend = *backends[b];
+        if (halted[b] != 0) {
+          book.skip(names[n * backends.size() + b], bound.grant_id, bound.record_sha256, stopped[backend.name()]);
+          now.decodes[b].token = book.jobs().back().token;
+          continue;
+        }
+        now.decodes[b].first_use = started[b] == 0;
+        const dispatched result  = dispatch(book, backend, names[n * backends.size() + b], key, bound.record_sha256,
+                                            grant_of[n]->original, limit);
+        if (result.admitted != admission::admitted) {
+          throw std::runtime_error("the grid of opportunity " + item.opportunity_id + " was not admitted for " +
+                                   backend.name() + ": " + result.reason);
+        }
+        started[b]           = 1;
+        now.decodes[b].token = result.token;
+        if (result.result == outcome::timeout) {
+          halted[b]               = 1;
+          stopped[backend.name()] = "the " + backend.name() + " processor did not complete " + item.opportunity_id +
+                                    " within " + std::to_string(plan.receiver.timeout_ms) + " ms";
+        }
+      }
+      // Every decoder of this grid has called back. Only now is the grid read in full, into
+      // memory that exists, for the evaluator.
+      if (keep_grids) {
+        for (unsigned rx = 0; rx != shape.rx_ports; ++rx) {
+          for (unsigned symbol = 0; symbol != shape.symbols; ++symbol) {
+            ready.get(rx, symbol,
+                      arena.data() + n * grid_values + (static_cast<std::size_t>(rx) * shape.symbols + symbol) * shape.subcarriers,
+                      shape.subcarriers);
+          }
+        }
+      }
+      if (any) {
+        retire_timed(kept[last]);
+      }
+      last = n;
+      any  = true;
+      if (ring) {
+        ring->service(); // the control channel, after the decodes of this opportunity
+      }
+    }
+    if (any) {
+      retire_timed(kept[last]);
+    }
+  }
+
+  // ---- The drain: the consumer gets the declared time to release what it holds, then it is told
+  // that no record follows. Every observation is published and released, dropped, reclaimed with
+  // a closed epoch, or pending at this cutoff. ----
+  std::uint64_t        pending_at_cutoff = 0;
+  obs::producer_counts ring_counts;
+  std::string          consumer_wait;
+  bool                 attached_at_drain = false;
+  if (ring) {
+    pending_at_cutoff = ring->drain(std::chrono::milliseconds(tap.ring.drain_ms));
+    attached_at_drain = ring->attached();
+    ring->finish();
+    ring_counts   = ring->counts();
+    consumer_wait = ring_counts.epochs == 0 ? "" : obs::to_string(ring->consumer_mode());
+  }
+  const isac_replay::hash_count hash_drained = isac_replay::sha256_count();
+
+  // ---- A timed run writes its evidence here, after the drain. The stored grids and the decoded
+  // bytes are digested now, on the evaluator side, so that the same readers verify both modes. ----
+  for (std::size_t n = 0; n != kept.size(); ++n) {
+    const timed_slot&       now      = kept[n];
+    const std::size_t       sequence = now.sequence;
+    const opportunity_spec& item     = spec.opportunities[sequence];
+    const allocation&       bound    = replay.scheduled(sequence);
+    const grant_entry&      grant    = grants.at(bound.grant_id);
+    json                    entry    = {{"sequence", sequence},
+                                        {"opportunity_id", item.opportunity_id},
+                                        {"realization_id", item.realization_id},
+                                        {"index", item.index},
+                                        {"grant_id", bound.grant_id},
+                                        {"sfn", item.sfn},
+                                        {"slot", item.slot},
+                                        {"decodes", json::array()}};
+    json ingress = nullptr;
+    entry["observer"] = nullptr;
+    if (!now.delivered) {
+      entry["grid_index"] = nullptr;
+    } else {
+      const std::string grid_file = numbered(sequence, ".c64");
+      json              digest    = nullptr;
+      if (keep_grids) {
+        const cf32* stored = arena.data() + n * grid_values;
+        digest             = sha256_hex(stored, grid_values * sizeof(cf32));
+        write_bytes(ingress_path + "/" + grid_file, stored, grid_values * sizeof(cf32));
+      }
+      const json line = {{"schema", INGRESS_SCHEMA},
+                         {"run_id", spec.run_id},
+                         {"sequence", sequence},
+                         {"opportunity_id", item.opportunity_id},
+                         {"sfn", item.sfn},
+                         {"slot", item.slot},
+                         {"grant_id", bound.grant_id},
+                         {"grant_record_sha256", bound.record_sha256},
+                         {"active_re", bound.active.size()},
+                         {"active_sha256", bound.active_sha256},
+                         {"grid_index", now.key.grid},
+                         {"generation", now.key.generation},
+                         {"state", to_string(isac_replay::grid_state::ready)},
+                         {"grid",
+                          {{"file", keep_grids ? json(grid_file) : json(nullptr)},
+                           {"axes", {"rx_port", "symbol", "subcarrier"}},
+                           {"shape", {shape.rx_ports, shape.symbols, shape.subcarriers}},
+                           {"dtype", "<c8"},
+                           {"order", "C"},
+                           {"storage", first.storage()},
+                           {"sha256", digest}}},
+                         {"amplitude", {{"grid_gain", spec.gain.value}, {"convention", RULE}}}};
+      ingress_lines += line.dump() + "\n";
+      entry["grid_index"]      = now.key.grid;
+      entry["generation"]      = now.key.generation;
+      entry["readback_sha256"] = digest;
+      entry["fill_us"]         = now.fill_us;
+      entry["retained"]        = now.retained;
+      entry["released"]        = now.released;
+      ingress = {{"grid_index", now.key.grid}, {"generation", now.key.generation}, {"readback_sha256", digest}};
+      if (now.observed) {
+        const isac_transport::published_record& sent = out->account()[now.line];
+        const bool published = sent.outcome == isac_transport::publication::published;
+        entry["observer"]    = {{"sequence", published ? json(sent.sequence) : json(nullptr)},
+                                {"ring", published ? "published" : "dropped"},
+                                {"payload_sha256", nullptr},
+                                {"mask_sha256", nullptr},
+                                {"ingress_sha256", nullptr},
+                                {"valid", sent.valid},
+                                {"holes", sent.holes},
+                                {"service_us", sent.service_us}};
+      }
+    }
+    for (std::size_t b = 0; b != backends.size(); ++b) {
+      job record = book.snapshot(now.decodes[b].token);
+      if (record.completed && record.crc_ok && record.result != outcome::timeout && record.decoded_sha256.empty()) {
+        const std::vector<std::uint8_t> bytes = book.decoded(record.token);
+        record.decoded_sha256                 = sha256_hex(bytes.data(), bytes.size());
+      }
+      json ingress_now = ingress;
+      if (!ingress_now.is_null() && record.completed) {
+        ingress_now["intact"] = record.input_intact;
+      }
+      json decode;
+      radio_record(sequence, item, bound, grant, backends[b]->name(), record, now.decodes[b].first_use, ingress_now, decode);
+      entry["decodes"].push_back(decode);
+    }
+    opportunities.push_back(entry);
+  }
+
+  // ---- The account of the ring: one line per eligible observation. ----
+  if (ring) {
+    std::size_t counted = 0;
+    for (const isac_transport::published_record& sent : out->account()) {
+      const isac_observer::bound_slot& bound     = watcher.prepared(sent.handle);
+      const obs::record_header&        header    = out->header_of(sent.handle);
+      const bool                       published = sent.outcome == isac_transport::publication::published;
+      const staged_sequence            where     = {chosen, handle_of, sent.handle};
+      publication_lines.push_back(
+          {{"schema", PUBLICATION_SCHEMA},
+           {"run_id", tap.run_id},
+           {"mode", tap.evidence},
+           {"opportunity_id", bound.opportunity_id},
+           {"opportunity_sequence", where.sequence()},
+           {"outcome", published ? "published" : "dropped"},
+           {"reason", published ? json(nullptr) : json(sent.reason)},
+           {"epoch", published ? json(sent.epoch) : json(nullptr)},
+           {"sequence", published ? json(sent.sequence) : json(nullptr)},
+           {"depth", published ? json(sent.depth) : json(nullptr)},
+           {"bytes", published ? json(sent.bytes) : json(nullptr)},
+           {"keys",
+            {{"episode", hex64(bound.episode)}, {"opportunity", hex64(bound.opportunity)}, {"grant", hex64(bound.grant)}}},
+           {"absolute_slot", bound.absolute_slot},
+           {"grid", published ? json({{"grid_index", sent.grid.grid}, {"generation", sent.grid.generation}}) : json(nullptr)},
+           {"payload_bytes", header.payload_bytes},
+           {"valid", published ? json(sent.valid) : json(nullptr)},
+           {"holes", published ? json(sent.holes) : json(nullptr)},
+           {"t_read_ns", sent.t_read_ns},
+           {"t_ready_ns", published ? json(sent.t_ready_ns) : json(nullptr)},
+           {"t_publish_ns", published ? json(sent.t_publish_ns) : json(nullptr)},
+           {"t_done_ns", sent.t_done_ns},
+           {"service_us", sent.service_us},
+           {"estimate_us", published ? json(sent.estimate_us) : json(nullptr)},
+           {"publish_us", sent.publish_us},
+           {"window_calls", sent.window_calls}});
+      if (timed && published) {
+        if (counted != 0) {
+          tap_times.push_back(sent.service_us);
+          ring_estimate.push_back(sent.estimate_us);
+          ring_publish.push_back(sent.publish_us);
+        }
+        ++counted;
+        tap_valid += sent.valid;
+        tap_holes += sent.holes;
+        tap_bytes += header.payload_bytes;
+      }
+    }
+    std::string lines;
+    for (const json& line : publication_lines) {
+      lines += line.dump() + "\n";
+    }
+    write_bytes(ring_path + "/publications.jsonl", lines.data(), lines.size());
+  }
+
   write_bytes(ingress_path + "/ingress.jsonl", ingress_lines.data(), ingress_lines.size());
   write_bytes(radio_path + "/radio.jsonl", radio_lines.data(), radio_lines.size());
-  if (tapped) {
+  if (tapped && !timed) {
     write_bytes(observer_path + "/o2.jsonl", observer_lines.data(), observer_lines.size());
   }
 
@@ -1542,17 +2103,75 @@ int run(int argc, char** argv)
                            {"amplitude", source.spec().amplitude},
                            {"antenna_map", source.spec().antenna_map}});
   }
-  json tap_stats = {{"count", tap_times.size()}, {"excluded", "the first observation of the run"}};
-  if (!tap_times.empty()) {
-    double total = 0.0, least = tap_times[0], most = tap_times[0];
-    for (double value : tap_times) {
-      total += value;
-      least = std::min(least, value);
-      most  = std::max(most, value);
-    }
-    tap_stats["mean"] = total / static_cast<double>(tap_times.size());
-    tap_stats["min"]  = least;
-    tap_stats["max"]  = most;
+  const char* const first_excluded = "the first observation of the run";
+  const json        tap_stats      = time_stats(tap_times, first_excluded);
+  const std::size_t observed       = timed ? (out ? out->account().size() : 0) : watcher.observations().size();
+  // The parts of the tap. Audit: where the time of an audited observation goes. Timed: the
+  // estimate and the publication, apart.
+  json parts = nullptr;
+  if (tapped && !timed) {
+    parts = {{"estimate_us", time_stats(part_estimate, first_excluded)},
+             {"grid_digest_us", time_stats(part_grid_digest, first_excluded)},
+             {"keys_mask_us", time_stats(part_keys_mask, first_excluded)},
+             {"payload_digest_us", time_stats(part_payload_digest, first_excluded)},
+             {"publish_us", ringed ? time_stats(ring_publish, first_excluded) : json(nullptr)}};
+  } else if (tapped) {
+    parts = {{"estimate_us", time_stats(ring_estimate, first_excluded)},
+             {"publish_us", time_stats(ring_publish, first_excluded)}};
+  }
+  const json evidence_report = {
+      {"mode", tap.evidence},
+      {"plan_version", tap.version},
+      {"window", "from before the first fill to the drain of the ring"},
+      {"hash_in_window", hash_json(hash_bound, hash_drained)},
+      {"hash_after_drain", hash_json(hash_drained, isac_replay::sha256_count())},
+      {"hash_before_first_fill",
+       {{"digests", hash_bound.digests}, {"updates", hash_bound.updates}, {"bytes", hash_bound.bytes}}},
+      {"ownership", timed ? "the ticket of the fill: grid index and generation" : "the readback digest of the grid"},
+      {"records_written", timed ? "after the last opportunity" : "as each opportunity is done"}};
+  json ring_report = nullptr;
+  if (ring) {
+    ring_report = {
+        {"schema", RING_SCHEMA},
+        {"layout", "obs-ring/v1"},
+        {"definition", hex64(obs::DEFINITION)},
+        {"stream", tap.ring.stream},
+        {"socket", std::string(RING_DIR) + "/" + tap.ring.stream + ".sock"},
+        {"window_records", tap.ring.window_records},
+        {"burst_records", tap.ring.burst_records},
+        {"slot_count", ring->header().slot_count},
+        {"slot_bytes", ring->header().slot_bytes},
+        {"segment_bytes", ring->segment_bytes()},
+        {"payload_capacity", ring->header().payload_capacity},
+        {"mask_capacity", ring->header().mask_capacity},
+        {"host_capacity", ring->header().host_capacity},
+        {"memory_path", RING_MEMORY},
+        {"clock", "CLOCK_MONOTONIC, read without a system call where the host has a vDSO clock"},
+        {"wait", {{"planned", tap.ring.wait}, {"consumer", consumer_wait.empty() ? json(nullptr) : json(consumer_wait)}}},
+        {"attach", tap.ring.attach},
+        {"attached_at_start", attached_at_start},
+        {"attached_at_drain", attached_at_drain},
+        {"first_epoch", tap.epoch},
+        {"last_epoch", ring->epoch()},
+        {"drain_ms", tap.ring.drain_ms},
+        {"pending_at_cutoff", pending_at_cutoff},
+        {"eligible", out->account().size()},
+        {"counts",
+         {{"admitted", ring_counts.admitted},
+          {"published", ring_counts.published},
+          {"dropped", ring_counts.dropped},
+          {"cancelled", ring_counts.cancelled},
+          {"released", ring_counts.released},
+          {"reclaimed", ring_counts.reclaimed},
+          {"pending", ring_counts.pending},
+          {"faults", ring_counts.faults},
+          {"epochs", ring_counts.epochs},
+          {"refused", ring_counts.refused},
+          {"wakes", ring_counts.wakes},
+          {"window_calls", ring_counts.window_calls},
+          {"max_depth", ring_counts.max_depth}}}};
+    const std::string ring_text = ring_report.dump(2) + "\n";
+    write_bytes(ring_path + "/ring.json", ring_text.data(), ring_text.size());
   }
   const json observer_report = {
       {"tap", tap.tap},
@@ -1563,8 +2182,12 @@ int run(int argc, char** argv)
       {"producer", tapped ? json(isac_observer::PRODUCER) : json(nullptr)},
       {"rule", tapped ? json(isac_observer::RULE) : json(nullptr)},
       {"precision", tapped ? json(isac_observer::PRECISION) : json(nullptr)},
-      {"memory", tapped ? json("host buffer owned by the observer, filled synchronously before the first decode") : json(nullptr)},
-      {"records", watcher.observations().size()},
+      {"memory", tapped ? json(timed ? "a slot of the observation ring, filled in place before the first decode"
+                                     : "host buffer owned by the observer, filled synchronously before the first decode")
+                        : json(nullptr)},
+      {"records", observed},
+      {"mode", tap.evidence},
+      {"parts", parts},
       {"valid", tap_valid},
       {"holes", tap_holes},
       {"payload_bytes", tap_bytes},
@@ -1573,9 +2196,11 @@ int run(int argc, char** argv)
 
   const std::uint16_t endian = 1;
   const json          report = {
-      {"schema", NATIVE_SCHEMA},
+      {"schema", tap.version == 2 ? NATIVE_SCHEMA_2 : NATIVE_SCHEMA},
       {"run_id", tap.run_id},
       {"plan", {{"file", plan_path}, {"sha256", plan_sha256}}},
+      {"evidence", evidence_report},
+      {"ring", ring_report},
       {"replay_plan", {{"file", tap.replay_plan.path}, {"sha256", replay_sha256}, {"run_id", plan.run_id}}},
       {"observer", observer_report},
       {"channel_plan", {{"file", plan.channel_plan.path}, {"sha256", channel_sha256}, {"run_id", spec.run_id}}},
@@ -1618,7 +2243,7 @@ int run(int argc, char** argv)
         {"backends", backends.size()},
         {"planned", opportunities.size() * backends.size()},
         {"records", jobs.size()},
-        {"observations", watcher.observations().size()},
+        {"observations", observed},
         {"outcomes", total_outcome},
         {"anomalies", anomaly_list.size()},
         {"retained", all_retained},
@@ -1641,8 +2266,13 @@ int run(int argc, char** argv)
   const std::string text = report.dump(2) + "\n";
   write_bytes(report_path, text.data(), text.size());
 
-  std::cout << "pilot_ls: " << tap.run_id << ", tap " << tap.tap << ", " << watcher.observations().size()
+  std::cout << "pilot_ls: " << tap.run_id << ", tap " << tap.tap << ", evidence " << tap.evidence << ", " << observed
             << " observations, " << opportunities.size() << " opportunities, payload " << plan.payload.rule;
+  if (ring) {
+    std::cout << ", ring " << ring_counts.published << " published, " << ring_counts.dropped << " dropped, "
+              << ring_counts.released << " released, " << ring_counts.reclaimed << " reclaimed, " << pending_at_cutoff
+              << " pending at the cutoff";
+  }
   for (const json& backend : backend_list) {
     std::cout << ", " << backend["name"].get<std::string>() << " " << backend["outcomes"]["decoded"] << " of "
               << backend["planned"] << " decoded (" << backend["resident"] << " resident)";

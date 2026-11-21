@@ -43,7 +43,7 @@ DATA = complex(0.31640625, 0.31640625)  # a stored 16QAM point
 GAIN = 2942.4243526773034               # calibration.grid_gain of the accepted reference pair
 POWER = 1.1550196887810671e-07          # its reference power
 CASES = ("sha256", "storage", "s03_vector", "unity", "zero_channel", "cancellation", "permutation", "unit_scale",
-         "gain_reason", "gain_rules", "grid_states", "session", "changed_grant", "refusals")
+         "gain_reason", "gain_rules", "grid_states", "evidence", "session", "changed_grant", "refusals")
 
 
 def generated(seed, shape):

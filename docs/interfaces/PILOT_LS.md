@@ -289,6 +289,8 @@ One measurement goes on. The tap takes 1.47 ms for 2,448 estimates, and about ni
 
 ## For Sprint 3.2
 
+Sprint 3.2 is delivered: the ring, the mode `timed` and the plan of version 2 are in [Observations on the ring](SNAPSHOT_RING.md). The notes below are what this sprint handed over.
+
 - The observation owns its payload in host memory and is complete before the first decode starts. Sprint 3.2 replaces that buffer by a slot of the ring and fills `t_publish_ns`. The fields of the record do not change.
 - `observer::observe` returns a reference that stays valid until the next call. A producer that publishes copies the header fields it needs before it observes again.
 - **No checksum in a timed path.** This sprint proves bytes, so it hashes: the observer takes the digest of the grid after its read and of its payload, and the harness takes the digest of each grid seven more times per opportunity. That is the mode `audit`. S3.2 adds the mode `timed`, in which none of them runs between a ready grid and the published record, shows that both modes give the same payload and decoded bytes, and measures the tap against a ceiling of 150 us. [Requirement and breakdown](../dev/DEVELOPMENT.md#added-by-the-first-observer-run-of-2026-11-21)

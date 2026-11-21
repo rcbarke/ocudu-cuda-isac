@@ -43,4 +43,9 @@ enable_testing()
 add_subdirectory(fixtures)
 add_subdirectory(replay)
 add_subdirectory(receiver)
+# The observation ring is a library of its own, outside this directory: C++17 on the CPU with no
+# OCUDU include. It is built here with its own flags, so that the producer glue links the library
+# that its unit cases ran against.
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../obs_ring" obs_ring)
 add_subdirectory(observer)
+add_subdirectory(transport)

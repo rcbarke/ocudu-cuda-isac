@@ -95,7 +95,7 @@ struct ledger::entry {
   bool                                  holds_grid = false;
 };
 
-ledger::ledger(o1_pool& pool_) : pool(pool_) {}
+ledger::ledger(o1_pool& pool_, isac_replay::evidence mode_) : pool(pool_), mode(mode_) {}
 
 ledger::~ledger() = default;
 
@@ -159,8 +159,9 @@ admission ledger::admit(const job_key&     key,
   try {
     const o1_view view = pool.view(grid, grant_record_sha256);
     grant_id           = view.descriptor().grant_id;
-    digest             = view.digest();
-    if (digest != view.descriptor().readback_sha256) {
+    // Timed: the view itself proves the grid ready, of this generation and of this grant record.
+    digest = mode == isac_replay::evidence::audit ? view.digest() : std::string();
+    if (mode == isac_replay::evidence::audit && digest != view.descriptor().readback_sha256) {
       return refuse(admission::changed_grid, "refused_grid",
                     "grid " + std::to_string(grid.grid) + " changed after it became ready");
     }
@@ -299,7 +300,8 @@ outcome ledger::resolve(std::uint64_t token)
   // The callback arrived, so the decoder is done with the grid and with the buffer.
   bool intact = false;
   try {
-    intact = pool.view(item->record.grid, item->record.grant_record_sha256).digest() == item->record.ingress_sha256;
+    const o1_view view = pool.view(item->record.grid, item->record.grant_record_sha256);
+    intact             = mode == isac_replay::evidence::audit ? view.digest() == item->record.ingress_sha256 : true;
   } catch (const state_error&) {
     intact = false;
   }
@@ -307,7 +309,8 @@ outcome ledger::resolve(std::uint64_t token)
   const bool        guard = std::all_of(item->buffer.begin() + static_cast<std::ptrdiff_t>(bytes), item->buffer.end(),
                                         [](std::uint8_t value) { return value == GUARD_VALUE; });
   const comparison  compared = compare_bytes(item->buffer.data(), bytes, item->original.data(), item->original.size());
-  const std::string digest   = isac_replay::sha256_hex(item->buffer.data(), bytes);
+  const std::string digest   =
+      mode == isac_replay::evidence::audit ? isac_replay::sha256_hex(item->buffer.data(), bytes) : std::string();
 
   std::lock_guard<std::mutex> lock(mutex);
   item->record.input_intact = intact;

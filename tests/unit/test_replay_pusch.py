@@ -38,7 +38,7 @@ import test_grid_apply as apply_tests  # noqa: E402
 
 RECEIVER = ROOT / "native/ocudu_adapter/receiver"
 CASES = ("compare", "decoded", "valid_crc_wrong_byte", "crc_fail", "swapped_completions", "decoder_error",
-         "duplicate_delivery", "silent_timeout", "owned_input", "changed_input", "guard", "accounting")
+         "duplicate_delivery", "silent_timeout", "owned_input", "changed_input", "timed", "guard", "accounting")
 SEED = "unit-block"
 
 

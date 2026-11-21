@@ -183,6 +183,10 @@ class ReceiptTests(unittest.TestCase):
         self.adapter = self.root / "native/ocudu_adapter"
         (self.adapter / "fixtures").mkdir(parents=True)
         (self.adapter / "fixtures/grant_fixture.cpp").write_text("int main() {}\n")
+        # The observation ring is built with the adapter and linked by it: the receipt binds it too.
+        self.ring = self.root / "native/obs_ring"
+        (self.ring / "src").mkdir(parents=True)
+        (self.ring / "src/ring.cpp").write_text("// ring\n")
         self.ocudu = self.root / "build/ocudu-spark"
         recipe = self.ocudu / TARGET_DIR / "CMakeFiles/pusch_e2e_pipeline_test.dir"
         recipe.mkdir(parents=True)
@@ -193,7 +197,7 @@ class ReceiptTests(unittest.TestCase):
         (self.build / "fixtures").mkdir(parents=True)
         self.executable = self.build / "fixtures/grant_fixture"
         self.executable.write_text("binary")
-        for name, value in (("ROOT", self.root), ("ADAPTER", self.adapter)):
+        for name, value in (("ROOT", self.root), ("ADAPTER", self.adapter), ("RING", self.ring)):
             patcher = mock.patch.object(native_adapter, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -209,7 +213,8 @@ class ReceiptTests(unittest.TestCase):
 
     def test_an_untouched_build_verifies(self):
         self.assertEqual(native_adapter.verified_receipt(self.build), self.receipt)
-        self.assertEqual(list(self.receipt["sources"]), ["native/ocudu_adapter/fixtures/grant_fixture.cpp"])
+        self.assertEqual(list(self.receipt["sources"]),
+                         ["native/ocudu_adapter/fixtures/grant_fixture.cpp", "native/obs_ring/src/ring.cpp"])
 
     def test_every_change_after_the_build_is_detected(self):
         cases = (
@@ -217,6 +222,7 @@ class ReceiptTests(unittest.TestCase):
             (lambda: (self.adapter / "fixtures/grant_fixture.cpp").write_text("int main() { return 1; }\n"),
              "adapter sources changed"),
             (lambda: (self.adapter / "fixtures/new.cpp").write_text("\n"), "adapter sources changed"),
+            (lambda: (self.ring / "src/ring.cpp").write_text("// another ring\n"), "adapter sources changed"),
             (lambda: (self.ocudu / "isac-native.json").write_text('{"rebuilt": true}'), "OCUDU build was rebuilt"),
             (lambda: (self.recipe / "link.txt").write_text("other link"), "OCUDU build was reconfigured"),
             (lambda: (self.build / native_adapter.RECEIPT).unlink(), "no adapter receipt"),

@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -19,6 +19,7 @@ help:
 	@echo "make accept-s2.4     Build the receiver dispatch, decode the replayed grids on the host and the CUDA path, grade and archive (REHEARSAL=1 on a host without CUDA)"
 	@echo "make accept-s2       Audit the four accepted Sprint 2 runs as one chain and close Sprint 2 (RERUN=1 runs the four gates again first)"
 	@echo "make accept-s3.1     Build the tapped receiver replay, export the pilot LS (O2) from the grids of the accepted Sprint 2.4 run, compare the decodes, grade and archive (REHEARSAL=1 on a host without CUDA)"
+	@echo "make accept-s3.2     Build the observation ring and the timed path, publish the pair of the accepted Sprint 3.1 run to a consumer in the modes audit and timed, grade and archive (REHEARSAL=1 on a host without CUDA)"
 	@echo "make episode-pair    Trace the reference pair alone into a new directory under data/episodes (CONFIG=, OUT=)"
 	@echo "make episode-set     Trace an episode set into a new directory under data/episodes (CONFIG=, OUT=, VARIANT=)"
 	@echo "make paper-baseline  Execute the DeepSig one-layer comparison alone on Spark"
@@ -92,6 +93,12 @@ accept-s2:
 # host path against a rehearsed Sprint 2.4 run. It ends REHEARSED and never ACCEPTED.
 accept-s3.1:
 	bash scripts/accept_s3_1.sh $(if $(S24_RUN),--s24-run $(S24_RUN)) $(if $(REHEARSAL),--host-rehearsal)
+
+# The control is the accepted Sprint 3.1 run: the newest one, or S31_RUN. It names the plan of the
+# pair and the Sprint 2.4 run with the untapped decodes. REHEARSAL=1 grades the host path against
+# a rehearsed Sprint 3.1 run. It ends REHEARSED and never ACCEPTED.
+accept-s3.2:
+	bash scripts/accept_s3_2.sh $(if $(S31_RUN),--s31-run $(S31_RUN)) $(if $(REHEARSAL),--host-rehearsal)
 
 # Offline channel generation. The output directory must be new. VARIANT selects the Mitsuba variant.
 VARIANT ?= llvm_ad_mono_polarized

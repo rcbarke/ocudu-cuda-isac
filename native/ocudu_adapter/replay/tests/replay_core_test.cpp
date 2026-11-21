@@ -641,6 +641,70 @@ void case_gain_rules()
   }
 }
 
+void case_evidence()
+{
+  using isac_replay::evidence;
+  using isac_replay::hash_count;
+  using isac_replay::sha256_count;
+  // The hash counts its own work: one digest of three bytes, in one call that handed it data.
+  hash_count before = sha256_count();
+  CHECK(sha256_hex("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  hash_count after = sha256_count();
+  CHECK(after.digests - before.digests == 1 && after.updates - before.updates == 1 && after.bytes - before.bytes == 3);
+  // The padding of a digest is not counted as data, whatever the length.
+  before = sha256_count();
+  const std::string long_text(200, 'x');
+  sha256_hex(long_text.data(), long_text.size());
+  after = sha256_count();
+  CHECK(after.digests - before.digests == 1 && after.bytes - before.bytes == 200);
+  CHECK(std::string(to_string(evidence::audit)) == "audit" && std::string(to_string(evidence::timed)) == "timed");
+
+  fixture       setup;
+  const session run(setup.spec);
+  model_grid    first(2, 2, 6), second(2, 2, 6);
+  o1_pool       pool({&first, &second});
+
+  // Audit, the default: the grid is read back once when it becomes ready. 2 x 2 x 6 values of 8 bytes.
+  ticket audited;
+  CHECK(pool.try_acquire(audited));
+  pool.writer(audited).clear();
+  run.fill(0, pool.writer(audited));
+  before = sha256_count();
+  pool.commit(audited, run.describe(0, run.scheduled(0), pool.writer(audited)));
+  after = sha256_count();
+  CHECK(after.digests - before.digests == 1 && after.bytes - before.bytes == 2 * 2 * 6 * sizeof(cf32));
+  const std::string digest = pool.view(audited, "record-wide").descriptor().readback_sha256;
+  CHECK(digest.size() == 64);
+
+  // Timed: the same fill becomes ready without a digest and without one byte hashed. It is
+  // owned by its ticket, read through the same view, and holds the same values.
+  ticket timed;
+  CHECK(pool.try_acquire(timed));
+  pool.writer(timed).clear();
+  run.fill(0, pool.writer(timed));
+  before = sha256_count();
+  pool.commit(timed, run.describe(0, run.scheduled(0), pool.writer(timed)), evidence::timed);
+  const o1_view view = pool.view(timed, "record-wide");
+  cf32          row[6], other[6];
+  view.get(1, 1, row, 6);
+  pool.view(audited, "record-wide").get(1, 1, other, 6);
+  CHECK(pool.state(timed.grid) == grid_state::ready && view.descriptor().readback_sha256.empty());
+  CHECK(view.key().grid == 1 && view.key().generation == 1 && std::memcmp(row, other, sizeof(row)) == 0);
+  CHECK_THROWS(pool.view(timed, "record-narrow"), state_error, "changed allocation");
+  pool.release(timed);
+  CHECK_THROWS(view.get(0, 0, row, 6), state_error, "is free, not ready"); // ownership by generation
+  after = sha256_count();
+  CHECK(after.digests == before.digests && after.updates == before.updates && after.bytes == before.bytes);
+  // The evaluator digests the same grid afterwards and finds the digest of the audited one.
+  ticket again;
+  CHECK(pool.try_acquire(again) && again.generation == 2);
+  pool.writer(again).clear();
+  run.fill(0, pool.writer(again));
+  pool.commit(again, run.describe(0, run.scheduled(0), pool.writer(again)), evidence::timed);
+  CHECK(pool.view(again, "record-wide").digest() == digest);
+  CHECK_THROWS(pool.view(timed, "record-wide"), state_error, "stale generation 1");
+}
+
 void case_grid_states()
 {
   fixture       setup;
@@ -977,6 +1041,7 @@ const named_case CASES[] = {
     {"gain_reason", case_gain_reason},
     {"gain_rules", case_gain_rules},
     {"grid_states", case_grid_states},
+    {"evidence", case_evidence},
     {"session", case_session},
     {"changed_grant", case_changed_grant},
     {"refusals", case_refusals},

@@ -25,6 +25,12 @@
 // This file includes the channel application core and nothing of OCUDU. The unit target links it
 // with doubles only. The pinned PUSCH processors are one implementation of decoder
 // (replay_pusch.cpp). All text in this directory is ASCII.
+//
+// Amended by Sprint 3.2 (decided 2026-11-21), and by nothing else since Sprint 2.4 was accepted:
+// a ledger takes an evidence mode. In the mode audit, the default, it is the ledger that was
+// accepted. In the mode timed it takes no digest: a grid is admitted and held by the ticket of
+// its fill, an input counts as intact when the grid is still ready under that ticket, and the
+// decoded bytes are hashed by the evaluator after the run.
 
 #pragma once
 
@@ -117,8 +123,9 @@ struct job {
   isac_replay::ticket grid;
   std::string         grant_id;
   std::string         grant_record_sha256;
-  std::string         ingress_sha256;     ///< Readback digest of the grid at admission.
-  bool                input_intact = false; ///< The grid had that digest again after the completion.
+  std::string         ingress_sha256;     ///< Readback digest of the grid at admission. Empty in the mode timed.
+  bool                input_intact = false; ///< Audit: the grid had that digest again after the completion.
+                                            ///< Timed: the grid was still ready under the ticket of its fill.
   std::string         payload_id;
   std::string         payload_sha256;
   std::size_t         payload_bytes = 0;
@@ -129,7 +136,7 @@ struct job {
   std::string         error;                 ///< As the decoder reported it, or the exception of its start.
   bool                guard_intact = false;
   comparison          compared;
-  std::string         decoded_sha256; ///< Of the bytes the decoder left, when it reported a CRC pass.
+  std::string         decoded_sha256; ///< Of the bytes the decoder left, when it reported a CRC pass. Empty in the mode timed.
   unsigned            completions = 0; ///< Callbacks that named this job.
   double              service_us  = 0.0; ///< From the start of the decode to its first completion callback.
 };
@@ -167,8 +174,8 @@ public:
 class ledger final : public completion_sink
 {
 public:
-  /// The pool is not owned and must outlive the ledger.
-  explicit ledger(isac_replay::o1_pool& pool_);
+  /// The pool is not owned and must outlive the ledger. mode is the evidence mode of the run.
+  explicit ledger(isac_replay::o1_pool& pool_, isac_replay::evidence mode_ = isac_replay::evidence::audit);
   ~ledger() override;
   ledger(const ledger&)            = delete;
   ledger& operator=(const ledger&) = delete;
@@ -208,6 +215,8 @@ public:
   /// the grid as it is, while a completion is outstanding.
   bool release_grid(const isac_replay::ticket& grid);
 
+  isac_replay::evidence evidence_mode() const { return mode; }
+
   /// Decodes that still hold a grid.
   std::size_t holds(const isac_replay::ticket& grid) const;
   std::size_t held_grids() const;
@@ -229,6 +238,7 @@ private:
   void         note(const std::string& kind, const std::string& key, const std::string& detail);
 
   isac_replay::o1_pool&                 pool;
+  isac_replay::evidence                 mode;
   mutable std::mutex                    mutex;
   std::condition_variable               arrived;
   std::vector<std::unique_ptr<entry>>   entries; ///< Index token - 1. Addresses stay valid until the ledger ends.

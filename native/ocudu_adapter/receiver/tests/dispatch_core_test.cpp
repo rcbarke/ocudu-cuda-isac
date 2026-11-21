@@ -536,6 +536,100 @@ void case_changed_input()
   CHECK(record.error == "the grid changed while it was decoded");
 }
 
+// Fills a grid as make_ready does and makes it ready without a readback digest.
+ticket make_ready_timed(o1_pool& pool, const std::string& record, unsigned seed)
+{
+  const grid_shape shape = small_shape();
+  ticket           key;
+  if (!pool.try_acquire(key)) {
+    throw std::runtime_error("the case has no free grid");
+  }
+  isac_replay::grid_sink& sink = pool.writer(key);
+  sink.clear();
+  std::vector<cf32> row(shape.subcarriers, cf32(static_cast<float>(seed), 0.5F));
+  for (unsigned rx = 0; rx != shape.rx_ports; ++rx) {
+    for (unsigned symbol = 0; symbol != shape.symbols; ++symbol) {
+      sink.put(rx, symbol, row.data(), shape.subcarriers);
+    }
+  }
+  o1_descriptor descriptor;
+  descriptor.run_id              = "unit";
+  descriptor.opportunity_id      = "op";
+  descriptor.grant_id            = "grant-" + record;
+  descriptor.grant_record_sha256 = record;
+  descriptor.shape               = shape;
+  descriptor.grid_gain           = 1.0;
+  descriptor.storage             = sink.storage();
+  pool.commit(key, descriptor, isac_replay::evidence::timed);
+  return key;
+}
+
+void case_timed()
+{
+  using isac_replay::evidence;
+  using isac_replay::hash_count;
+  using isac_replay::sha256_count;
+  model_grid    grid(2, 2, 6);
+  o1_pool       pool({&grid});
+  ledger        book(pool, evidence::timed);
+  ledger        audited(pool);
+  CHECK(book.evidence_mode() == evidence::timed && audited.evidence_mode() == evidence::audit);
+  const payload original = block("grant-a", 48, 21); // hashed here, before the timed window
+  scripted_decoder decoder;
+  decoder.bytes = original.bytes;
+
+  // One whole decode, from the fill to the released grid, without one byte hashed.
+  const hash_count before = sha256_count();
+  const ticket     ready  = make_ready_timed(pool, "record-a", 21);
+  const dispatched done   = dispatch(book, decoder, key_of("op-0", "cuda"), ready, "record-a", original, LONG_WAIT);
+  CHECK(done.admitted == admission::admitted && done.result == outcome::decoded);
+  const job record = book.snapshot(done.token);
+  CHECK(record.input_intact && record.guard_intact && record.compared.equal && record.crc_ok);
+  CHECK(record.ingress_sha256.empty() && record.decoded_sha256.empty()); // the evaluator hashes after the run
+  CHECK(record.grid.grid == 0 && record.grid.generation == 1);
+  CHECK(book.release_grid(ready));
+  hash_count after = sha256_count();
+  CHECK(after.digests == before.digests && after.updates == before.updates && after.bytes == before.bytes);
+  CHECK(book.decoded(done.token) == original.bytes);
+
+  // Ownership by generation: a stale ticket and another grant record are still refused.
+  std::uint64_t unused = 0;
+  std::string   why;
+  CHECK(book.admit(key_of("op-1", "cuda"), ready, "record-a", original, unused, &why) == admission::stale_grid);
+  const ticket second = make_ready_timed(pool, "record-b", 22);
+  CHECK(second.generation == 2);
+  CHECK(book.admit(key_of("op-1", "cuda"), ready, "record-a", original, unused, &why) == admission::stale_grid);
+  CHECK(why.find("stale generation 1") != std::string::npos);
+  CHECK(book.admit(key_of("op-1", "cuda"), second, "record-a", original, unused, &why) == admission::changed_allocation);
+  // A wrong byte and a failed CRC keep their outcomes.
+  decoder.bytes[5] ^= 0x40;
+  CHECK(dispatch(book, decoder, key_of("op-2", "cuda"), second, "record-b", original, LONG_WAIT).result ==
+        outcome::payload_mismatch);
+  decoder.crc_ok = false;
+  CHECK(dispatch(book, decoder, key_of("op-3", "cuda"), second, "record-b", original, LONG_WAIT).result ==
+        outcome::crc_fail);
+  // A grid that was given back and filled again while its decode ran is not the admitted input.
+  deferred_decoder late;
+  std::uint64_t    token = 0;
+  CHECK(book.admit(key_of("op-4", "cuda"), second, "record-b", original, token) == admission::admitted);
+  late.start(book.describe(token), book);
+  pool.release(second); // not through the ledger, which would refuse it: a faulty harness
+  const ticket third = make_ready_timed(pool, "record-b", 23);
+  CHECK(third.generation == 3);
+  late.finish(0, original.bytes, true);
+  CHECK(book.resolve(token) == outcome::decoder_error && !book.snapshot(token).input_intact);
+  after = sha256_count();
+  CHECK(after.digests == before.digests && after.bytes == before.bytes);
+
+  // The same ledger type in the mode audit still finds a grid whose values changed.
+  pool.release(third);
+  const ticket fourth = make_ready(pool, "record-a", 24);
+  const cf32   other[6] = {{9, 9}, {9, 9}, {9, 9}, {9, 9}, {9, 9}, {9, 9}};
+  grid.put(0, 0, other, 6);
+  CHECK(audited.admit(key_of("op-5", "cpu"), fourth, "record-a", original, unused, &why) == admission::changed_grid);
+  CHECK(sha256_count().digests > after.digests);
+}
+
 void case_guard()
 {
   model_grid    grid(2, 2, 6);
@@ -655,6 +749,7 @@ const named_case CASES[] = {
     {"silent_timeout", case_silent_timeout},
     {"owned_input", case_owned_input},
     {"changed_input", case_changed_input},
+    {"timed", case_timed},
     {"guard", case_guard},
     {"accounting", case_accounting},
 };
