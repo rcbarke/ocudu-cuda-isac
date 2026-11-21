@@ -467,8 +467,12 @@ class Output:
         return [record for record in self.records if record["backend"] == backend]
 
 
-def record_violations(record):
-    """What is wrong with one radio record on its own. An empty list means it is consistent."""
+def record_violations(record, taps=("none",)):
+    """What is wrong with one radio record on its own. An empty list means it is consistent.
+
+    taps names the taps a record may carry. The control of this ticket carries none. A tapped run
+    of Sprint 3 is read with the tap it was planned with.
+    """
     found = []
     if not isinstance(record, dict) or set(record) != set(RADIO_FIELDS):
         return ["the record does not hold exactly the fields of a radio/v1 record"]
@@ -497,13 +501,18 @@ def record_violations(record):
     if not isinstance(record["tb"], dict) or set(record["tb"]) != {"id", "bytes", "bits"} \
             or record["tb"]["bits"] != 8 * record["tb"]["bytes"]:
         found.append("the transport block entry names no identifier and size")
-    if record["tap"] != "none" or record["retry"] != 0:
-        found.append("a tap or a retry on the untapped first transmission")
+    if record["tap"] not in taps or record["retry"] != 0:
+        found.append("a tap or a retry on the untapped first transmission" if tuple(taps) == ("none",)
+                     else f"the tap {record['tap']!r} or a retry on a first transmission planned with the tap "
+                          f"{' or '.join(taps)}")
     return found
 
 
-def open_output(directory):
+def open_output(directory, schema=NATIVE_SCHEMA, taps=("none",)):
     """Verify a native output and return it.
+
+    schema and taps are those of this ticket unless a later harness names its own report schema
+    and the tap its radio records carry (Sprint 3.1 reads its tapped runs that way).
 
     Every planned decode has exactly one radio record under a unique key, in sequence. A record is
     consistent on its own, names the readback digest of the grid its opportunity was filled with,
@@ -519,9 +528,9 @@ def open_output(directory):
         descriptors = [json.loads(line) for line in ingress if line.strip()]
     except (ContractError, OSError, ValueError) as error:
         raise ReplayPuschError(f"{directory} is not a complete native output: {error}") from None
-    if not isinstance(report, dict) or report.get("schema") != NATIVE_SCHEMA \
+    if not isinstance(report, dict) or report.get("schema") != schema \
             or not isinstance(report.get("opportunities"), list) or not isinstance(report.get("backends"), list):
-        raise ReplayPuschError(f"{directory / 'native.json'} is not a {NATIVE_SCHEMA} report")
+        raise ReplayPuschError(f"{directory / 'native.json'} is not a {schema} report")
     listed = [(item, decode) for item in report["opportunities"] for decode in item["decodes"]]
     planned = len(report["opportunities"]) * len(report["backends"])
     if not records or len(records) != planned or len(listed) != planned or report["totals"]["planned"] != planned:
@@ -545,7 +554,7 @@ def open_output(directory):
         by_sequence[descriptor["sequence"]] = descriptor
     kept = {"radio.jsonl"}
     for position, (record, (item, decode)) in enumerate(zip(records, listed)):
-        problems = record_violations(record)
+        problems = record_violations(record, taps)
         if problems:
             raise ReplayPuschError(f"radio record {position}: {problems[0]}")
         if record["sequence"] != position or record["run_id"] != report["run_id"]:

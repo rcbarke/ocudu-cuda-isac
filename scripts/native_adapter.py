@@ -28,7 +28,7 @@ RECEIPT = "isac-adapter.json"
 RECEIPT_SCHEMA = "isac-adapter-build/v1"
 OCUDU_RECEIPT = "isac-native.json"
 EXECUTABLES = {"grant_fixture": Path("fixtures/grant_fixture"), "grid_apply": Path("replay/grid_apply"),
-               "replay_pusch": Path("receiver/replay_pusch")}
+               "replay_pusch": Path("receiver/replay_pusch"), "pilot_ls": Path("observer/pilot_ls")}
 GENERATOR = "Unix Makefiles"
 
 

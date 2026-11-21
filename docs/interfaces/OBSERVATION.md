@@ -32,6 +32,8 @@ Little-endian, fixed-width fields, no pointers. The header has one fixed size pe
 
 Nothing in the record is truth. H, W, the original transport block and the labels stay with the evaluator.
 
+Sprint 3.1 writes these fields as one JSON record per observation, `obs-descriptor/v1`, with the groups `keys`, `radio`, `what`, `shape`, `allocation`, `validity`, `time`, `payload` and `host`, beside the payload and the validity bits as files. The binary header of Sprint 3.2 packs the same values. In the staged harness the join keys are the leading 64 bits of the SHA-256 of the opaque identifiers, and `time_unit` is T_c from slot 0 of the epoch. [Record and layout of O2](PILOT_LS.md#the-record-obs-descriptorv1)
+
 ## Payload layouts
 
 A layout names the element order of a payload as its producer holds it, so that the producer never reorders data in the receive path. The native core has one ingest unit per layout, which gathers the payload into the core's cube on the device.
@@ -39,7 +41,7 @@ A layout names the element order of a payload as its producer holds it, so that 
 | Layout | Producer | Element order and type | At the demonstration profile |
 |---|---|---|---|
 | `ocudu_o3_fp16` | Pinned OCUDU CUDA receiver, `d_estimates_fp16` (S5.2) | `[dmrs_symbol][prb][rx_port][subcarrier_in_prb]`, complex FP16 pairs, with a layer axis before the subcarrier for more than one layer | 2 x 51 x 4 x 12 values, 19,584 bytes |
-| `ocudu_o2_comb_c64` | Observer pilot LS (S3.1) | `[rx_port][dmrs_symbol][pilot]`, complex64 | 4 x 2 x 306 values, 19,584 bytes |
+| `ocudu_o2_comb_c64` | Observer pilot LS (S3.1) | `[rx_port][dmrs_symbol][pilot]`, complex64. The pilot axis is the sorted set of pilot subcarriers of the source, and the record gives its first subcarrier and its step. [Layout](PILOT_LS.md#layout-and-validity) | 4 x 2 x 306 values, 19,584 bytes |
 | `ocudu_o1_cbf16` | Pinned OCUDU resource grid | `[rx_port][symbol][subcarrier]`, complex bf16 | 4 x 14 x 612 values, 137,088 bytes |
 | `aerial_hest_c64` | Aerial L1, PUSCH DMRS estimates in E3 shared memory | `[dmrs][subcarrier][rx_antenna][layer]` per UE group, complex float32 | Set by the Aerial cell |
 | `aerial_iq_fp16` | Aerial L1, fronthaul I/Q in E3 shared memory | `[rx_antenna][symbol][prb][subcarrier_in_prb][2]`, FP16 stored as 16-bit integers | Set by the Aerial cell |

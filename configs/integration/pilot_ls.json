@@ -1,0 +1,68 @@
+{
+  "schema": "integration-config/pilot_ls/v1",
+  "selector": "pilot_ls",
+  "adapter_build": "build/ocudu-adapter",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "observer": {
+    "tap": "pilot_ls",
+    "stage": "O2",
+    "source": "pusch_dmrs",
+    "epoch": 1
+  },
+  "control": {
+    "driver": "replay_pusch",
+    "runs": {
+      "unity": "unity",
+      "direct": "direct",
+      "pair": "reference-pair",
+      "payload": "payload"
+    }
+  },
+  "tolerance": {
+    "storage_relative": 0.00390625,
+    "absolute": 1e-06,
+    "oracle_relative": 1e-06,
+    "phase_rad": 0.001
+  },
+  "unity": {
+    "expect": {
+      "estimate": 1.001186490058899,
+      "shape": {
+        "demo-51prb-4rx": [
+          4,
+          2,
+          306
+        ],
+        "table2-51prb-1rx": [
+          1,
+          2,
+          306
+        ],
+        "two-prb-offset": [
+          1,
+          2,
+          12
+        ]
+      },
+      "first_subcarrier": {
+        "demo-51prb-4rx": 0,
+        "table2-51prb-1rx": 0,
+        "two-prb-offset": 180
+      }
+    }
+  },
+  "pair": {
+    "expect": {
+      "opportunities": 24,
+      "shape": [
+        4,
+        2,
+        306
+      ],
+      "payload_bytes": 19584
+    }
+  }
+}
