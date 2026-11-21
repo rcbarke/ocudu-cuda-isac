@@ -18,7 +18,7 @@ import check_pins as pins
 # The OCUDU directory deliberately differs from its logical name: the lock owns the path.
 PATHS = {"ocudu": "ext/ocudu-deepsig-cuda-inline", "sionna": "ext/sionna", "sionna-rt": "ext/sionna-rt",
          "aerial-cuda-accelerated-ran": "ext/aerial-cuda-accelerated-ran",
-         "aerial-sample-apps": "ext/aerial-sample-apps"}
+         "aerial-framework": "ext/aerial-framework", "aerial-sample-apps": "ext/aerial-sample-apps"}
 REFERENCE = "aerial-sample-apps"
 URLS = {name: f"https://example.invalid/{name}.git" for name in PATHS}
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
@@ -106,7 +106,7 @@ class PinGateTests(unittest.TestCase):
                  (changed(0, name="gnb"), 4, "dependencies must name exactly ocudu, sionna, sionna-rt"),
                  (self.entries()[:2] + self.entries()[3:], 4, "dependencies must name exactly"),
                  (self.entries()[:4], 4, "references must name exactly aerial-cuda-accelerated-ran, "
-                                         "aerial-sample-apps; found aerial-cuda-accelerated-ran"),
+                                         "aerial-framework, aerial-sample-apps; found aerial-cuda-accelerated-ran"),
                  (changed(0, path="ext/ocudu/inline"), 4, "directly under ext/"),
                  (changed(0, path="native/ocudu"), 4, "directly under ext/"),
                  (changed(0, path="ext/.."), 4, "directly under ext/"),
@@ -144,7 +144,7 @@ class PinGateTests(unittest.TestCase):
             self.lines()
         # A submodule moved with git mv keeps its old section name; only path and url matter.
         self.write_modules(sections={**PATHS, "ocudu": "ext/ocudu"})
-        self.assertEqual(len(self.lines()), 5)
+        self.assertEqual(len(self.lines()), 6)
         self.write_modules(paths={name: PATHS[name] for name in pins.NAMES})
         with self.assertRaisesRegex(ValueError, "ext/aerial-cuda-accelerated-ran: not declared in .gitmodules"):
             self.lines()
@@ -155,7 +155,7 @@ class PinGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Committed submodules .*differ from the lock paths"):
             self.lines()
         self.commit_parent()
-        self.assertEqual(len(self.lines()), 5)
+        self.assertEqual(len(self.lines()), 6)
         self.git(self.root, "rm", "-q", "--cached", PATHS[REFERENCE])
         self.git(self.root, "commit", "-q", "-m", "drop the gitlink of a reference source")
         with self.assertRaisesRegex(ValueError, "Committed submodules .*differ from the lock paths"):
@@ -173,10 +173,10 @@ class PinGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ext/sionna: expected pristine checkout"):
             self.lines(worktrees=True)
         self.assertEqual(len(self.lines(worktrees=True, only="ocudu")), 1)
-        self.assertEqual(len(self.lines()), 5)
+        self.assertEqual(len(self.lines()), 6)
         tracked.write_text("sionna\n")
         (self.root / PATHS["sionna"] / "build.log").write_text("untracked build product\n")
-        self.assertEqual(len(self.lines(worktrees=True)), 5)
+        self.assertEqual(len(self.lines(worktrees=True)), 6)
         checkout = self.root / PATHS["sionna-rt"]
         (checkout / "source.txt").write_text("newer upstream\n")
         self.git(checkout, "commit", "-q", "-a", "-m", "newer upstream revision")
@@ -187,7 +187,7 @@ class PinGateTests(unittest.TestCase):
         tracked = self.root / PATHS[REFERENCE] / "source.txt"
         tracked.write_text("edited\n")
         # The check that the gates run covers the dependencies. An edited reference tree does not fail it.
-        self.assertEqual(len(self.lines(worktrees=True)), 5)
+        self.assertEqual(len(self.lines(worktrees=True)), 6)
         self.assertEqual(len(self.lines(worktrees=True, only="ocudu")), 1)
         for options in ({"references": True}, {"only": REFERENCE}):
             with self.subTest(options=options), \
@@ -224,7 +224,7 @@ class PinGateTests(unittest.TestCase):
         self.assertEqual(output.getvalue().strip(), str(self.root / "ext/aerial-sample-apps"))
         with contextlib.redirect_stdout(io.StringIO()) as output:
             pins.main(["--worktrees", "--references"], root=self.root)
-        self.assertEqual(output.getvalue().count("(Git worktree)"), 5)
+        self.assertEqual(output.getvalue().count("(Git worktree)"), 6)
 
     def test_repository_lock_and_gitmodules_agree(self):
         entries = pins.load_lock(pins.ROOT)

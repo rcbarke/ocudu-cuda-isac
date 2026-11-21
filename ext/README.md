@@ -1,6 +1,6 @@
 # External sources
 
-The project builds on three upstream sources and reads two more for reference. Each of the five is a Git submodule under `ext/`, pinned by a gitlink in this repository and described in [lock.json](lock.json). No upstream code is stored in this repository.
+The project builds on three upstream sources and reads three more for reference. Each of the six is a Git submodule under `ext/`, pinned by a gitlink in this repository and described in [lock.json](lock.json). No upstream code is stored in this repository.
 
 | Name | Directory | Upstream | Pinned revision |
 |---|---|---|---|
@@ -16,21 +16,22 @@ Sprint 0 acceptance on the DGX Spark (2026-11-19) verified these three trees pri
 |---|---|---|---|
 | `aerial-cuda-accelerated-ran` | `ext/aerial-cuda-accelerated-ran` | [NVIDIA/aerial-cuda-accelerated-ran](https://github.com/NVIDIA/aerial-cuda-accelerated-ran) | Tag `26.2.0` at `4f65f97c1d5f701ce911f7dda8f1b1f3f0c7693c` |
 | `aerial-sample-apps` | `ext/aerial-sample-apps` | [NVIDIA/aerial-sample-apps](https://github.com/NVIDIA/aerial-sample-apps) | Tag `v1.2.0` at `718394fdf564deddb04fcca4f4f3c2e9f7b33463` |
+| `aerial-framework` | `ext/aerial-framework` | [NVIDIA/aerial-framework](https://github.com/NVIDIA/aerial-framework) | Tag `v0.1.0` at `ec862e6dc4a800fbd924a7bfa21a76ec8577581a` |
 
 A reference source is read. Nothing in this repository builds it or installs it in `isac`. The lock lists it under `references`, apart from the three `dependencies`, so the tools that build and install from the lock never see it. Its identity is checked like a dependency's: `make pins` compares the lock, `.gitmodules` and the committed gitlink. Its tree is checked on request, so that an unfetched or edited reference tree cannot fail a build or simulation gate.
 
 | Check | Command |
 |---|---|
-| Both reference trees, with the three dependencies | `python scripts/check_pins.py --worktrees --references` |
+| Every reference tree, with the three dependencies | `python scripts/check_pins.py --worktrees --references` |
 | One reference tree | `python scripts/check_pins.py --worktrees --only aerial-sample-apps` |
 | The directory of one | `python scripts/check_pins.py --path aerial-cuda-accelerated-ran` |
 
-The Aerial tree tracks 47 files, about 400 MB of test vectors and engines, with Git LFS. Nothing here reads them. `make hydrate` sets `GIT_LFS_SKIP_SMUDGE=1`, which leaves them as small pointer files, and the worktree check passes either way. On a host with Git LFS installed, a plain `git submodule update` may download them. No dependency uses Git LFS. [What each reference source is read for](../docs/integration/AERIAL.md#pinned-reference-sources)
+The Aerial tree tracks 47 files, about 400 MB of test vectors and engines, with Git LFS. Nothing here reads them. `make hydrate` sets `GIT_LFS_SKIP_SMUDGE=1`, which leaves them as small pointer files, and the worktree check passes either way. On a host with Git LFS installed, a plain `git submodule update` may download them. The Aerial Framework tree tracks 38 more, its figures and documents, the same way, and they stay pointer files too. No dependency uses Git LFS. [What each reference source is read for](../docs/integration/AERIAL.md#pinned-reference-sources)
 
-On an existing checkout that already holds the three dependencies, fetch only the two reference sources:
+On an existing checkout that already holds the three dependencies, fetch only the three reference sources:
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git submodule update --init --checkout ext/aerial-cuda-accelerated-ran ext/aerial-sample-apps
+GIT_LFS_SKIP_SMUDGE=1 git submodule update --init --checkout ext/aerial-cuda-accelerated-ran ext/aerial-sample-apps ext/aerial-framework
 python scripts/check_pins.py --worktrees --references
 ```
 

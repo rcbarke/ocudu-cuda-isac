@@ -52,6 +52,16 @@
       "role": "reference only: E3 Manager, inference-engine interface, shared-memory data layouts and reference dApps; never built or installed in isac",
       "archive_sha256": "bd97d12ddef2634c44c86e311cc48795a66ae0a62747ce854c42d1b47778a50b",
       "snapshot_manifest_sha256": "60fe2bde9d3f88d3b31ee0e2f9046a2d4165b27d13a71447b52544c432fd86ca"
+    },
+    {
+      "name": "aerial-framework",
+      "path": "ext/aerial-framework",
+      "url": "https://github.com/NVIDIA/aerial-framework.git",
+      "commit": "ec862e6dc4a800fbd924a7bfa21a76ec8577581a",
+      "source_ref": "v0.1.0",
+      "role": "reference only: real-time PUSCH pipeline, JAX to TensorRT lowering, runtime task scheduling and emulated 7.2x fronthaul for the Sprint 10 port; never built or installed in isac",
+      "archive_sha256": "fff519f2a97c6e976f254ab21788fa61cb8048d068c0848c944fd8d2244af1ba",
+      "snapshot_manifest_sha256": "15274e533be9070ec8798255f397005dbb37324d936de32c88783f33c9d6898d"
     }
   ]
 }

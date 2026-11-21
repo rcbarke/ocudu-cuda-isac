@@ -14,7 +14,7 @@ NAMES = ("ocudu", "sionna", "sionna-rt")
 # Reference sources are pinned by the same lock, .gitmodules entry and gitlink. They are read, and
 # nothing builds or installs them in the isac environment. A worktree check covers the dependencies;
 # it covers a reference source when --references is given or --only names that source.
-REFERENCES = ("aerial-cuda-accelerated-ran", "aerial-sample-apps")
+REFERENCES = ("aerial-cuda-accelerated-ran", "aerial-framework", "aerial-sample-apps")
 LOCKED = NAMES + REFERENCES
 FORMAT = 4
 FIELDS = ("name", "path", "url", "commit", "archive_sha256", "snapshot_manifest_sha256")
