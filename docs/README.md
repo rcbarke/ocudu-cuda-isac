@@ -18,6 +18,7 @@
 | [Pilot least squares](interfaces/PILOT_LS.md) | The first observer on the receiver grid: the estimate `H = Y conj(X) / |X|^2` and its precision, the layout and the validity bits of the stage O2, the `obs-descriptor/v1` record, the plan of the tapped replay, and how a tapped run is compared with the untapped control |
 | [Observation contract](interfaces/OBSERVATION.md) | The observation record, the shared-memory ring between the receiver and the sensor, payload layouts and the view the native core consumes |
 | [Observations on the ring](interfaces/SNAPSHOT_RING.md) | Sprint 3.2: what the ring and the timed path are built from, the plan `pilot-ls-plan/v2`, the files and the account of a run, the gate and what a development host checked |
+| [Radar cube and features](interfaces/PILOT_FEATURES.md) | Sprint 3.3: the cube and its axes, the specification of a sensor, what a causal stream answers at each record, the delay-Doppler view and the feature vector with a baked example, the registry of steps with their devices, the files of a sensor, the evaluator side and the gate |
 | [KPI stream and live page](interfaces/KPI.md) | KPI record and catalog, page rules and commands for the demonstration |
 | [Offline RT exporter](interfaces/RT_EXPORT.md) | The four-time, twelve-tone diagnostic pair, kept as a regression of the axis order |
 | [Measurement protocol](research/EVALUATION.md) | Deadlines, denominators, splits, scientific controls and uncertainty |

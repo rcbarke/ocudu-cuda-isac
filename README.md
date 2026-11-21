@@ -8,7 +8,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-21 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row) and Sprint 2 (a known uplink waveform through a traced channel and the native receiver, decoded by the host and the CUDA PUSCH processor to the original transport block) are accepted on one DGX Spark.** **Sprint 3.1 (the first observer: pilot least squares, the stage O2, exported from the grid that both PUSCH processors decode, with every decode unchanged) is accepted on the same Spark.** **Sprint 3.2 (the observation ring between the receiver and a sensor process, and the timed path without a checksum) is accepted on the same Spark: the tap takes 11.0 us in the mean, against 1,472 us with every digest.** The next ticket is S3.3. S3.3 to S11 are specified and not yet implemented. One requirement was added on 2026-11-21: no checksum runs in a timed path. The plan was audited on 2026-11-20 against the evaluation plan of that date, and again for the code level of every ticket: sensing that is timed runs in a native core of CUDA kernels and TensorRT engines, and the demonstration shows that latency. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built) · [code level of every ticket](docs/dev/DEVELOPMENT.md#code-level-of-every-ticket)
+As of 2026-11-21 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row) and Sprint 2 (a known uplink waveform through a traced channel and the native receiver, decoded by the host and the CUDA PUSCH processor to the original transport block) are accepted on one DGX Spark.** **Sprint 3.1 (the first observer: pilot least squares, the stage O2, exported from the grid that both PUSCH processors decode, with every decode unchanged) is accepted on the same Spark.** **Sprint 3.2 (the observation ring between the receiver and a sensor process, and the timed path without a checksum) is accepted on the same Spark: the tap takes 11.0 us in the mean, against 1,472 us with every digest.** **Sprint 3.3 (the radar cube, the delay-Doppler view and the causal features on the records of the ring, with the known return of the reference pair) is delivered and unit accepted on a development host. Its gate `make accept-s3.3` is open until it has run on the Spark.** S3.4 to S11 are specified and not yet implemented. One requirement was added on 2026-11-21: no checksum runs in a timed path. The plan was audited on 2026-11-20 against the evaluation plan of that date, and again for the code level of every ticket: sensing that is timed runs in a native core of CUDA kernels and TensorRT engines, and the demonstration shows that latency. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built) · [code level of every ticket](docs/dev/DEVELOPMENT.md#code-level-of-every-ticket)
 
 ### Sprint 0 acceptance
 
@@ -254,6 +254,23 @@ What the run says. Removing the checksums from the path takes the tap from 1,472
 
 Two host-free cores that Sprint 2 accepted, `replay_core` and `dispatch_core`, were amended for the hash count and the timed mode, so `replay_pusch`, `grid_apply` and `pilot_ls` have new bytes from this sprint on. The gate shows the equivalence by behavior, against the runs that were accepted before the amendment. Sprint 2 was then accepted again on the amended tree: `make accept-s2 RERUN=1` passed on 2026-11-21 at commit `7bad0f4`, chain run `s2-spark-ecf8-20261121T202119Z` with the runs `s21-`, `s22-`, `s23-` and `s24-spark-ecf8-20261121T202119Z`, 9 of 9 stages and 17 of 17 checks. Before the Spark run a development host passed the native cases under the thread and address sanitizers. [Checked on a development host](docs/interfaces/SNAPSHOT_RING.md#checked-on-a-development-host)
 
+### Sprint 3.3, delivered
+
+Sprint 3.3 is the first sensing code: the reference of what a sensor makes of the records on the ring. `src/ocudu_cuda_isac/sensing/features.py` forms a masked radar cube indexed by pilot frequency, slow time and array element, a delay-Doppler view of it after static removal, and a compact feature vector, one record at a time. It changes no native source. [Cube, view, vector, stream and gate](docs/interfaces/PILOT_FEATURES.md)
+
+| | Built |
+|---|---|
+| The cube | `X[frequency, slow time, rx]` from `obs/v1` records of the stage O2, with a validity bit per element. A masked element is zero and is never read. Slow time is the start of the useful part of each selected symbol, from the slot of the record. |
+| The window | The demonstration takes symbol 2 of the first uplink slot of each period: eight samples 5 ms apart, the homogeneous sequence of the card, transformed by FFT. A second Doppler step sums at the actual times of every slot and symbol. |
+| The stream | Each record of the sequence is answered at once: `ok` with a view and a vector, `insufficient_history` while a window fills, `gap` for a window with a missing observation, `invalid`, or `rejected`. A history never spans two epochs or two episode keys. |
+| The view | 32 delay bins of 54.47 ns by 8 Doppler bins of 25 Hz, signed: a later arrival at a higher delay bin, a receding target at a negative Doppler bin. Unambiguous to 16.67 us and from -100 to +75 Hz. |
+| The vector | 13 named values: peak over median, moving over static power, the peak cell, Doppler centroid and spread, and the strongest cell of each Doppler bin over the median. The presence head of S3.4 reads it. |
+| The registry | Every step is a named entry with its execution device. All of this sprint run in NumPy on the CPU with `runtime: reference`. S6.12 adds the native units. |
+| The evaluator | `src/ocudu_cuda_isac/episodes/pilot_features.py` cuts the same windows offline from the files of the audited observer and computes the same view by explicit Fourier sums, and joins a window to the geometry of its episode. |
+| The import rule | `tests/unit/test_core_imports.py`: the sensing package imports no episode module, no host and no simulator. |
+
+Checked on a development host, without an OCUDU build: the unit gate with 27 cases, among them the reference pair synthesized from its analytic model, which peaks at delay bin 3 and Doppler bin -2 (163.4 ns and -50.0 Hz, for a return at 179.8 ns and -43.3 Hz). The integration driver passes 8 of 8 cases and 28 of 28 checks against a double of the native tool, and each of 17 injected faults fails the check that names it. `make accept-s3.3` on the Spark closes what that host cannot: the return in the traced pair through the pinned grid and the native observer, and the reference sensor on the live ring of `pilot_ls`.
+
 ### Verified configuration
 
 | Item | Value on the accepted host |
@@ -296,7 +313,7 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 - **Payload.** The stored episode entries carry the transport block of the base grant at every opportunity (`payload: fixed`). Sprint 2.4 builds a transport block per opportunity (`per_opportunity`) on the slot grants and records the rule of every run. It is accepted, and no stored episode set carries such blocks yet.
 - **Fixture adapter teardown.** The loopback of `grant_fixture` destroys its processor before its workers are joined and can end in a segmentation fault on a loaded host. The fix is one moved line. It changes the hash of an accepted executable, so apply it together with `make accept-s2 RERUN=1`. Until then a Sprint 2.1 or 2.2 gate that reports `the fixture adapter exited with status -11` is run again on a quiet host.
 - **Fill time.** One grid of 4 by 14 by 612 elements takes 1.44 ms to fill on one core of the Spark, and a slot lasts 0.5 ms. About nine tenths of that is the readback digest and not the arithmetic: on a development host the channel application takes 123 us and the digest 1,069 us. The value is recorded and not graded. S4.1 prepares each grid ahead of its slot and leaves the digest out.
-- **Next step.** S3.3: the radar cube, the features and the known return, from the records of the ring. [Cards](docs/dev/DEVELOPMENT.md#phase-s3)
+- **Next step.** Run `make accept-s3.3` on the Spark, which closes S3.3. Then S3.4: the presence head on the features of S3.3. [Cards](docs/dev/DEVELOPMENT.md#phase-s3)
 - **Two generations of Sprint 2 runs.** Sprint 3.2 amended two cores of Sprint 2, so `replay_pusch` and `grid_apply` have other bytes than the first accepted runs name. The Sprint 2 gates were run again on the amended tree and passed (`s2-spark-ecf8-20261121T202119Z`). The accepted Sprint 3.1 run `s31-spark-ecf8-20261121T174511Z` lies on the first generation and is the reference of the Sprint 3.2 gate, so the runs `s24-spark-ecf8-20261121T083424Z` and `s31-spark-ecf8-20261121T174511Z` must stay in `results/runs/`. A new `make accept-s3.1` takes the newest Sprint 2.4 run as its control.
 - **Allocations in the staged harness.** A timed run computes no checksum, but the ledger and the processor wrapper of the staged harness still allocate and take a mutex once per decode, between a ready grid and the decoder's callback. S4.1 removes them. The observer and the ring do not allocate.
 - **Checksums in the loop.** Required to change, decided 2026-11-21. An observation takes 1,471 us on the Spark and a fill 1,444 us, and about nine tenths of each is a SHA-256 digest of the whole grid. `pilot_ls` takes eight such digests per opportunity. They are native code, they are what the gates of Sprints 2.3 to 3.1 prove bytes with, and they are outside the PUSCH service times of 618 us and 265 us. No latency of the observer or of a paced run may be reported before S3.2 and S4.1 run without them. Measured on the Spark on 2026-11-21 by a diagnostic on the two host-free cores: an observation without any hash takes 9.7 us, of which 6.7 us are the estimate, and 110.1 us with the digest of the payload alone. Sprint 3.2 built the path without a hash, and its gate measured the tap in the tool, on the pinned grid and with the publication: 11.0 us in the mean and 18.7 us at most over 47 observations, against the ceiling of 150 us (run `s32-spark-ecf8-20261121T204425Z`). The allocations of the staged harness remain until S4.1, so no latency of a paced run is reported yet. [Requirement](docs/dev/DEVELOPMENT.md#added-by-the-first-observer-run-of-2026-11-21)
@@ -329,7 +346,7 @@ python scripts/verify_environment.py --profile core
 make check
 ```
 
-Clone without `--recursive`. `make check` verifies the source pins, runs the unit suite and replays the four-update fixture. Five tests need NumPy and are skipped on a core host. Run `python -m pip install 'numpy>=2.2.6'` first to include them.
+Clone without `--recursive`. `make check` verifies the source pins, runs the unit suite and replays the four-update fixture. The tests that need NumPy are skipped on a core host, among them the reference of the features and every integration driver test. Run `python -m pip install 'numpy>=2.2.6'` first to include them.
 
 ### Simulation host
 
@@ -450,6 +467,28 @@ build/ocudu-adapter/obs_ring/obs_tail --socket /tmp/o2.sock --wait spin
 
 The first command is the unit gate. It needs the core environment, CMake and a C++17 compiler: it checks the record and the plan, builds the ring, the producer glue and the cores it joins on their own, without OCUDU, runs their cases and lets both readers read one native producer. `make accept-s3.2` is the integration gate. It needs the accepted Sprint 3.1 run under `results/runs/`, with the Sprint 2.4 run its plan lies in still in place, rebuilds the adapter with the ring, publishes the reference pair to a consumer in a second process in the modes `audit` and `timed`, compares every decode with the accepted Sprint 2.4 run and every estimate with the accepted Sprint 3.1 run, and ends with `Sprint 3.2: ACCEPTED on this DGX Spark.` The last two commands run the ring without a receiver. `obs_feed` prints what the ring counted and what one publication cost. [Observations on the ring](docs/interfaces/SNAPSHOT_RING.md)
 
+### Radar cube and features (Sprint 3.3 delivered)
+
+```bash
+source isac/bin/activate
+python tests/unit/test_pilot_features.py -v
+python tests/unit/test_core_imports.py -v
+make accept-s3.3
+
+# Read the target-present window of the live sensor back
+run=$(ls -d results/runs/s33-* | tail -1)
+python -m ocudu_cuda_isac.sensing.features show "$run/pilot_features/live/run/sensor" --window 1
+
+# The features of any consumer archive, by hand
+python -m ocudu_cuda_isac.sensing.features spec --output build/features-001/spec.json
+mkdir build/features-001/out
+s32=$(ls -d results/runs/s32-* | tail -1)
+python -m ocudu_cuda_isac.sensing.features replay --archive "$s32/snapshot_ring/timed/run/consumer-0" \
+    --spec build/features-001/spec.json --output-dir build/features-001/out
+```
+
+The first two commands are the unit gate and the import rule. They need NumPy, and CMake with a C++17 compiler for the case that attaches the reference sensor to a native producer of the ring. `make accept-s3.3` is the integration gate. It needs the accepted Sprint 3.2 run under `results/runs/`, with the runs its plans name still in place, rebuilds the adapter, which must have the bytes of that run, computes the features of the reference pair from the recorded ring, from the files of the audited observer and from a live ring with the reference sensor in a second process, compares the three, checks the return against the geometry of the episode, and ends with `Sprint 3.3: ACCEPTED on this DGX Spark.` `S32_RUN=` names another control, and `REHEARSAL=1` rehearses on a host without CUDA. [Cube, view, vector and gate](docs/interfaces/PILOT_FEATURES.md)
+
 ## Repository map
 
 | Directory | Purpose |
@@ -458,7 +497,7 @@ The first command is the unit gate. It needs the core environment, CMake and a C
 | [docs](docs/README.md) | System design, integration boundaries, interfaces, measurement, evidence and references |
 | [ext](ext/README.md) | CUDA-OCUDU, Sionna and Sionna RT as pinned Git submodules, two NVIDIA Aerial repositories pinned as read-only reference sources, and the lock that owns their paths |
 | [environments](environments/README.md) | Host environment notes and the validated third-party constraints |
-| [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting, the grant record, the grant schedule, the channel episodes, the episode set, the replay plan with the reference of the channel application, the receiver replay plan with the payload rules and the reader of the radio records, and the plan and the reader of the tapped replay (`episodes/`), the sensing-source registry (`sensing/sources/`) and the reference of the pilot least squares (`sensing/pilot_ls.py`) |
+| [src/ocudu_cuda_isac](src/ocudu_cuda_isac/) | Project-owned portable replay and accounting, the grant record, the grant schedule, the channel episodes, the episode set, the replay plan with the reference of the channel application, the receiver replay plan with the payload rules and the reader of the radio records, and the plan and the reader of the tapped replay (`episodes/`), the sensing-source registry (`sensing/sources/`), the reference of the pilot least squares (`sensing/pilot_ls.py`), the reference reader of the ring (`sensing/obs.py`), and the reference of the radar cube, the delay-Doppler view and the causal features (`sensing/features.py`) with its evaluator side (`episodes/pilot_features.py`) |
 | [native/ocudu_adapter](native/ocudu_adapter/README.md) and [patches/ocudu](patches/ocudu/README.md) | Native adapter built against the accepted OCUDU build (the fixture adapter of S2.1, the channel application of S2.3, the receiver dispatch of S2.4, the observer of S3.1 and the producer glue of the observation ring of S3.2; later adapters arrive with their tickets) and narrow upstream patches |
 | [configs](configs/) and [experiments](experiments/README.md) | Working smoke inputs, grant records, integration configurations, advisor profile and publication matrix |
 | [data](data/README.md) and [results](results/README.md) | Episode provenance and run evidence |

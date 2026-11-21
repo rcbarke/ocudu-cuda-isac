@@ -1,0 +1,84 @@
+{
+  "schema": "integration-config/pilot_features/v1",
+  "selector": "pilot_features",
+  "adapter_build": "build/ocudu-adapter",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "control": {
+    "driver": "snapshot_ring",
+    "audit_run": "audit",
+    "timed_run": "timed"
+  },
+  "ring": {
+    "stream": "o2",
+    "window_records": 3,
+    "burst_records": 3,
+    "slots": 8,
+    "wait": "wait",
+    "attach_timeout_ms": 30000,
+    "drain_ms": 5000
+  },
+  "spec": {
+    "schema": "pilot-features-spec/v1",
+    "spec_id": "dd-uniform-8",
+    "input": {
+      "stage": "O2",
+      "source": "pusch_dmrs",
+      "layout": "ocudu_o2_comb_c64",
+      "dtype": "<c8"
+    },
+    "radio": {
+      "scs_khz": 30,
+      "period_slots": 10
+    },
+    "sequence": {
+      "slots_in_period": [
+        7
+      ],
+      "reference_symbols": [
+        0
+      ]
+    },
+    "window": {
+      "periods": 8,
+      "hop_periods": 8,
+      "min_valid_fraction": 0.9
+    },
+    "steps": {
+      "cube": "comb_cube",
+      "static": "window_mean",
+      "delay": "ifft",
+      "doppler": "fft",
+      "features": "dd_compact"
+    },
+    "view": {
+      "delay_bins": 32,
+      "doppler_grid": null,
+      "floor_db": 120.0
+    }
+  },
+  "tolerance": {
+    "power_relative": 1e-09,
+    "feature_absolute": 1e-06
+  },
+  "known_return": {
+    "delay_bin": 3,
+    "doppler_bin": -2,
+    "min_peak_to_median_db": 15.0,
+    "max_absent_peak_to_median_db": 10.0,
+    "min_mirror_db": 10.0
+  },
+  "mask": {
+    "elements": 4
+  },
+  "pair": {
+    "expect": {
+      "opportunities": 48,
+      "complete_windows": 2,
+      "filling": 14,
+      "outside_sequence": 32
+    }
+  }
+}

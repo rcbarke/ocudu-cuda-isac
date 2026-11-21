@@ -528,11 +528,13 @@ def record_name(epoch, sequence):
     return f"{epoch:04d}-{sequence:08d}.obs"
 
 
-def tail(socket_path, output_dir=None, wait="wait", connect_timeout=10.0, idle_timeout=30.0, hold_us=0, window=0):
+def tail(socket_path, output_dir=None, wait="wait", connect_timeout=10.0, idle_timeout=30.0, hold_us=0, window=0,
+         on_record=None):
     """Attach, read every record until the producer says that none follows, and keep them.
 
     Returns the report that is also written as consumer.json. With output_dir every record is
-    written as one file, after the last record was read.
+    written as one file, after the last record was read. on_record, when given, is called with
+    each record after its read and before its release: the work of a reference sensor.
     """
     if output_dir is not None:
         output_dir = Path(output_dir)
@@ -556,6 +558,8 @@ def tail(socket_path, output_dir=None, wait="wait", connect_timeout=10.0, idle_t
                 until = time.monotonic_ns() + 1000 * hold_us
                 while time.monotonic_ns() < until:
                     pass
+            if on_record is not None:
+                on_record(record)
             header = record.header
             kept.append(record)
             rows.append({"epoch": header["epoch"], "sequence": header["sequence"],
