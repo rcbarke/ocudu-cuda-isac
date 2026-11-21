@@ -2,7 +2,7 @@
 // goes, on the storage model of the grid (no OCUDU). Demonstration profile: 4 receive planes,
 // 14 symbols, 612 subcarriers, 2 reference symbols of 306 pilots. Best of 200 repetitions each.
 //
-// RELOCATE THIS SCRIPT TO build/  (gitignored)
+// RELOCATE THIS SCRIPT TO build/ for runtime (build/ is gitignored, thus the file is hosted in scripts/ to commit into the repo)
 //
 // From the repository root:
 //   A=native/ocudu_adapter
