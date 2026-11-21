@@ -46,7 +46,7 @@ python -m ocudu_cuda_isac.episodes.grant show "$run/grant_fixture/two-prb-offset
 make accept-s2.2
 ```
 
-The gate takes the grant record from the newest accepted run of step 3, gives every scheduled uplink slot its grant and has the fixture adapter realize and decode the five grants the schedule adds. It then traces the matched target-absent and target-present pair on the grant's subcarriers and symbol times with the pinned Sionna RT, compares it with the radar equation at every coordinate and exports a five-pair set in a room with the human target. It ends with `Sprint 2.2: ACCEPTED on this DGX Spark.` It runs on the CPU. This step has not run on the Spark yet. [Episodes](../interfaces/EPISODE.md)
+The gate takes the grant record from the newest accepted run of step 3, gives every scheduled uplink slot its grant and has the fixture adapter realize and decode the five grants the schedule adds. It then traces the matched target-absent and target-present pair on the grant's subcarriers and symbol times with the pinned Sionna RT, compares it with the radar equation at every coordinate and exports a five-pair set in a room with the human target. It ends with `Sprint 2.2: ACCEPTED on this DGX Spark.` It runs on the CPU. The Spark accepted it on 2026-11-21 (UTC) in run `s22-spark-ecf8-20261121T004433Z`: 35 gate lines, 26 of 26 checks, the original 1,217 bytes back from the host receiver for each of the five added slot grants, and a pair whose bytes equal those of an x86_64 host. [Episodes and accepted run](../interfaces/EPISODE.md#accepted-run)
 
 ```bash
 # Read the stored pair back

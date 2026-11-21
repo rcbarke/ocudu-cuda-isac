@@ -28,7 +28,7 @@ sha256sum "$run/episode_pair/reference_pair/store/b_h.npy"
 make episode-set
 ```
 
-`make accept-s2.2` writes `results/runs/s22-<host>-<UTC time>/` and ends with `Sprint 2.2: ACCEPTED on this DGX Spark.` It uses the CPU only (Mitsuba variant `llvm_ad_mono_polarized`) and never rebuilds OCUDU. On a development host the driver takes about half a minute.
+`make accept-s2.2` writes `results/runs/s22-<host>-<UTC time>/` and ends with `Sprint 2.2: ACCEPTED on this DGX Spark.` It uses the CPU only (Mitsuba variant `llvm_ad_mono_polarized`) and never rebuilds OCUDU. On a development host the driver takes about half a minute. The Spark accepted it on 2026-11-21 (UTC) in run `s22-spark-ecf8-20261121T004433Z`. [Accepted run](#accepted-run)
 
 ## The uplink grant fixture: `pusch-grant-schedule/v1`
 
@@ -162,7 +162,7 @@ The return is 113 ns behind the direct path, two delay bins, and is found by its
 
 `W` is circular complex Gaussian with `E|W|^2 = sigma^2 = reference_power / 10^(snr_db / 10)` on every resource element and receive port. `reference_power` is the mean `|H|^2` of the target-absent case over the receive ports and the occupied resource elements of opportunity 0. Both cases share the file, so a difference between their receiver outputs comes from the target. The generator is `numpy.random.Generator(PCG64(seed)).standard_normal`, real part first. The file and its hash are what a consumer binds to.
 
-`calibration.grid_gain` is `1 / sqrt(reference_power)`: a real factor on `Y` that gives the receiver grid unit mean signal power. It is recorded and not applied. The physical amplitudes are small, 3.4e-04 for the direct path of the reference pair. The receiver grid stores a floating format, so the factor does not change its rounding. The pinned CUDA receiver keeps its estimates in 16-bit floats, whose normal range ends at 6.1e-05. S2.3 should apply the gain, and state it, so that the return and the noise stay inside that range.
+`calibration.grid_gain` is `1 / sqrt(reference_power)`: a real factor on `Y` that gives the receiver grid unit mean signal power. It is recorded and not applied. The physical amplitudes are small, 3.4e-04 for the direct path of the reference pair. The receiver grid stores a floating format, so the factor does not change its rounding. The pinned CUDA receiver keeps its estimates in 16-bit floats, whose normal range ends at 6.1e-05. Applying the gain is a requirement of S2.3 (decided 2026-11-20): `Y = g (sum over tx of H * X + W)` with `g = calibration.grid_gain`, 2,942.4 for the reference pair. Without it the return (2.6e-06) and the noise fall below the normal range and the return keeps about five significant bits. With it the return is 7.8e-03, the noise has sigma 0.0316 and both keep ten or more.
 
 | Level relative to the direct path per resource element | Reference pair |
 |---|---|
@@ -201,7 +201,7 @@ Two configurations ship.
 | Episodes | 5 pairs of 2 periods, 30 opportunities, 24 MB | 350 pairs of 8 periods: 300 training, 40 validation, 10 held-out. 8,400 opportunities, about 7 GB |
 | Training coverage of the grid | 3 cells | 318 of 1,700 cells |
 
-The ten held-out pairs give the ten present and ten absent episodes of the demonstration profile. The grid, the trajectories and the sizes of `demo_set.json` are a proposal. Set `status` to `frozen` when they are decided, and export once. A change after that is a new `set_id`.
+The ten held-out pairs give the ten present and ten absent episodes of the demonstration profile. `demo_set.json` was judged sufficient as the initial configuration on 2026-11-20 and will be tuned once the remaining components are built. It keeps the status `proposed` until then. Set `status` to `frozen` before a result is reported on it. A change after that is a new `set_id`.
 
 ## Evidence of the integration gate
 
@@ -229,10 +229,29 @@ The four cases and their checks:
 | `reference-pair` | Export, stored pair, solver agreement, direct path, scattered path, phase at unequal intervals, delay-Doppler on the pilot mask, power margins, time evolution, refusals, second reader |
 | `episode-set` | Export and reading, groups, position labels, direct path and array geometry, scattering |
 
-## Rehearsal and what the Spark still has to show
+## Accepted run
 
-The driver ran on a development host (x86_64, Python 3.12.3, the pinned Sionna RT 2.2.0 with Mitsuba 3.9.1 and Dr.Jit 1.5.0 on LLVM): 4 of 4 cases, 26 of 26 checks, 33 seconds, and the three arrays of the pair were byte-identical on a repeat. The numbers in this document are from that run. It is no lab evidence.
+`make accept-s2.2` passed on the DGX Spark `spark-ecf8` on 2026-11-21 (UTC) at commit `e1db1df`, run `s22-spark-ecf8-20261121T004433Z`. All 35 gate lines passed, none failed and none was skipped. The integration grade is 4 of 4 cases and 26 of 26 checks. The grant record came from the accepted Sprint 2.1 run `s21-spark-ecf8-20261120T223232Z`.
 
-Two parts were not real in that rehearsal. The fixture adapter was a double, because no OCUDU build exists on that host: it returned the Sionna NR grid rounded to the grid's storage format, which is the rule the accepted Sprint 2.1 run measured, and it cannot decode. The Sprint 2.1 record was rebuilt by the same rule, and its `x.npy` has the SHA-256 of the accepted run, `a18b72ae9b9ea84f`. The receiver check of the five added slot grants, the environment check and the pin check are first exercised by `make accept-s2.2` on the Spark. Sprint 2.2 is integrated when that gate prints its verdict there.
+| | Accepted run |
+|---|---|
+| Unit suite and unit gate | 223 tests and 23 tests, none skipped |
+| Fixture adapter | `grant_fixture` `7a0e1c8ec1a0`, the executable Sprint 2.1 accepted, built again with no compiler warning |
+| Base grant | `demo-51prb-4rx`, `x.npy` `a18b72ae9b9ea84f`, equal to the archived record |
+| Added slot grants | `.s08` `4512e28d31e8229b`, `.s09` `707dafb060b08d95`, `.s17` `63b18dfd87bac54f`, `.s18` `95779c5e02065d28`, `.s19` `f58c031d21a3f4c0`. Each: 7,956 occupied elements, 612 pilots equal to the record, 7,344 data symbols equal to slot 7, 442 to 461 pilots different from slot 7, host receiver CRC pass with the original 1,217 bytes |
+| Pair | `a_h.npy` `8b7ef3971f4c7975`, `b_h.npy` `744702180dddaea1`, `w.npy` `2b5b46bb1051c23f` |
+| Direct path and return | Within 1.7e-05 and within 9.3e-04 of the analytic model at all 822,528 coordinates |
+| `Paths.cfr` agreement | 3.2e-05 for the pair, 7.5e-05 for the room set |
+| Phase steps of the return | -0.08741, -0.04853 and -1.36098 rad, largest error 4.6e-04 rad |
+| Pilot mask | Peak at 163.4 ns and -50.0 Hz, 23.0 dB above the median |
+| Trace cost | 0.71 s for 24 snapshots, 29.7 ms per snapshot |
+| Set | 5 pairs, 30 opportunities, 3 training, 1 validation, 1 held-out, assignment `44e4fde62fa16374` |
 
-Open after this sprint: every opportunity carries the same transport block (`payload: fixed`); the target-absent channel is stored once per opportunity although it does not change; the set's target-absent runs differ by their noise only.
+- **Receiver check.** The pinned transmit chain built the grid of each added slot grant and the pinned host receiver decoded it. The five grids agree, on the first 16 digits of their SHA-256, with grids computed on a development host as the Sionna NR grid rounded to the storage format: the rounding rule of Sprint 2.1 holds on 36,720 more data symbols and 3,060 more pilots.
+- **Portability.** The three arrays of the pair have the same SHA-256 as on an x86_64 host with the same pinned packages (Python 3.12.3, Sionna RT 2.2.0, Mitsuba 3.9.1, Dr.Jit 1.5.0, NumPy 2.5.5, LLVM variant). The gate prints the comparison as a NOTE. The room set was not compared byte for byte, and its `Paths.cfr` agreement was 7.2e-05 on that host against 7.5e-05 on the Spark.
+- **Second reader.** `python -m ocudu_cuda_isac.episodes.episode show` on the stored pair returned H at opportunity 0, port 3, symbol 2, subcarrier 0 as -3.283090e-04+7.725997e-05j, 1.7e-05 from the analytic value, and the phase steps -0.08741 and -0.04815 rad. `sha256sum b_h.npy` gave the hash of the manifest.
+- **Development host.** The driver had run there first with a stand-in for the fixture adapter, because that host has no OCUDU build. The tables of this document that name a development host are from that run. The measured values of the pair are the same on the Spark. The trace is about twice as fast there per snapshot.
+
+Decided on 2026-11-20: S2.3 applies the grid gain as a requirement, `demo_set.json` is sufficient as the initial configuration and is tuned once the remaining components are built, and a transport block per opportunity is assigned to S2.4. Still open: the target-absent channel is stored once per opportunity although it does not change, and the target-absent runs of a set differ by their noise only.
+
+The evidence is on the Spark under `results/runs/`, which Git ignores.
