@@ -189,13 +189,14 @@ The five cases and their checks:
 
 The gate prints two things as NOTE lines and does not grade them: whether the stored grids have the digests of the development-host rehearsal, and the fill time of one grid.
 
-## Rehearsal and what the Spark still has to show
+## Accepted run
 
-The gate has not run on the Spark yet. On 2026-11-21 (UTC) the driver ran on an x86_64 development host (Ubuntu 24.04, GCC 13.3.0, Python 3.12.3, NumPy 2.5.5) against a CPU-only build of the pinned OCUDU source, with the real adapter. The stimulus was traced there by the Sprint 2.2 driver and has the bytes of the accepted Sprint 2.2 run: the three arrays of the pair and the six transmit grids have the SHA-256 the Spark recorded.
+`make accept-s2.3` passed on the DGX Spark `spark-ecf8` on 2026-11-21 (UTC) at commit `d027aad`, run `s23-spark-ecf8-20261121T032401Z`. All 35 gate lines passed, none failed and none was skipped. The stimulus came from the accepted Sprint 2.2 run `s22-spark-ecf8-20261121T004433Z`, and the slot 7 grant from the Sprint 2.1 run it names.
 
-| Rehearsal on the development host | Value |
+| | Accepted run |
 |---|---|
-| Adapter | `grid_apply` and `grant_fixture` compiled with the flags of the pinned test, no compiler warning, 19 CTest cases |
+| Unit suite and unit gate | 274 tests and 29 tests, none skipped |
+| Adapter | `grid_apply` `158644b5a177` and `grant_fixture` `7a0e1c8ec1a0`, the executable Sprints 2.1 and 2.2 accepted, compiled with the flags of the pinned test and `ENABLE_CUDA`, no compiler warning, 19 CTest cases |
 | Grade | 5 of 5 cases, 25 of 25 checks |
 | Values before storage | 1,645,056 of 1,645,056 elements of 48 opportunities equal the complex128 reference converted to single precision bit for bit. Largest error 8.1e-08. |
 | Stored grids | 1,645,056 of 1,645,056 elements, the 1,527,552 occupied ones included, equal the reference rounded to the storage format. 48 of 48 digests. |
@@ -206,18 +207,17 @@ The gate has not run on the Spark yet. On 2026-11-21 (UTC) the driver ran on an 
 | Noise after storage | -29.989 dB relative to unit signal power, against -30.000 dB. The rounding lies 55.8 dB below the stored values. |
 | Receive planes, occupied elements | 1.0778, 1.0777, 1.0777, 1.0774 with the target absent |
 | Grant of each opportunity | A reference with the grid of slot 7 everywhere differs on 455, 461, 455, 460 and 442 pilots of slots 8, 9, 17, 18 and 19 and on no other element, the counts Sprint 2.2 recorded |
-| Fill time of one grid | 1.15 ms mean on one core of that host for 4 by 14 by 612 elements |
+| Fill time of one grid | 1,436 us mean and 1,445 us at most on one core for 4 by 14 by 612 elements |
 | Digest over the 48 stored grids, first grid | `62f9e9d2dbe09615`, `6a0a3c28258f7c04` |
 
-Every fault that was injected failed a check. All 35 mutations of the native core fail a unit case. With the native unit cases bypassed, eleven of twelve mutated tools fail the integration driver. The twelfth, a grid that is not cleared before a fill, cannot be seen on a fresh grid and fails its unit case. Against the double of the tool, each fault of `tests/unit/grid_apply_double.py` fails the check that names it.
+- **Spark build.** This was the open risk, because the gate had been rehearsed off the Spark only. The replay code compiled on AArch64 with `-mcpu=neoverse-v2` and linked against the 50 archives and the CUDA runtime of the accepted build. The adapter receipt binds its 11 source files by hash. The reference check of the gate ran against the real build.
+- **Portability.** The gate had run first on an x86_64 development host (Ubuntu 24.04, GCC 13.3.0, Python 3.12.3, NumPy 2.5.5) against a CPU-only build of the pinned OCUDU source, on a stimulus with the hashes of the accepted Sprint 2.2 run. The 48 stored grids and the 48 grids before storage have the same bytes on both hosts. Every number of `comparison.json` is the same except the fill time, 1,163 us there. The gate prints the digest comparison as a NOTE.
+- **Second reader.** A separate process verified the 48 stored grids against their digests. At opportunity 0, symbol 2, subcarrier 0 it recovered `+0.750000-1.179688j` on port 3 and `+0.746094-1.171875j` on port 0, the reference rounded to the grid. `sha256sum` gave the digest of `ingress/0000.c64`.
+- **Faults.** Every fault that was injected failed a check. All 35 mutations of the native core fail a unit case. With the native unit cases bypassed, eleven of twelve mutated tools fail the integration driver. The twelfth, a grid that is not cleared before a fill, cannot be seen on a fresh grid and fails its unit case. Against the double of the tool, each fault of `tests/unit/grid_apply_double.py` fails the check that names it. The mutation runs were made on the development host.
 
-Not covered off the Spark, and therefore what `make accept-s2.3` has to show there:
+**A finding for Sprint 4.1.** One grid takes 1.44 ms to fill on one core of the Spark, and a slot lasts 0.5 ms. The channel application is stimulus and no claim is made about its speed, but a paced run must prepare each grid ahead of its slot. The owned grids and their ready state are built for that.
 
-- the AArch64 compile of the replay code with `-mcpu=neoverse-v2` and the link against the 50 archives and the CUDA runtime of the accepted build;
-- the same digests on aarch64. They are expected, because the arithmetic is fixed and the storage rule was confirmed on the Spark in Sprint 2.1. The graded checks compare the native result with the Python reference on the host itself, so a difference in the NOTE line fails nothing.
-- the reference check of the gate (`verify_environment.py --profile core --with-native`), which ran against a stand-in for `gnb` on the development host.
-
-**A finding for Sprint 4.1.** One grid takes about a millisecond to fill on one core of the development host, and a slot lasts 0.5 ms. The channel application is stimulus and no claim is made about its speed, but a paced run must prepare each grid ahead of its slot. The owned grids and their ready state are built for that.
+The evidence is on the Spark under `results/runs/`, which Git ignores.
 
 ## For Sprint 2.4
 
