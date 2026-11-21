@@ -289,7 +289,7 @@ One measurement goes on. The tap takes 1.47 ms for 2,448 estimates, and about ni
 
 ## For Sprint 3.2
 
-Sprint 3.2 is delivered: the ring, the mode `timed` and the plan of version 2 are in [Observations on the ring](SNAPSHOT_RING.md). The notes below are what this sprint handed over.
+Sprint 3.2 is accepted: on the Spark the tap of this document takes 11.0 us in the mode `timed`, against 1,472 us with every digest. The ring, the mode `timed` and the plan of version 2 are in [Observations on the ring](SNAPSHOT_RING.md). The notes below are what this sprint handed over.
 
 - The observation owns its payload in host memory and is complete before the first decode starts. Sprint 3.2 replaces that buffer by a slot of the ring and fills `t_publish_ns`. The fields of the record do not change.
 - `observer::observe` returns a reference that stays valid until the next call. A producer that publishes copies the header fields it needs before it observes again.

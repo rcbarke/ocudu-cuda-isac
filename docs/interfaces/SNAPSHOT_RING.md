@@ -2,7 +2,7 @@
 
 Sprint 3.2, selector `snapshot_ring`. This page states what the sprint built, what it corrected in the observer of Sprint 3.1, the plan and the files of a run, and how the sprint is accepted. The record, the ring and the view are fixed in the [observation contract](OBSERVATION.md). Tickets: [S3.2](../dev/DEVELOPMENT.md#phase-s3), [requirement of 2026-11-21](../dev/DEVELOPMENT.md#added-by-the-first-observer-run-of-2026-11-21), [process layout](../architecture/RUNTIME.md#process-layout).
 
-**Status.** Delivered on 2026-11-21 and checked on a development host. Not yet run on the Spark: `make accept-s3.2` is the gate.
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-21 (UTC), run `s32-spark-ecf8-20261121T204425Z`: 52 gate lines, 10 of 10 cases and 40 of 40 checks, hardware gate closed. In the mode `timed` the tap takes 11.0 us in the mean and 18.7 us at most, against 1,472 us in the mode `audit` and a ceiling of 150 us. [Accepted run](#accepted-run)
 
 ## What the sprint builds
 
@@ -128,8 +128,67 @@ Before the Spark run, on an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3,
 | Gate runner | 9 tests against tool doubles |
 | Ring alone | Admission and the two generation stores: 26 ns at the median. With a copy of 19,584 bytes: 122 ns. One clock read: 21 ns. These are figures of this host and are not projected to the Spark. |
 
-The double computes each estimate with the Python reference and models the ring, so the driver run shows that the checks are sound and nothing about the native tool. Open until the Spark runs the gate: `pilot_ls` links and its self-test passes with the timed section, the timed loop and its deferred evidence write what the readers verify, and the tap's cost on the pinned grid.
+The double computes each estimate with the Python reference and models the ring, so the driver run shows that the checks are sound and nothing about the native tool. What this host left open, the Spark run closed: `pilot_ls` links and its self-test passes with the timed section, the timed loop and its deferred evidence write what the readers verify, and the tap's cost on the pinned grid is measured.
 
 ## Accepted run
 
-Not yet run. `make accept-s3.2` on the DGX Spark writes `results/runs/s32-*/summary.txt`, which ends with `Sprint 3.2: ACCEPTED on this DGX Spark.` when every gate passed.
+`make accept-s3.2 S31_RUN=results/runs/s31-spark-ecf8-20261121T174511Z` passed on the DGX Spark `spark-ecf8` on 2026-11-21 (UTC) at commit `9b96578`, run `s32-spark-ecf8-20261121T204425Z`: 52 gate lines, none failed and none skipped, and 10 notes that are not graded. The reference was named on purpose: that Sprint 3.1 run and the Sprint 2.4 run its plan lies in, `s24-spark-ecf8-20261121T083424Z`, were accepted before this sprint amended the two cores, so the comparison is with executables that hold none of this sprint's code.
+
+| | Accepted run |
+|---|---|
+| Build | Adapter against the Sprint 1.1 build with `ENABLE_CUDA`, 75 adapter tests, no compiler warning. `pilot_ls` `24bc3181359f`, `obs_tail` `04cde6b49d21`, `obs_feed` `a9969a58e431`. |
+| Executables against the accepted ones | `grant_fixture` `7a0e1c8ec1a0`, which links no amended core, has the bytes of the Sprint 3.1 run. Rebuilt from the amended cores: `replay_pusch` `5869677108e0` (accepted `d2bcc09539c3`), `grid_apply` `363a28959e41` (accepted `158644b5a177`), `pilot_ls` (accepted `c3a214c2869c`). |
+| Native cases | 16 of the ring, 6 of the producer glue, the timed cases of the three cores, and the self-test: one grant through the pinned grid and the pinned host PUSCH processor in the mode `timed` without one SHA-256 from its fill to its release |
+| Ring of the demonstration | 8 slots of 20,288 bytes, segment 166,400 bytes, window 3, burst 3, definition `6f877a8710c433dd` |
+| Grade | 10 of 10 cases, 40 of 40 checks, hardware gate closed |
+
+### Equivalence
+
+| Compared | Result |
+|---|---|
+| Payloads and validity masks of the mode `audit` against the accepted Sprint 3.1 run | 48 of 48 have the recorded SHA-256, each computed from a grid with the readback digest of that run |
+| Payloads of the mode `timed`, hashed after the run, against the audited estimates | 48 of 48, in the modes `spin` and `wait` and with the reference reader |
+| Radio records against those the accepted `replay_pusch` wrote without an observer | 96 of 96 in every case: key, grant, allocation, grid digest, outcome, CRC flag, hash of the decoded bytes, executed path |
+| Both readers | 48 of 48 records have the same header fields, host block, validity bits and payload bytes. Only the two host times of a run differ. |
+| All runs | 672 radio records for 672 planned decodes, every byte equal to the original. 336 on the resident CUDA path, 336 on the host path. |
+
+### The tap
+
+47 observations of 19,584 bytes per run, the first one excluded.
+
+| | Mode `timed` | Mode `audit` |
+|---|---|---|
+| Whole observation, read of the grid to the publication store | Mean 11.0 us, largest 18.7 us | 1,472.2 us (accepted Sprint 3.1 run: 1,471 us) |
+| Estimate | Mean 10.5 us, largest 17.5 us | 9.8 us |
+| Digest of the grid | None | 1,360.5 us |
+| Digest of the payload | None | 97.5 us |
+| Record fields, keys and digest of the mask | In the row below | 4.5 us |
+| Admission, header and publication | Mean 0.6 us, largest 1.2 us | Copy into the slot and publication 1.3 us |
+| SHA-256 between the first fill and the drain | 0 digests, 0 bytes | 720 digests, 106,359,888 bytes |
+
+The ceiling is 150 us and the expectation was about 10 us, from 9.7 us measured by the diagnostic without a hash. The mean is under the 20 us above which the card asks for an explanation. The largest value, 18.7 us, is one observation of 47 on a host that is not tuned.
+
+### The ring
+
+| | Measured |
+|---|---|
+| System calls of the producer between an admission and its publication | 0 over 48 publications, in the modes `spin` and `wait` and under overload |
+| Publication alone, consumer spinning | Median 0.6 us, largest 1.2 us |
+| Publication alone, consumer asleep | Median 5.3 us, largest 6.4 us: 48 eventfd writes, each after a store that found the waiting flag set |
+| Delay of the spinning consumer, store to read | Median 0.4 us, largest 0.8 us |
+| Delay of the sleeping consumer | Median 8.2 us, 99th percentile 17.5 us, largest 119.4 us. It slept 49 times. |
+| Slow consumer, 5,000 us per record | 16 published, 32 dropped at once and counted, the longest drop in 0.24 us. At most 8 of 8 slots held. 16 released, none pending. |
+| Terminated consumer | Killed after 4 records with a credit held, status 9. Two epochs, the second from sequence 0. 33 published, 15 dropped, 25 released, 8 reclaimed, none pending, no fault. The second consumer kept all 22 records of its epoch. |
+| Refusals | 7 of 7 faulty plans refused by the plan check and by the native tool with status 2, before a processor, a ring or a file exists |
+
+Over 47 values a 99.9th percentile is the largest value. Recorded beside these and not graded: the supervised ring of the OCUDU dApp platform on a GB10 publishes 68,000 bytes in 1.97 us at the median, with three system calls per publication, and wakes its consumer in 99 us on a quiet host against 1,620 us with a cell on the air (arXiv:2609.07805v1). The runs here are not paced and carry no cell load, so the two are not compared.
+
+### What the run teaches
+
+- **The checksums were the cost.** Without them the tap is the estimate: 10.5 of 11.0 us. The ring is 0.6 us of the tap, so the depth and the wait mode of the ring are not where the latency of an observation lies.
+- **A timed sensor spins.** A consumer asleep on its eventfd adds a system call to the producer after each store (5.3 us against 0.6 us) and showed one wake of 119 us in 47. The mode `wait` stays for gates and tests that reserve no core.
+- **A drop is cheaper than a publication.** 0.24 us at most, so overload of the sensor does not reach the receiver: all 96 decodes of the slow-consumer and of the terminated-consumer run equal the control.
+- **The slot is 20,288 bytes.** The prefix, the header, the host block and the validity bits take 666 bytes and are padded to 704, so that the payload starts on a 64-byte boundary. An earlier figure of 20,224 bytes left the prefix out.
+- **Not yet a tail.** PUSCH service times were recorded and not graded: CUDA 197 us in the mean in the mode `audit` and 215 us in `timed`, host 736 us and 677 us, over 47 decodes each on an untuned host. The differences are inside the spread of such a run. The harness still allocates once per decode. S4.1 paces the runs and removes the allocations, and S4.6 calibrates the tails.
+
+Evidence: `results/runs/s32-spark-ecf8-20261121T204425Z/`, with `summary.txt`, `adapter-receipt.json`, `snapshot_ring/grade.json`, `recovered.json` and `recovered-account.json`.

@@ -226,7 +226,7 @@ def scenario(tools, plan_path, native, directory, consumers, extra=()):
             "schema": sr.RING_SCHEMA, "layout": "obs-ring/v1", "definition": f"{obs.DEFINITION:016x}",
             "stream": ring["stream"], "socket": f"{sr.RING_DIR}/{ring['stream']}.sock",
             "window_records": ring["window_records"], "burst_records": ring["burst_records"], "slot_count": slots,
-            "slot_bytes": 20224, "segment_bytes": 4096 + slots * 20224, "payload_capacity": 19584, "mask_capacity": 306,
+            "slot_bytes": 20288, "segment_bytes": 4096 + slots * 20288, "payload_capacity": 19584, "mask_capacity": 306,
             "host_capacity": obs.STAGED_HOST.size, "memory_path": "host_shared", "clock": "model clock of the double",
             "wait": {"planned": ring["wait"], "consumer": consumers[0]["wait"] if consumers else None},
             "attach": ring["attach"], "attached_at_start": bool(consumers), "attached_at_drain": reader is not None,
@@ -271,7 +271,7 @@ def scenario(tools, plan_path, native, directory, consumers, extra=()):
             "schema": obs.CONSUMER_SCHEMA, "reader": consumer["reader"], "definition": f"{obs.DEFINITION:016x}",
             "wait": consumer["wait"], "epoch": rows[0]["epoch"] if rows else plan["observer"]["epoch"], "pid": 1,
             "cpu": -1, "hold_us": consumer.get("hold_us", 0), "window": 0, "slot_count": ring["slots"],
-            "slot_bytes": 20224, "attached_ns": 1, "ended": "closed",
+            "slot_bytes": 20288, "attached_ns": 1, "ended": "closed",
             "counts": {"read": len(rows), "stale": 0, "released": len(rows), "skipped": 0,
                        "sleeps": len(rows) if consumer["wait"] == "wait" else 0, "kept": len(rows), "not_kept": 0,
                        "system_calls": 17}, "records": rows}, indent=2) + "\n", encoding="ascii")

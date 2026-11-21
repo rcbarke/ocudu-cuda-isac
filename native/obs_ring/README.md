@@ -1,6 +1,6 @@
 # Observation ring
 
-The observation record `obs/v1`, the shared-memory ring `obs-ring/v1` and its control channel: the path by which an estimate leaves the receiver process and reaches the sensor process on one host. Built in Sprint 3.2, checked on a development host, not yet accepted on the Spark. [Observation contract](../../docs/interfaces/OBSERVATION.md) | [what was built and how it is accepted](../../docs/interfaces/SNAPSHOT_RING.md)
+The observation record `obs/v1`, the shared-memory ring `obs-ring/v1` and its control channel: the path by which an estimate leaves the receiver process and reaches the sensor process on one host. Built in Sprint 3.2 and accepted on the DGX Spark on 2026-11-21, run `s32-spark-ecf8-20261121T204425Z`: a publication takes 0.6 us at the median there, and a drop 0.24 us at most. [Observation contract](../../docs/interfaces/OBSERVATION.md) | [what was built and how it is accepted](../../docs/interfaces/SNAPSHOT_RING.md)
 
 It is C++17 on the CPU. It includes nothing from OCUDU and uses no CUDA, so two programs link it without sharing anything else:
 

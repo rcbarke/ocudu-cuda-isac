@@ -124,7 +124,7 @@ Two readers implement the consumer side and pass the same unit vectors. `ocudu_c
 | Cursor page, 4,096 bytes | 0 | `released`, on its own cache line |
 | | 64 | The waiting flag, the wait mode, magic `OBSCURS1`, the definition, the consumer's process, the layout version |
 
-At the demonstration profile a slot holds 20,224 bytes: 19,584 of payload, 306 of validity bits and 40 of host block. Eight slots and the header are 165,888 bytes. The payload of a slot is aligned to 64 bytes, so the observer writes its estimate where the consumer reads it.
+At the demonstration profile a slot holds 20,288 bytes: 64 of prefix, 256 of record header, 40 of host block and 306 of validity bits, padded to 704, and 19,584 of payload. Eight slots and the header are 166,400 bytes, as the accepted Sprint 3.2 run reports them. The payload of a slot is aligned to 64 bytes, so the observer writes its estimate where the consumer reads it.
 
 ### Tools and the archive of a consumer
 
