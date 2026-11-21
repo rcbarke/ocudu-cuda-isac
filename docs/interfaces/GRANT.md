@@ -111,6 +111,8 @@ The pinned test builds its transmit grid with the host PDSCH chain, which is leg
 
 The driver also runs a noiseless loopback: the adapter feeds its grid, unchanged, to the host PUSCH processor on every receive port of the grant and compares the decoded bytes with the record's transport block. This checks the grant against the receiver. It is not a replay result, which S2.4 produces.
 
+A rehearsal of Sprint 2.4 found that this loopback destroys its processor before its workers are joined. On a loaded host that can end a run with a segmentation fault after the decode, with status -11 and no output. Run the gate again on a quiet host. The grid itself is not affected, and Sprint 2.4 makes its grids with `--no-loopback`. [Finding](REPLAY_PUSCH.md#findings)
+
 ## Precision of the stored grid
 
 The pinned resource grid stores complex bf16, on the host (`resource_grid_reader.h`, `resource_grid_writer.h`) and on the device (`resource_grid_cuda_visible_impl.h`). A value keeps the upper 16 bits of each float32 component, rounded to nearest with ties to even: eight significant bits per component and four bytes per complex value. `grant.bf16` implements the rule and `x.npy` holds the values after it. Every stage that reads the receiver ingress inherits this precision.

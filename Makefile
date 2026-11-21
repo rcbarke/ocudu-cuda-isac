@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2.1 accept-s2.2 accept-s2.3 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -16,6 +16,8 @@ help:
 	@echo "make accept-s2.1     Build the adapter, compare both transmit references of each grant, archive the records"
 	@echo "make accept-s2.2     Build the grant fixture of an episode, trace the matched pair and a small set, grade and archive"
 	@echo "make accept-s2.3     Build the native channel application, apply the archived pair with its grid gain, grade and archive"
+	@echo "make accept-s2.4     Build the receiver dispatch, decode the replayed grids on the host and the CUDA path, grade and archive (REHEARSAL=1 on a host without CUDA)"
+	@echo "make accept-s2       Audit the four accepted Sprint 2 runs as one chain and close Sprint 2 (RERUN=1 runs the four gates again first)"
 	@echo "make episode-pair    Trace the reference pair alone into a new directory under data/episodes (CONFIG=, OUT=)"
 	@echo "make episode-set     Trace an episode set into a new directory under data/episodes (CONFIG=, OUT=, VARIANT=)"
 	@echo "make paper-baseline  Execute the DeepSig one-layer comparison alone on Spark"
@@ -75,6 +77,15 @@ accept-s2.2:
 
 accept-s2.3:
 	bash scripts/accept_s2_3.sh
+
+# REHEARSAL=1 grades the host path on a build without CUDA. It ends REHEARSED and never ACCEPTED.
+accept-s2.4:
+	bash scripts/accept_s2_4.sh $(if $(REHEARSAL),--host-rehearsal)
+
+# The four accepted runs as one chain, read from their archives. RERUN=1 first runs the four gates
+# again, in order, each on the run of the one before.
+accept-s2:
+	bash scripts/accept_s2.sh $(if $(RERUN),--rerun)
 
 # Offline channel generation. The output directory must be new. VARIANT selects the Mitsuba variant.
 VARIANT ?= llvm_ad_mono_polarized

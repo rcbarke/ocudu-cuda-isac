@@ -14,6 +14,7 @@
 | [Grant record](interfaces/GRANT.md) | The uplink grant record, carrier coordinates, the sensing source, the stimulus store entry and how the two transmit references are aligned |
 | [Channel episodes](interfaces/EPISODE.md) | The uplink grant schedule of an episode, the matched target-absent and target-present pair on the grant's subcarriers and symbol times, its analytic check, noise and gain, and the demonstration episode set |
 | [Channel application](interfaces/GRID_APPLY.md) | The native step that fills the receiver grid: `Y = g (sum(H X) + W)` with the grid gain of the episode, the replay plan, the owned grids and their states, the stored-grid descriptor and what the receiver side may read |
+| [Receiver replay](interfaces/REPLAY_PUSCH.md) | The native step that hands each filled grid to the host and the CUDA PUSCH processor: the six outcomes and their keys, the grid held until the decoder's callback, the transport block per opportunity, the replay plan, the `radio/v1` record, the executed path, and the audit that closes Sprint 2 |
 | [Observation contract](interfaces/OBSERVATION.md) | The observation record, the shared-memory ring between the receiver and the sensor, payload layouts and the view the native core consumes |
 | [KPI stream and live page](interfaces/KPI.md) | KPI record and catalog, page rules and commands for the demonstration |
 | [Offline RT exporter](interfaces/RT_EXPORT.md) | The four-time, twelve-tone diagnostic pair, kept as a regression of the axis order |

@@ -95,6 +95,19 @@ The Spark accepted S2.1 on 2026-11-20 in run `s21-spark-ecf8-20261120T223232Z`. 
 
 The host receiver decoded the three noiseless grids in one LDPC iteration and reported an SINR of 96.99 dB on one port and 103.01 dB on four. Those are the values to expect from the unity step of S2.4 on the host path.
 
+## Findings of Sprint 2.4
+
+Sprint 2.4 is delivered and rehearsed on a development host against a CPU-only build of the pin. Its hardware gate is open. Each finding below was read from the pinned source or seen in that rehearsal, and none of them is a measurement of the resident CUDA path. [Receiver replay](../interfaces/REPLAY_PUSCH.md)
+
+| Finding at the pin | Evidence | Binds |
+|---|---|---|
+| **A worker is still inside its task after the decoder's callback.** For a transport block of more than one code block, `pusch_decoder_impl::fork_codeblock_task` runs each code block on the executor. The last task calls `join_and_notify`, which reports the result, and then returns its codeblock decoder to the pool of the processor. A processor that is destroyed between the callback and that return is used after it is freed. The decoder is back in its idle state before the callback, so starting the next decode on the same processor is safe. Destroying it is not, until the workers are joined. | Source. In the rehearsal the loopback of the accepted fixture adapter, which destroys its processor before it stops its pool, ended two of 24 runs with a segmentation fault in that task while the unit suite loaded both cores. The kernel log names the worker thread and the task. It was not reproduced on demand: 450 further runs under synthetic load and every run on an idle host completed. | S2.4, S3.1, S5.2, every adapter that owns a processor |
+| **The `gpu` factory falls back to the host without a message.** `create_sw_pusch_processor_factory(..., "gpu", ...)` returns a working processor when no usable device is found. `result.data.acceleration_pipeline_timing.valid` is set only when the resident demodulation and decode produced the result, and it is the only trace of the path. | Source, and the rehearsal on a build without CUDA: 140 of 140 decodes requested from the CUDA processor ran the host path with that flag false | S2.4, S4.1, S5.5 |
+| **The host path decodes the replayed pair like the unity grid.** With the channel of the reference pair, its noise at -30 dB and the grid gain, the host processor returns the original 1,217 bytes on all opportunities of both members, and a zero channel or data symbols inverted against the DM-RS symbols end as a CRC failure of the decoder. | Rehearsal, host path: 96 of 96 decodes of the pair, 24 of 24 CRC failures on bad input. The channel of the rehearsal is a two-path model with the geometry of the pair, not the traced arrays | S3.1, S4.2 |
+| **The receiver code builds beside the accepted tools without changing them.** Adding `receiver/` to the adapter leaves `grant_fixture` and `grid_apply` with the bytes they had. | Rehearsal build, x86_64, GCC 13.3.0: both hashes unchanged, 34 CTest cases, no warning | S2.4 |
+
+The first finding is a defect of accepted project code and not of the pin: `fixtures/grant_fixture.cpp` of Sprint 2.1. Sprint 2.4 runs that adapter without its loopback and joins the workers of its own tool before a processor is destroyed. The adapter itself is left as accepted, because a corrected one has another hash than the one three gates accepted. [What to change, and when](../interfaces/REPLAY_PUSCH.md#findings)
+
 ## Observation handoff to implement
 
 1. The adapter binds the episode's input symbols, port map, slot/symbol indices, PUSCH allocation, DM-RS sequence and payload to the same upstream invocation. The received grid includes the direct UE–receiver path, target/clutter contributions and receiver noise. Keep geometric truth in the evaluator.

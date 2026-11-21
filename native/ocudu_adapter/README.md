@@ -21,12 +21,31 @@ The Spark built the adapter inside the accepted Sprint 2.1 run `s21-spark-ecf8-2
 |---|---|---|
 | `fixtures/` | S2.1 | `grant_fixture`: reads a `pusch-grant/v1` record and its transport block, builds the transmit grid with the transmit chain of the pinned test and writes it in carrier coordinates. It can feed that grid, without noise, to the host PUSCH processor and compare the decoded bytes. [Grant record](../../docs/interfaces/GRANT.md) |
 | `replay/` | S2.3 | `grid_apply`: reads a `grid-apply-plan/v1` file, applies `Y = g (sum(H X) + W)` with the grid gain of the episode into a pinned resource grid, reads each grid back and writes the stored grids with their descriptors. Its arithmetic, gain rules, owned grids and digest are in `replay_core`, which includes nothing of OCUDU. [Channel application](../../docs/interfaces/GRID_APPLY.md) |
-| `receiver/` | S2.4 | Dispatch of one grid to the CPU and the CUDA PUSCH processor |
+| `receiver/` | S2.4 | `replay_pusch`: reads a `replay-pusch-plan/v1` file, fills each grid with the channel application of `replay/`, hands the same grid and the PDU of its grant to the host and to the CUDA PUSCH processor of the pinned source and compares the decoded bytes with the original transport block. Its outcome rule, its keys, its held grids and its owned output buffers are in `dispatch_core`, which includes `replay_core` and nothing of OCUDU. Delivered and rehearsed on the host path, not yet accepted on the Spark. [Receiver replay](../../docs/interfaces/REPLAY_PUSCH.md) |
 | `observer/` | S3.1, S5.2 | Pilot LS and the export of the receiver's own estimate |
 | `transport/` | S3.2, S7, S8 | Bounded observation ring and its transports |
 | `du/`, `ingress/` | S5.1, S5.4, S6.10 | Scheduler binding, split ingress adapters and the ZeroMQ channel broker |
 
-`fixtures/` and `replay/` exist so far. A new subdirectory adds its targets with `add_subdirectory` in `CMakeLists.txt`. A target that needs OCUDU links `ocudu_pin_fixture`. A CPU-only unit target links only its module and its doubles: `replay/` builds that way on its own, with `cmake -S native/ocudu_adapter/replay`, and the unit gate `tests/unit/test_grid_apply.py` does so. The receipt lists both executables and every file of this directory, so a build from before Sprint 2.3 is refused and the gates rebuild.
+`fixtures/`, `replay/` and `receiver/` exist so far. A new subdirectory adds its targets with `add_subdirectory` in `CMakeLists.txt`. A target that needs OCUDU links `ocudu_pin_fixture`. A CPU-only unit target links only its module and its doubles: `replay/` builds that way on its own, with `cmake -S native/ocudu_adapter/replay`, and the unit gate `tests/unit/test_grid_apply.py` does so. `receiver/` builds its host-free core the same way, with `cmake -S native/ocudu_adapter/receiver`, and the unit gate `tests/unit/test_replay_pusch.py` does so. The receipt lists the three executables and every file of this directory, so a build from before Sprint 2.4 is refused and the gates rebuild.
+
+## `replay_pusch`
+
+```bash
+build/ocudu-adapter/receiver/replay_pusch --plan FILE --output-dir OUT [--only OPPORTUNITY_ID]... [--no-grids] [--phy-debug]
+build/ocudu-adapter/receiver/replay_pusch --self-test
+```
+
+`OUT` must exist and must not hold a result. The plan comes from `python -m ocudu_cuda_isac.episodes.replay_pusch plan`. The tool writes `OUT/ingress/` (one `o1-grid/v1` descriptor and one stored grid per opportunity, as `grid_apply` does), `OUT/radio/` (one `radio/v1` record per planned decode and the decoded bytes of every CRC pass) and `OUT/native.json`. It exits with status 2 for a refused plan, before a processor is created or a file is written, and with status 1 when a decode did not complete or for any other error. A CRC failure is an outcome and not an error. `--only` decodes the named opportunities alone. `--self-test` decodes a two-block grant on the host path and starts no CUDA work. The adapter build runs it and the 12 cases of the host-free dispatch core as CTest cases, 34 with those of `fixtures/` and `replay/`.
+
+| File in `receiver/` | Links OCUDU | Contents |
+|---|---|---|
+| `dispatch_core.h`, `dispatch_core.cpp` | No | The outcome rule, the byte comparison, the ledger of keys, held grids, owned output buffers and anomalies, and the dispatch of one grid to one decoder |
+| `tests/dispatch_core_test.cpp` | No | Unit cases against doubles of a processor |
+| `grant_pdu.h` | Headers only | Reader of a grant record, its hash, the coding of the pinned source and the PUSCH PDU |
+| `receiver_plan.h` | Headers only | Reader of the plan |
+| `replay_pusch.cpp` | Yes | The pinned processors behind the decoder interface, and the tool |
+
+A processor is destroyed only after the workers are joined. A worker is still inside its task for a moment after the decoder's callback, and a processor that is destroyed in that moment is used after it is freed. `replay_pusch` declares a `joined_workers` guard after its processors for that reason. The loopback of `grant_fixture` does not, and a new target that owns a processor must. [Finding](../../docs/interfaces/REPLAY_PUSCH.md#findings)
 
 ## `grid_apply`
 

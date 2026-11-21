@@ -1,0 +1,55 @@
+{
+  "schema": "integration-config/replay_pusch/v1",
+  "selector": "replay_pusch",
+  "adapter_build": "build/ocudu-adapter",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "receiver": {
+    "ldpc_iterations": 6,
+    "early_stop": true,
+    "timeout_ms": 30000
+  },
+  "tolerance": {
+    "epre_db": 0.01,
+    "sinr_db": 0.05,
+    "storage_sqnr_db_min": 50.0
+  },
+  "pair": {
+    "entry": "episode_pair/reference_pair/store",
+    "grant_stores": [
+      "episode_pair/grant_fixture"
+    ],
+    "expect": {
+      "opportunities": 24,
+      "grants": 6,
+      "grid_gain": 2942.4243526773034,
+      "tb_bytes": 1217,
+      "tb_sha256": "a2187d90d75129b1e70b120b436e12be1899dbfd9d19d49e2c2d029b32b58dfd",
+      "s23_run_digest": "62f9e9d2dbe096154945bbb417b6983c48232dcc1d34feac086b87e977f02c3a"
+    }
+  },
+  "unity": {
+    "grants": [
+      "table2-51prb-1rx",
+      "two-prb-offset"
+    ],
+    "expect": {
+      "bytes": {
+        "demo-51prb-4rx": 1217,
+        "table2-51prb-1rx": 6787,
+        "two-prb-offset": 48
+      },
+      "ldpc_iterations": 1.0,
+      "epre_db": 3.0103,
+      "sinr_db": {
+        "1": 96.9897,
+        "4": 103.0103
+      }
+    }
+  },
+  "payload": {
+    "seed": "s24-opportunity-block"
+  }
+}

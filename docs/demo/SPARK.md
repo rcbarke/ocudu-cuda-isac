@@ -70,7 +70,25 @@ python -m ocudu_cuda_isac.episodes.grid_apply show "$run/grid_apply/reference_pa
 sha256sum "$run/grid_apply/reference_pair/native/ingress/0000.c64"
 ```
 
-## 6. Demonstrate receiver-linked sensing after the native adapter is implemented
+## 6. Decode the replayed grids on both PUSCH processors and close Sprint 2
+
+```bash
+python tests/unit/test_replay_pusch.py -v
+make accept-s2.4
+make accept-s2
+```
+
+`make accept-s2.4` takes the grids of the newest accepted run of step 5 and the stimulus that run applied, rebuilds the adapter with the receiver dispatch and decodes every grid on the host PUSCH processor and on the CUDA PUSCH processor of the pinned source: eight grants through a unity channel, the direct path without noise, both members of the pair, a transport block per opportunity and two kinds of bad input. It compares the decoded bytes with the original transport block and records the path every decode executed. A decode that was requested from the CUDA processor and fell back to the host fails the gate. `make accept-s2` then reads the runs of steps 3 to 6 as one chain, from the grant record to the decoded bytes, and closes Sprint 2. This step is delivered and was rehearsed off the Spark on the host path only. Its first run on the Spark is the first measurement of the resident CUDA path on a project grid. [Receiver replay](../interfaces/REPLAY_PUSCH.md)
+
+```bash
+# Read one decode back and compare its bytes with the archived block
+run=$(ls -d results/runs/s24-* | tail -1)
+python -m ocudu_cuda_isac.episodes.replay_pusch show "$run/replay_pusch/reference_pair/run/native" --sequence 0 --backend cuda
+s21=$(ls -d results/runs/s21-* | tail -1)
+cmp "$run/replay_pusch/reference_pair/run/native/radio/0000.cuda.bin" "$s21/grant_fixture/demo-51prb-4rx/store/tb.bin"
+```
+
+## 7. Demonstrate receiver-linked sensing after the native adapter is implemented
 
 | Step | Evidence to retain |
 | --- | --- |

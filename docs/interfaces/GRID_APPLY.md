@@ -225,3 +225,5 @@ The evidence is on the Spark under `results/runs/`, which Git ignores.
 - The PDU is the grant's, with the DM-RS referenced to CRB 0. The descriptor carries the grant, the frame and the slot of the opportunity.
 - Keep the readback digest with the decode result. It is taken over the stored values and does not depend on the observer.
 - The transport block per opportunity is built there, where the decoded bytes are compared.
+
+Sprint 2.4 is built on these four points. [Receiver replay](REPLAY_PUSCH.md)
