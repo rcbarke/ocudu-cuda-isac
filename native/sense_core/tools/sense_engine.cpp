@@ -21,6 +21,15 @@
 // reference by the float32 tolerance of the core. An fp16 engine is a declared variant with its
 // own tolerance, graded only where a gate builds one.
 //
+// TensorRT generations. This file compiles against the headers of TensorRT 10 and of TensorRT 11.
+// Up to TensorRT 10 a network is weakly typed unless it asks otherwise, and BuilderFlag::kFP16
+// allows the builder to run its layers in half precision. TensorRT 11 removed that network and
+// that flag: every network is strongly typed, and an engine has the precision of the tensors of
+// its ONNX graph. The export of the core writes a float32 graph, so with TensorRT 11 this tool
+// builds the fp32 engine from it and refuses --precision fp16 before it touches the device. The
+// fp32 engine is float32 throughout on both: no half precision is allowed in the first, and none
+// is in the graph of the second.
+//
 // Built only where the build found TensorRT. ASCII only.
 
 #include "core/artifact.h"
@@ -39,6 +48,14 @@
 #include <memory>
 #include <string>
 
+// Whether the TensorRT this file is compiled against has the builder flag that allows half
+// precision in a float32 graph. TensorRT 11 has neither the flag nor the weakly typed network.
+#if NV_TENSORRT_MAJOR < 11
+#define SENSE_ENGINE_FP16_FLAG 1
+#else
+#define SENSE_ENGINE_FP16_FLAG 0
+#endif
+
 namespace {
 
 void usage()
@@ -49,7 +66,8 @@ void usage()
             "  --artifact DIR      directory of the frozen cusense-artifact/v1 artifact the export was made from\n"
             "  --output-dir DIR    existing, empty directory for model.plan and engine.json\n"
             "  --device N          the CUDA device to build on and for (default 0)\n"
-            "  --precision NAME    fp32 (default) or fp16\n"
+            "  --precision NAME    fp32 (default) or fp16. fp16 is built with TensorRT 10 only: from TensorRT 11\n"
+            "                      on an engine has the precision of its ONNX graph, and the export is float32\n"
             "  --tf32              allow TF32 in a float32 engine (default: not allowed)\n"
             "  --workspace-mb N    the workspace of the builder (default 1024)");
 }
@@ -154,6 +172,13 @@ int main(int argc, char** argv)
                          "and the workspace holds 16 MB or more\n");
     return 2;
   }
+  if (precision == "fp16" && SENSE_ENGINE_FP16_FLAG == 0) {
+    std::fprintf(stderr,
+                 "sense_engine: --precision fp16 is not built with TensorRT %d.%d: its networks are strongly typed, so an "
+                 "engine has the precision of its ONNX graph, and the export of the core is float32. Build fp32\n",
+                 NV_TENSORRT_MAJOR, NV_TENSORRT_MINOR);
+    return 2;
+  }
   if (!empty_directory(output_dir)) {
     std::fprintf(stderr, "sense_engine: the output directory %s does not exist or is not empty\n", output_dir.c_str());
     return 2;
@@ -209,14 +234,17 @@ int main(int argc, char** argv)
                                std::to_string(cells) + "] and \"presence_logit\" [1] as float32");
     }
     config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, static_cast<std::size_t>(workspace_mb) << 20);
+#if SENSE_ENGINE_FP16_FLAG
     if (precision == "fp16") {
-      // The flag is the way of this TensorRT generation to allow half precision in a network that
-      // is not strongly typed. Newer headers mark it as deprecated.
+      // The flag is the way of TensorRT 10 to allow half precision in a network that is not
+      // strongly typed. Its last headers mark it as deprecated, and TensorRT 11 has no such flag:
+      // there fp16 was refused above, and the engine has the precision of the float32 graph.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       config->setFlag(nvinfer1::BuilderFlag::kFP16);
 #pragma GCC diagnostic pop
     }
+#endif
     if (tf32) {
       config->setFlag(nvinfer1::BuilderFlag::kTF32);
     } else {

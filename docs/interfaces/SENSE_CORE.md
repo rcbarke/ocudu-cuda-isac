@@ -58,7 +58,7 @@ The working precision is FP32. The validity rule of the reference is evaluated o
 | Window mean | 4 spacings of FP32 on each part at the magnitude of the element. For FP16 payloads the three additions are exact, and the mean is bit-identical to the complex64 mean of the reference |
 | Input of the model | 16 spacings of FP32 at the larger of the window magnitude and the template magnitude, divided by the divisor of the z-score |
 | Engine, FP32 | A logit by 1e-3 plus 1e-4 of its magnitude, a probability by 2.5e-4, a cell of the map by 1e-4: the tolerances of the Sprint 3.5 parity |
-| FP16, declared apart | A stored FP16 value holds each part within a relative 2^-11. No unit adds to it. An engine built with `--precision fp16` has its own set (5e-2 plus 1e-2, 1e-2, 5e-3) and is graded only where a gate builds one |
+| FP16, declared apart | A stored FP16 value holds each part within a relative 2^-11. No unit adds to it. An engine built with `--precision fp16` has its own set (5e-2 plus 1e-2, 1e-2, 5e-3) and is graded only where a gate builds one. `sense_engine` builds it with TensorRT 10 only: [Engine directory](#engine-directory) |
 
 ## A plan
 
@@ -92,6 +92,8 @@ engine/engine.json    sense-engine/v1
 ```
 
 `engine.json` names the artifact and its weights by hash, the library with its version, the precision, whether TF32 was allowed, the GPU by name, compute capability and identifier, the tensors, the ONNX file by hash, and the hash of `model.plan`. A plan loads the directory only for the same artifact, with the same TensorRT version, on the same GPU. An engine is built on every GPU that runs it. The default is FP32 without TF32.
+
+The sources compile against the headers of TensorRT 10 and of TensorRT 11, which differ in how an engine gets its precision. Up to TensorRT 10 a network is weakly typed and `BuilderFlag::kFP16` allows half precision in it. TensorRT 11 removed that network and that flag: every network is strongly typed, and an engine has the precision of the tensors of its ONNX graph. The export writes a float32 graph, so the FP32 engine is float32 throughout on both. `--precision fp16` builds an FP16 engine with TensorRT 10 and is refused with TensorRT 11 in one line, with status 2, before the device is touched: an FP16 engine there needs a float16 export, which no ticket has built. The build looks for the runtime libraries of a wheel by the major the headers name, `libnvinfer.so.10` or `libnvinfer.so.11`.
 
 The ONNX file comes from `ocudu_cuda_isac.sensing.export.write_onnx`, which builds the graph node by node from `weights.f32` and the configuration of `model.json` at operator set 17. The same artifact gives the same bytes. The declared fallback is the backend `libtorch` with the TorchScript module of `export.write_module`: it blocks, it is named in every manifest, and a run on it records the native showing as blocked. `host_reference` is the model in plain C++ on the CPU, for the host twin and the unit gate.
 

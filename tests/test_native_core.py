@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,9 @@ VERSION_HEADER = """#define TRT_MAJOR_ENTERPRISE 10
 #define NV_TENSORRT_MAJOR TRT_MAJOR_ENTERPRISE //!< TensorRT major version.
 """
 OLD_HEADER = "#define NV_TENSORRT_MAJOR 8\n#define NV_TENSORRT_MINOR 6\n#define NV_TENSORRT_PATCH 1\n#define NV_TENSORRT_BUILD 6\n"
+NEXT_HEADER = VERSION_HEADER.replace("MAJOR_ENTERPRISE 10", "MAJOR_ENTERPRISE 11").replace(
+    "MINOR_ENTERPRISE 14", "MINOR_ENTERPRISE 5").replace("PATCH_ENTERPRISE 1", "PATCH_ENTERPRISE 0").replace(
+    "BUILD_ENTERPRISE 48", "BUILD_ENTERPRISE 63")
 
 
 class NativeCoreTests(unittest.TestCase):
@@ -94,6 +98,44 @@ class NativeCoreTests(unittest.TestCase):
             # Libraries without headers: the wheel. The message says how to get the headers.
             (root / "include/NvInfer.h").unlink()
             self.assertIn("native_core.py headers", native_core.find_tensorrt(arguments)["problem"])
+
+    def test_the_tensorrt_sources_hold_for_tensorrt_10_and_11(self):
+        # TensorRT 11 removed the weakly typed network with BuilderFlag::kFP16, and its runtime
+        # libraries are libnvinfer.so.11. The core was first compiled against TensorRT 10.14 alone
+        # and did not build on a host with 11.5: a name of one generation stands behind a check
+        # of the version, and the other generation is refused in words.
+        tool = (native_core.CORE / "tools/sense_engine.cpp").read_text(encoding="ascii")
+        self.assertIn("#if NV_TENSORRT_MAJOR < 11\n#define SENSE_ENGINE_FP16_FLAG 1\n#else\n"
+                      "#define SENSE_ENGINE_FP16_FLAG 0\n#endif\n", tool)
+        code = "\n".join(line for line in tool.splitlines() if not line.lstrip().startswith("//"))
+        guarded = re.findall(r"^#if SENSE_ENGINE_FP16_FLAG$(.*?)^#endif$", code, flags=re.S | re.M)
+        self.assertEqual(len(guarded), 1)
+        self.assertIn("config->setFlag(nvinfer1::BuilderFlag::kFP16);", guarded[0])
+        self.assertNotIn("kFP16", code.replace(guarded[0], ""))
+        self.assertIn('precision == "fp16" && SENSE_ENGINE_FP16_FLAG == 0', code)
+        self.assertIn("--precision fp16 is not built with TensorRT %d.%d", code)
+        # No other source of the core names a builder flag of one generation.
+        for path in native_core.CORE.rglob("*"):
+            if path.is_file() and path.suffix in (".h", ".cpp", ".cu") and path.name != "sense_engine.cpp":
+                self.assertNotIn("BuilderFlag::", path.read_text(encoding="ascii"), path)
+        # The runtime libraries of a wheel carry the major of their release, which the headers name.
+        cmake = (native_core.CORE / "CMakeLists.txt").read_text(encoding="ascii")
+        self.assertIn('list(APPEND SENSE_TENSORRT_NVINFER_NAMES "libnvinfer.so.${major}")', cmake)
+        self.assertIn('list(APPEND SENSE_TENSORRT_NVONNXPARSER_NAMES "libnvonnxparser.so.${major}")', cmake)
+        self.assertNotIn("libnvinfer.so.10", cmake)
+        self.assertNotIn("libnvonnxparser.so.10", cmake)
+        root = self.scratch / "tensorrt-11"
+        (root / "include").mkdir(parents=True)
+        (root / "lib").mkdir()
+        (root / "include/NvInferVersion.h").write_text(NEXT_HEADER)
+        for name in ("include/NvInfer.h", "include/NvOnnxParser.h", "lib/libnvinfer.so.11", "lib/libnvonnxparser.so.11"):
+            (root / name).write_text("")
+        arguments = argparse.Namespace(tensorrt_root=str(root), tensorrt_include=None, tensorrt_library=None)
+        with mock.patch.object(native_core.importlib.util, "find_spec", return_value=None), \
+                mock.patch.object(native_core, "HEADERS_DIR", self.scratch / "none"):
+            found = native_core.find_tensorrt(arguments)
+        self.assertEqual((found["header_version"], found["libnvinfer"], found["libnvonnxparser"]),
+                         ("11.5.0.63", str(root / "lib/libnvinfer.so.11"), str(root / "lib/libnvonnxparser.so.11")))
 
     def test_a_directory_without_a_receipt_is_no_build_and_the_usage_names_the_commands(self):
         with self.assertRaisesRegex(native_core.CoreError, "holds no receipt"):

@@ -106,10 +106,26 @@ if(NOT SENSE_CORE_HOST_ONLY AND NOT SENSE_CORE_TENSORRT STREQUAL "OFF")
   find_path(SENSE_TENSORRT_PARSER_INCLUDE NvOnnxParser.h
     HINTS "${TENSORRT_INCLUDE_DIR}" "${TENSORRT_ROOT}/include" "${SENSE_TENSORRT_INCLUDE}" ENV TENSORRT_ROOT
     PATH_SUFFIXES include "${CMAKE_LIBRARY_ARCHITECTURE}")
-  # A package of runtime libraries holds libnvinfer.so.10 and no development link.
-  find_library(SENSE_TENSORRT_NVINFER NAMES nvinfer libnvinfer.so.10
+  # A package of runtime libraries, as the wheel is, holds libnvinfer.so.<major> and no development
+  # link. The major is the one the headers name, so that headers and libraries are of one
+  # generation: 10 or 11. Where the headers name none, both are looked for, the newer first.
+  set(SENSE_TENSORRT_MAJORS 11 10)
+  if(SENSE_TENSORRT_INCLUDE AND EXISTS "${SENSE_TENSORRT_INCLUDE}/NvInferVersion.h")
+    file(STRINGS "${SENSE_TENSORRT_INCLUDE}/NvInferVersion.h" SENSE_TENSORRT_MAJOR_LINE
+      REGEX "#define (TRT_MAJOR_ENTERPRISE|NV_TENSORRT_MAJOR) +[0-9]+")
+    if(SENSE_TENSORRT_MAJOR_LINE MATCHES "#define [A-Z_]+ +([0-9]+)")
+      set(SENSE_TENSORRT_MAJORS "${CMAKE_MATCH_1}")
+    endif()
+  endif()
+  set(SENSE_TENSORRT_NVINFER_NAMES nvinfer)
+  set(SENSE_TENSORRT_NVONNXPARSER_NAMES nvonnxparser)
+  foreach(major IN LISTS SENSE_TENSORRT_MAJORS)
+    list(APPEND SENSE_TENSORRT_NVINFER_NAMES "libnvinfer.so.${major}")
+    list(APPEND SENSE_TENSORRT_NVONNXPARSER_NAMES "libnvonnxparser.so.${major}")
+  endforeach()
+  find_library(SENSE_TENSORRT_NVINFER NAMES ${SENSE_TENSORRT_NVINFER_NAMES}
     HINTS "${TENSORRT_LIBRARY_DIR}" "${TENSORRT_ROOT}/lib" "${TENSORRT_ROOT}/lib64" ENV TENSORRT_ROOT PATH_SUFFIXES lib lib64)
-  find_library(SENSE_TENSORRT_NVONNXPARSER NAMES nvonnxparser libnvonnxparser.so.10
+  find_library(SENSE_TENSORRT_NVONNXPARSER NAMES ${SENSE_TENSORRT_NVONNXPARSER_NAMES}
     HINTS "${TENSORRT_LIBRARY_DIR}" "${TENSORRT_ROOT}/lib" "${TENSORRT_ROOT}/lib64" ENV TENSORRT_ROOT PATH_SUFFIXES lib lib64)
   if(SENSE_TENSORRT_INCLUDE AND SENSE_TENSORRT_PARSER_INCLUDE AND SENSE_TENSORRT_NVINFER AND SENSE_TENSORRT_NVONNXPARSER)
     set(SENSE_HAVE_TENSORRT ON)
