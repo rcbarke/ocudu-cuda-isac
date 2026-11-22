@@ -52,7 +52,7 @@ HOST REHEARSAL: the host path is graded on a build without CUDA. This run cannot
 Sprint 3.2: REHEARSED on this host, NOT ACCEPTED. The observations were published on the ring.
 """
 UNIT = "Ran 480 tests in 300.000s\n\nOK"
-CARD = "Ran 27 tests in 3.500s\n\nOK"
+CARD = "Ran 28 tests in 3.500s\n\nOK"
 RULE = "Ran 3 tests in 0.200s\n\nOK"
 # The interpreter double answers each gate from FAKE_* variables and logs the call. The driver
 # double leaves its grade, the place of the window to recover and the two view files.
@@ -152,7 +152,7 @@ class SprintThreeFeaturesGateTests(unittest.TestCase):
         summary = self.summary()
         self.assertEqual(summary, result.stdout)
         for line in ("PASS  unit tests (480 ran, 0 skipped)",
-                     "PASS  S3.3 unit gate, run directly: python tests/unit/test_pilot_features.py (27 ran, 0 skipped)",
+                     "PASS  S3.3 unit gate, run directly: python tests/unit/test_pilot_features.py (28 ran, 0 skipped)",
                      "PASS  S3.3 import rule, run directly: python tests/unit/test_core_imports.py (3 ran, 0 skipped)",
                      "PASS  S3.3 control: the Sprint 3.2 run s32-spark-ecf8-20261121T204425Z is ACCEPTED and holds the "
                      "records its consumer kept from the ring and the files of its audited observer",

@@ -454,6 +454,40 @@ class CausalityTests(unittest.TestCase):
                          (None, 7, 7))
         self.assertEqual(lines[-1]["status"], "ok")
 
+    def test_an_answer_is_stamped_when_it_is_complete_and_a_sensor_warms_up_first(self):
+        ticks = []
+
+        def clock():
+            ticks.append(len(ticks))
+            return ticks[-1]
+
+        real = features.view_of
+        seen = []
+
+        def view_of(*arguments):
+            seen.append(len(ticks))  # how often the clock was read before this view was computed
+            return real(*arguments)
+
+        features.view_of = view_of
+        try:
+            lines = features.run_records(self.records, self.spec, clock)[0]
+        finally:
+            features.view_of = real
+        # Eight answers, eight readings. The reading of the complete window follows its view.
+        self.assertEqual([line["t_features_ns"] for line in lines], list(range(8)))
+        self.assertEqual(seen, [7])
+        self.assertTrue(all(line["t_features_ns"] is None for line in self.reference))
+        # The warm-up runs every step of the specification once and keeps nothing.
+        self.assertGreater(features.warm_up(self.spec), 0.0)
+        ndft = small_spec(doppler_grid={"bins": 17, "step_hz": 12.5})
+        ndft["sequence"] = {"slots_in_period": [7, 8, 9], "reference_symbols": [0, 1]}
+        ndft["steps"]["doppler"] = "ndft"
+        self.assertGreater(features.warm_up(ndft), 0.0)
+        with self.assertRaisesRegex(FeaturesError, "unsupported specification schema"):
+            features.warm_up(dict(self.spec, schema="other"))
+        self.assertEqual([features.comparable(line) for line in features.run_records(self.records, self.spec)[0]],
+                         [features.comparable(line) for line in self.reference])
+
     def test_sliding_windows_hop_by_periods(self):
         spec = small_spec()
         spec["window"].update(periods=4, hop_periods=2)
@@ -833,10 +867,15 @@ class LiveSensorTests(unittest.TestCase):
                                    str(socket), "--spec", str(self.scratch / "spec.json"), "--output-dir", str(out),
                                    "--wait", "wait"], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True)
+        # One record per 5 ms, the period of the demonstration. A sensor that falls behind is not a
+        # fault of the ring: the producer drops and counts, so the counts below are the producer's.
         feed = subprocess.run([str(self.build / "obs_feed"), "--socket", str(socket), "--records", "24",
-                               "--period-us", "200"], capture_output=True, text=True, timeout=120, check=False)
+                               "--period-us", "5000"], capture_output=True, text=True, timeout=120, check=False)
         said, errors = sensor.communicate(timeout=120)
         self.assertEqual((feed.returncode, sensor.returncode), (0, 0), feed.stderr + errors)
+        fed = json.loads(feed.stdout)
+        self.assertEqual((fed["published"] + fed["dropped"], fed["released"], fed["pending"]), (24, fed["published"], 0))
+        self.assertEqual(fed["dropped"], 0, "the sensor did not keep the pace of one record per 5 ms")
         self.assertIn("features: 24 records, 0 complete windows", said)
         output = features.open_output(out)
         report = output.report
@@ -848,7 +887,10 @@ class LiveSensorTests(unittest.TestCase):
         # The records it read are kept as the reader of Sprint 3.2 keeps them, and replay to the same lines.
         archive = obs.open_archive(out / "records")
         self.assertEqual([record.sequence for record in archive.records], list(range(24)))
-        self.assertEqual(json.loads(feed.stdout)["released"], 24)
+        # It warmed up before it attached, and every answer carries the time at which it was complete.
+        self.assertGreater(report["source"]["warm_up_ms"], 0.0)
+        self.assertEqual(sorted(line["t_features_ns"] for line in output.lines),
+                         [line["t_features_ns"] for line in output.lines])
         again = [features.comparable(line) for line in features.run_records(archive.records, spec)[0]]
         self.assertEqual(again, [features.comparable(line) for line in output.lines])
         # With sample times of a slot the same records fill a window: the stream is fed here, by hand.

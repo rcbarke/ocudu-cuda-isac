@@ -2,7 +2,7 @@
 
 Sprint 3.3, selector `pilot_features`. This page states what the sprint built, the cube and its axes, the specification a sensor is bound to, what a causal stream answers at each record, the view and the vector with a baked example, the files of a sensor, and how the sprint is accepted. The record a stream reads is fixed in the [observation contract](OBSERVATION.md), and the ring it arrives on in [Observations on the ring](SNAPSHOT_RING.md). Tickets: [S3.3](../dev/DEVELOPMENT.md#phase-s3), [stage registry](../architecture/RUNTIME.md#stage-registry), [episode with the known return](EPISODE.md#the-reference-pair-and-its-analytic-check).
 
-**Status.** Delivered and unit accepted on a development host on 2026-11-21 (UTC). The integration gate `make accept-s3.3` is open until it has run on the DGX Spark. [What a development host checked](#checked-on-a-development-host) | [what the Spark run must show](#what-the-spark-run-must-show)
+**Status.** Delivered and unit accepted on a development host on 2026-11-21 (UTC). A first run of `make accept-s3.3` on the DGX Spark passed 7 of 8 cases and found one defect in the reference sensor, which is corrected: [first run on the Spark](#first-run-on-the-spark). The integration gate is open until it has passed there. [What a development host checked](#checked-on-a-development-host) | [what the Spark run must show](#what-the-spark-run-must-show)
 
 ## Run it
 
@@ -168,6 +168,8 @@ The peak holds the power 2.0, `|1|^2` on each element. Conjugating the slow-time
 | `sensor.json` | `pilot-features-report/v1`: the specification with its hash, the resolved steps with their devices, the runtime, the source (ring or archive), the counts by status and the samples left open |
 | `records/` | `follow` only: the records it read, as the reader of Sprint 3.2 keeps them |
 
+**Warm-up.** `follow` runs one small window of noise through every step of its specification before it attaches (`features.warm_up`), and records the time in `sensor.json` as `source.warm_up_ms`. The first transform of an interpreter loads the FFT module and builds its tables. A sensor that paid that at its first complete window would hold the ring meanwhile. `t_features_ns` of an answer is read when the answer is complete, after its view and its vector.
+
 A line holds `status`, `reason`, `window` (identifier, epoch, episode key, first and last period), `trigger` (the record that caused the answer), `history`, `spec_sha256`, `runtime` and three host times: `t_ready_ns` and `t_publish_ns` of the trigger and `t_features_ns`, when the answer was complete. A complete window adds `axes` (the signed axes with resolution and alias limits), `view` (peak, static peak, excess delay in bins of the view, the share of the moving power in the peak cell, file and hash), `features` (names and values), `contributing` (sequence, opportunity key and slot of each record), `validity`, `time` (first and last sample in T_c and the acquisition time) and `input`. The window identifier is `<epoch>/<episode key>/<last period>`. Two runs on the same records agree on every field but the three host times. No line names a case, a position or a label.
 
 ## The evaluator side
@@ -210,7 +212,7 @@ On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.
 
 | | Development host |
 |---|---|
-| Unit gate | 27 of 27 cases, none skipped. The baked vector, both signs, the mask, causality, warm-up, gaps, sliding windows, refusals, the reader and the command line. |
+| Unit gate | 28 of 28 cases, none skipped. The baked vector, both signs, the mask, causality, warm-up, gaps, sliding windows, refusals, the reader and the command line. |
 | Reference pair by its analytic model | Synthesized on the lattice of the demonstration at 30 dB per resource element: peak at delay bin 3 and Doppler bin -2, 163.4 ns and -50.0 Hz, within one bin of 179.77 ns and -43.33 Hz. More than 18 dB above the median with the target and less than 10 dB without. The cell at +50 Hz is more than 15 dB weaker. |
 | Evaluator against the stream | Largest cell difference below `1e-12` of the peak on both members |
 | Reference sensor on a native producer | `features follow` in its own process read 24 records from `obs_feed` and kept them. `obs_feed` writes sample times of its own, so all 24 are rejected with that reason: the time rule is checked against a native producer. The kept records replay to the same lines. |
@@ -220,6 +222,23 @@ On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.
 | Gate runner | 8 tests against tool doubles |
 
 The double of the live case models the ring and runs the real sensing code on its records. What this host leaves open is listed next.
+
+## First run on the Spark
+
+`make accept-s3.3` ran on `spark-ecf8` on 2026-11-21 (UTC) at commit `eb7a68d`, run `s33-spark-ecf8-20261121T223346Z`, and ended NOT ACCEPTED: 7 of 8 cases and 26 of 28 checks. The run stays in `results/runs/` as a failed attempt.
+
+| | First run |
+|---|---|
+| Passed on the traced pair | `control`, `stream`, `offline`, `known-return`, `causality`, `mask`, `refusals`. The return lies at delay bin 3 and Doppler bin -2, 22.3 dB above the median against 6.2 dB without the target and 21.9 dB above the mirrored cell. The largest difference to the oracle is `3.9e-15` of the peak. No record was rejected, so the sample times of the native records are those of the reference rule. |
+| Passed in `live` | 96 decodes equal to the control, 48 on the resident CUDA path, the executables of the accepted Sprint 3.2 run |
+| Failed in `live` | `account` and `same features`: 42 observations published and 6 dropped, so the second window was a gap |
+| Failed in the unit gate | The case on the native producer: 19 of 24 records read |
+
+**Cause.** The account of the producer and the read times of the sensor show one stall. The sensor read every record within 0.5 ms of its publication until record 21, which completes the first window. The next record was read 8.4 ms after its publication, the ring of eight slots filled, and six observations found no credit. The first view of an interpreter loads the FFT module and builds its tables: 12 to 13 ms on a development host, against 0.6 ms for every later window. The receiver published a record every 0.7 ms meanwhile, was never delayed, and dropped and counted, as the ring is specified. The defect was in the sensor: it paid a first use while it held the ring.
+
+**Correction.** The sensor warms up before it attaches. After the warm-up the first window of the demonstration shape takes about 1 ms on the development host. Two things were wrong beside it. The time `t_features_ns` was read before the view was computed, so the note of the first run, 161 us, is the read delay and not the time to the vector: it is now read when the answer is complete. And the unit case fed a record every 200 us and required that none be dropped, which is a claim about the pace of a Python reader and not about the features: it now feeds one record per 5 ms, the period of the demonstration, and takes its counts from the producer.
+
+**What the finding says beyond the fix.** A stall of the sensor never reaches the receiver, and a window with a dropped observation is answered as a gap and not with a vector. Both held on real hardware. The native core warms its plans and its engine before the first slot for the same reason ([RUNTIME.md](../architecture/RUNTIME.md#how-contention-is-handled)).
 
 ## What the Spark run must show
 

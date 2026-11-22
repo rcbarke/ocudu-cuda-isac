@@ -389,8 +389,9 @@ def features_of(spec, power, scalars, axes):
 class Stream:
     """The causal feature stream of one specification. push() takes the records in the order of the ring."""
 
-    def __init__(self, spec):
+    def __init__(self, spec, clock=None):
         self.spec = check_spec(spec)
+        self.clock = clock  # host time of an answer, read when the answer is complete. It is stored, never used.
         self.sha256 = spec_sha256(spec)
         radio, sequence, window = spec["radio"], spec["sequence"], spec["window"]
         self.scs, self.period_slots = radio["scs_khz"], radio["period_slots"]
@@ -412,7 +413,7 @@ class Stream:
         return [(period, slot, row) for period in range(last_period - self.periods + 1, last_period + 1)
                 for slot in self.slots for row in self.rows]
 
-    def _line(self, status, reason, last_period, record, have, now_ns):
+    def _line(self, status, reason, last_period, record, have):
         header = None if record is None else record.header
         self.counts[status] += 1
         self._lines += 1
@@ -427,16 +428,16 @@ class Stream:
                                                         "absolute_slot": header["absolute_slot"]},
                 "history": {"have": have, "need": self.need}, "spec_sha256": self.sha256, "runtime": RUNTIME,
                 "t_ready_ns": None if header is None else header["t_ready_ns"],
-                "t_publish_ns": None if header is None else header["t_publish_ns"], "t_features_ns": now_ns}
+                "t_publish_ns": None if header is None else header["t_publish_ns"], "t_features_ns": None if self.clock is None else self.clock()}
 
-    def _close(self, last_period, record, now_ns):
+    def _close(self, last_period, record):
         """The outcome of the window that ends with last_period, from the samples held."""
         expected = self._expected(last_period)
         held = [self.samples.get(place) for place in expected]
         have = sum(sample is not None for sample in held)
         if have != len(expected):
             line = self._line("gap", f"{len(expected) - have} of {len(expected)} samples of the window never arrived",
-                              last_period, record, have, now_ns)
+                              last_period, record, have)
             line["missing"] = [{"period": period, "slot_in_period": slot, "reference_symbol": row}
                                for (period, slot, row), sample in zip(expected, held) if sample is None]
             return line
@@ -466,19 +467,19 @@ class Stream:
                                evidence=sorted({sample["evidence"] for sample in held}))}
         if axes is None:
             line = self._line("invalid", "the samples of the window are not equally spaced, and the fft Doppler step "
-                                         "needs a homogeneous sequence", last_period, record, have, now_ns)
+                                         "needs a homogeneous sequence", last_period, record, have)
         elif good / total < self.spec["window"]["min_valid_fraction"]:
             line = self._line("invalid", f"{good} of {total} elements of the cube are valid, below the share "
                                          f"{self.spec['window']['min_valid_fraction']} of the specification",
-                              last_period, record, have, now_ns)
+                              last_period, record, have)
         else:
             power, scalars = view_of(self.spec, cube, valid, axes)
             made = features_of(self.spec, power, scalars, axes)
             if isinstance(made, str):
-                line = self._line("invalid", made, last_period, record, have, now_ns)
+                line = self._line("invalid", made, last_period, record, have)
             else:
                 names, values, found = made
-                line = self._line("ok", None, last_period, record, have, now_ns)
+                line = self._line("ok", None, last_period, record, have)
                 line.update(axes=axes, view=dict(found, entry=f"{self.spec['steps']['delay']}+{self.spec['steps']['doppler']}",
                                                  static=self.spec["steps"]["static"], shape=list(power.shape),
                                                  axes=["delay", "doppler"], dtype="<f8", file=None, sha256=None,
@@ -489,16 +490,16 @@ class Stream:
         line.update(facts)
         return line
 
-    def push(self, record, now_ns=None):
+    def push(self, record):
         """Take the next record of the ring. Returns the outcome lines it causes, oldest first.
 
-        A record outside the sequence of the specification causes none. now_ns is the host time
-        of the caller and is stored, never read.
+        A record outside the sequence of the specification causes none. An answer carries the
+        time of the stream's clock at which it was complete, after its view and its vector.
         """
         self.counts["records"] += 1
         problem = refusal(record, self.spec)
         if problem is not None:
-            return [self._line("rejected", problem, None, record, 0, now_ns)]
+            return [self._line("rejected", problem, None, record, 0)]
         header = record.header
         rx = header["rx_count"]
         order = sorted(range(rx), key=lambda plane: header["antenna_map"][plane])
@@ -527,7 +528,7 @@ class Stream:
         lines = []
         while self.due is not None and period > self.due:
             # A window whose last sample never came is closed by the first record after it.
-            lines.append(self._close(self.due, None, now_ns))
+            lines.append(self._close(self.due, None))
             self.due += self.hop
         if self.origin is None:
             self.origin, self.due = period, period + self.periods - 1
@@ -545,14 +546,14 @@ class Stream:
         for held in [held for held in self.samples if held[0] < first]:
             del self.samples[held]
         if period == self.due and place == self.slots[-1]:
-            lines.append(self._close(period, record, now_ns))
+            lines.append(self._close(period, record))
             self.due += self.hop
             first = self.due - self.periods + 1
             for held in [held for held in self.samples if held[0] < first]:
                 del self.samples[held]
         else:
             lines.append(self._line("insufficient_history", "the window is filling", self.due, record,
-                                    len(self.samples), now_ns))
+                                    len(self.samples)))
         return lines
 
     def open_samples(self):
@@ -567,9 +568,9 @@ def comparable(line):
 
 def run_records(records, spec, clock=None):
     """Push records through a new stream in the given order. Returns (lines, views, stream)."""
-    stream, lines = Stream(spec), []
+    stream, lines = Stream(spec, clock), []
     for record in records:
-        lines += stream.push(record, None if clock is None else clock())
+        lines += stream.push(record)
     return lines, stream.views, stream
 
 
@@ -688,6 +689,33 @@ def open_output(directory):
     return Output(directory, report, lines)
 
 
+def warm_up(spec):
+    """Run one small window of noise through every step of a specification. Returns the time it took in ms.
+
+    The first transform of an interpreter loads the FFT module and builds its tables: a stall of
+    8 ms was seen on a DGX Spark, against half a millisecond for every later window. A sensor that paid this at
+    its first complete window would hold its ring for that long, and the producer drops what
+    finds no credit. A sensor therefore warms up before it attaches. Nothing of this window is kept.
+    """
+    stream = Stream(spec)
+    started = time.perf_counter()
+    samples = stream.need
+    if spec["steps"]["doppler"] == "fft":
+        times = [index * period_tc(stream.scs, stream.period_slots) for index in range(samples)]
+    else:
+        times = [index * estimator.useful_tc(stream.scs) * (2 + index % 3) for index in range(samples)]
+    shape = (max(2 * spec["view"]["delay_bins"], 16), samples, 2)
+    generator = np.random.Generator(np.random.PCG64(0))
+    cube = generator.standard_normal(shape) + 1j * generator.standard_normal(shape)
+    valid = np.isfinite(cube)
+    bits = np.packbits(valid.reshape(-1), bitorder="little").tobytes()
+    np.unpackbits(np.frombuffer(bits, dtype=np.uint8), bitorder="little")
+    axes = axes_of(spec, (0, 2, shape[0], (0, 1)), times)
+    power, scalars = view_of(spec, np.where(valid, cube, 0), valid, axes)
+    features_of(spec, power, scalars, axes)
+    return 1000.0 * (time.perf_counter() - started)
+
+
 def replay(archive_dir, spec, output_dir):
     """Push the records of a consumer archive through a stream, in sequence order, and write the output."""
     archive = obs.open_archive(archive_dir)
@@ -702,20 +730,22 @@ def follow(socket_path, spec, output_dir, wait="wait", connect_timeout=30.0, idl
 
     This is the reference sensor: a second process on the standard-library reader. It copies what
     it needs of a record and releases the record at once, so it holds no credit. The records it
-    read are kept under records/, as the reader of Sprint 3.2 keeps them.
+    read are kept under records/, as the reader of Sprint 3.2 keeps them. Before it attaches it
+    runs one window of noise through its steps (warm_up), so that no record waits for a first use.
     """
     output_dir = Path(output_dir)
     if not output_dir.is_dir() or any(output_dir.iterdir()):
         raise FeaturesError(f"the output directory {output_dir} does not exist or is not empty")
-    check_spec(spec)
-    stream, lines = Stream(spec), []
+    warm_ms = warm_up(spec)  # before the attach: the ring is not held while the transforms load
+    stream, lines = Stream(spec, time.monotonic_ns), []
     (output_dir / RECORDS_DIR).mkdir()
     consumer = obs.tail(socket_path, output_dir / RECORDS_DIR, wait, connect_timeout, idle_timeout,
-                        on_record=lambda record: lines.extend(stream.push(record, time.monotonic_ns())))
+                        on_record=lambda record: lines.extend(stream.push(record)))
     return write_output(output_dir, spec, lines, stream.views, stream,
                         {"kind": "ring", "socket": str(socket_path), "reader": consumer["reader"], "wait": wait,
                          "epoch": consumer["epoch"], "records": consumer["counts"]["read"],
-                         "stale": consumer["counts"]["stale"], "ended": consumer["ended"]})
+                         "stale": consumer["counts"]["stale"], "ended": consumer["ended"],
+                         "warm_up_ms": warm_ms})
 
 
 def summary(output, window=0):

@@ -738,7 +738,8 @@ def run_live_case(config, out, grader, tools, control, stream, features, rehears
     measured["account"] = states
     grader.check(name, "account", states["balanced"] and states["dropped"] == 0 and states["pending"] == 0
                  and not problems and equal == len(pairs) == states["published"],
-                 f"{account_text(states)}; the sensor kept {len(pairs)} records, each the record of its account line, "
+                 f"{account_text(states)}; a sensor that keeps the pace of the receiver loses no observation; the "
+                 f"sensor kept {len(pairs)} records, each the record of its account line, "
                  f"and {equal} of {len(pairs)} payloads and validity masks have the SHA-256 of the audited estimate of "
                  "the same opportunity: the sensor computed on the O2 of the control"
                  if not problems else "; ".join(problems[:3]))
@@ -753,10 +754,14 @@ def run_live_case(config, out, grader, tools, control, stream, features, rehears
               if line["t_features_ns"] is not None and line["t_publish_ns"]]
     if delays:
         measured["reference_delay_us"] = sr.spread(delays)
+        warm = source.get("warm_up_ms")
+        measured["warm_up_ms"] = warm
         grader.note(name, f"from the publication store of the completing record to the complete vector, not graded, "
                           f"runtime reference: median {text(obs.percentile(delays, 0.5))} us, largest "
                           f"{text(max(delays))} us over {len(delays)} windows; this is Python and NumPy on the CPU "
-                          "behind a reader that sleeps, and no latency of the sensing core: S6.12 times the native units")
+                          "behind a reader that sleeps, and no latency of the sensing core: S6.12 times the native "
+                          f"units; before it attached the sensor ran one window of noise through its steps in "
+                          f"{text(warm, 2)} ms, the first use that a window on the ring would otherwise wait for")
     measured.update(windows=len(output.ok), lines=len(output.lines), sensor=str(sensor_dir))
     return measured
 
