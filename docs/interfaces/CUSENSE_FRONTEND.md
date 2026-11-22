@@ -2,7 +2,7 @@
 
 Sprint 3.5, selector `cusense_frontend`. This page states what the sprint built, the three stages with a baked example, the two input entries, the causal window stream, the model entry and its losses, the artifact, the rules of the fit and of the threshold, the decision record, the optional stage, the files of a sensor and of a training run, the evaluator side, and how the sprint is accepted. The input is the stage O3 of [the receiver's own estimate](NATIVE_ESTIMATE.md), with the stage O2 of [pilot least squares](PILOT_LS.md) as the second entry. The records, the ring and the reader are those of [the observation ring](SNAPSHOT_RING.md), and the split, the threshold rule and the baseline are those of [the presence head](PRESENCE_HEAD.md). The published system is cuSense: [Villa et al., arXiv:2512.06493v3](https://arxiv.org/abs/2512.06493v3), section 5.2.
 
-**Status.** Implemented and checked on a development host: the unit gate, the import rule, the driver on doubles of the native tool and the gate runner on doubles pass. The hardware gate is open until `make accept-s3.5` passes on the DGX Spark. [Checked on a development host](#checked-on-a-development-host) and [what the Spark run has to close](#what-the-spark-run-has-to-close)
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-22 (UTC), first attempt: run `s35-spark-ecf8-20261122T155753Z` at commit `2ef1def`, twelve of twelve cases, 47 of 47 checks, hardware gate closed. [What the Spark run closed](#what-the-spark-run-closed) and [checked on a development host](#checked-on-a-development-host)
 
 ## Run it
 
@@ -216,14 +216,45 @@ The unit gate runs 58 tests, the driver tests 14 and the gate-runner tests 10. T
 
 A rehearsal of the fit at the scale of the demonstration set, on free-space windows of the analytic target and not on receiver records: 4,800 training, 640 validation and 160 held-out windows of 4 by 612, the published widths and the default configuration, 100 epochs on two CPU cores. The first loss equals its expected value, 1.635268. The presence logit separates every split with an area under the curve of 1.000, and the threshold lies at 16 of 320 validation negatives. The position error on the 80 held-out target-present windows is 1.90 m in the mean and 0.91 m in the median, against 3.04 m for the centre of the area. The validation loss of the map is lowest near epoch 20 and rises afterwards, while the median error stays. The free-space rehearsal of Sprint 3.4 was no prediction of the traced set, and this one is none either.
 
-## What the Spark run has to close
+## What the Spark run closed
 
-- The receiver replay of 340 pairs on plans of version 3 with both rings attached, and the account of 16,320 records per stage.
-- A timed plan of version 3 without stored grids (`pilot_ls --no-grids`): Sprint 5.2 stored its grids, and Sprint 3.4 ran without them on plans of version 2. Should a native output not verify for that reason, `receiver.keep_grids` in the configuration stores them, at about 4.6 GB more.
-- The fit on the GB10 and its time, the reload on the CPU within 1e-5, and the area under the curve on the validation windows against the declared floor.
-- The sensor in a second CUDA process on O3 records of 20 kB: whether a Python reader with a model of 2.4 million parameters keeps the pace of the receiver on a ring of eight slots. A dropped estimate fails `live account`.
-- The parity of the GB10 against the CPU for a convolutional model, within the declared tolerances.
-- The position error and the presence counts on the ten held-out pairs for both input entries, beside the linear head.
+Run `s35-spark-ecf8-20261122T155753Z`, `make accept-s3.5` at commit `2ef1def`: 65 gate lines and no failure, 665 unit tests in 585 s, the unit gate 58 and the import rule 3, the adapter rebuilt with the bytes of the Sprint 5.2 run (`pilot_ls 9f9680d43d2b`, `obs_tail 04cde6b49d21`). The gate took 17 minutes, and the driver 6.5 of them.
+
+| Item | Measured |
+|---|---|
+| Replay on plans of version 3, both rings, `--no-grids` | 14 runs, 16,320 opportunities, 32,640 of 32,640 decodes original, 16,320 on the resident path; 16,320 records published, released and kept per stage, none dropped; ring depth at most 1 of 8 for O2 and 0 of 8 for O3; 124.2 s. Every native output verifies without stored grids |
+| Windows | 4,800 training and 640 validation windows per entry, no gap, invalid or rejected answer; the same slots in both entries; 28 of 28 oracle windows per entry within 5.9e-08 |
+| Statistics | 7,200 records behind every element of each template; z-score mean -0.020842 and deviation 0.100773 on O3, -0.020785 and 0.100898 on O2, bit for bit from the training set alone |
+| Fit on the GB10 | 100 epochs each; loss 1.635268 to 0.071333 on O3 and to 0.057329 on O2; reload on the CPU within 0.0; validation area under the curve 1.000 for both, against the floor of 0.75 |
+| Thresholds | logit -7.698940 on O3 and -12.453863 on O2, each with 16 of 320 target-absent validation windows above it, recomputed with a difference of 0.0 |
+| Artifacts | `cusense-o3-v1` `f79cf8e924990703` (weights `c14390641180b715`, template `335890c45cf129ba`), `cusense-o2-v1` `ddfa6188196f1888`; frozen 2026-11-22T16:13:33Z, 3.1 s before the first held-out plan |
+| Sensor | `cuda:0`, NVIDIA GB10, PyTorch 2.15.0+cu132; loaded once; warm-up 3.6 ms front end and 243.2 ms model; ready 5.65 s before the first record; 480 records, 480 decisions, 160 scored windows, no estimate dropped beside a receiver on the same device without MPS |
+| Parity | 160 windows with the same input digests; logit within 1.70e-03 (tolerance 1e-3 plus 1e-4 of the logit), probability within 2.0e-06, map cell within 1.6e-06; no decision differs and no cell moves |
+
+**Recorded, not graded.**
+
+| | O3 `o3_fp16` | O2 `o2_comb` | Linear head of S3.4 |
+|---|---|---|---|
+| Held-out episodes detected, of 10 | 10 | 10 | 10 |
+| Held-out episodes alarmed, of 10 | 0 | 1 | 1 |
+| Held-out windows alarmed, of 80 | 3 | 4 | |
+| Area under the curve, held-out | 1.000 | 1.000 | 1.000 |
+| Position error, training windows, mean and median | 0.555 m, 0.419 m | 0.491 m, 0.398 m | |
+| Position error, validation windows, mean and median | 1.735 m, 1.230 m | 1.740 m, 1.166 m | |
+| Position error, 80 held-out windows, raw map: mean, median, 90th percentile | 2.329 m, 2.282 m, 4.020 m | 2.321 m, 1.878 m, 4.411 m | |
+| The same after the mean of the maps: mean, median | 2.297 m, 2.273 m | 2.103 m, 1.273 m | |
+| The same after the Kalman filter: mean, median | 2.504 m, 2.369 m | 2.272 m, 1.222 m | |
+
+The centre of the area gives 3.036 m in the mean and 2.911 m in the median on the same 80 windows. Timing in the Python sensor: one batch-one inference 787.9 us in the median and 4,409.8 us at most, the template subtraction and the z-score 71.8 us, and 1,367.9 us from the publication of the completing record to the decision.
+
+**What the run shows.**
+
+- **Presence is solved on this set by every model.** On the held-out windows the O3 logits lie between +5.63 and +13.03 with the target and between -8.80 and -7.57 without it. The threshold lies inside the target-absent group because its rule puts it there, at the seventeenth highest of 320 negatives, so 3 of 80 held-out windows without a target lie above it. Any threshold between -7.5 and +5.6 gives no alarm and no miss. As in Sprint 3.4, target-absent windows differ by noise only.
+- **Position is learned and does not carry over.** The error grows from 0.56 m on the training windows to 1.73 m on validation and 2.33 m on held-out trajectories, a quarter better than the centre of the area. The set covers 318 of 1,700 cells with five training trajectories, and the model places a target near where it saw one. The published 73.3 cm rests on 362,318 samples at 100 MHz. More trajectories, an earlier stop and the label width of eight cells, 1.6 m, are the levers. The gate does not grade this, and ten held-out pairs of two trajectories resolve little.
+- **The two input entries are level.** The comb of 306 pilots gives the same mean error as the receiver's interpolated estimate of 612 subcarriers. The smoothing stages help the median on O2 and not on O3. With 80 windows of two trajectories this is no ranking.
+- **The free-space rehearsal did not predict the traced set**, again: it gave a held-out median of 0.91 m.
+- **A saturated logit needs the relative term.** The largest difference between the GB10 and the CPU, 1.70e-03, is above the absolute term of 1e-3. The probability and the map agree to 2e-06.
+- **The Python sensor keeps the pace** of this replay, about one estimate per 7.6 ms: all 480 were read and none was dropped. That is the pace of a replay that decodes every grid twice, not of a live cell.
 
 ## Choices made here
 
