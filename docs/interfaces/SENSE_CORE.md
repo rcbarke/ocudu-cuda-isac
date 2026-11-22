@@ -2,6 +2,8 @@
 
 The contract of `native/sense_core/` as Sprint 3.6 built it: the C API, the plan of the cuSense-like branch, the engine directory, the sensor process and the files it writes. The reference of every unit named here is `src/ocudu_cuda_isac/sensing/cusense.py`. [Code levels and the native core](../architecture/RUNTIME.md) | [observation contract](OBSERVATION.md) | [reference of the branch](CUSENSE_FRONTEND.md) | [sprint card](../dev/DEVELOPMENT.md#phase-s3)
 
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-22 (UTC): run `s36-spark-ecf8-20261122T194723Z` at commit `58e29c7`, eight of eight cases, 34 of 34 checks, hardware gate closed. [What the Spark run closed](#what-the-spark-run-closed)
+
 ## What is in the directory
 
 | Path | Holds |
@@ -140,3 +142,33 @@ A development host without a GPU rehearses the driver on the host twin. The rehe
 python scripts/native_core.py build --host-only
 python tests/unit/test_sense_core_driver.py -v       # makes a stand-in control and runs the driver with --rehearsal
 ```
+
+## What the Spark run closed
+
+Run `s36-spark-ecf8-20261122T194723Z`, `make accept-s3.6` at commit `58e29c7`: 48 gate lines and no failure, 699 unit tests in 593 s with none skipped, the unit gate 17, the link rule 4 and the import rule 3. The gate took 10.5 minutes, and the driver 18 s of them. The first build on the Spark stopped at `BuilderFlag::kFP16`, which TensorRT 11 no longer has, and one test of the discovery assumed a host without TensorRT: both were fixed before the gate ran, and the gate passed on its first run.
+
+| Item | Measured |
+|---|---|
+| Checkpoint D0 | TensorRT 11.5.0.63 from the system packages, headers and library of one version; a one-layer engine built on the NVIDIA GB10 (capability 12.1, CUDA runtime 13.5, driver 580.178.04), executed on a stream with device addresses and launched as a captured graph: 2.3 us in the median |
+| Build | 44 source files, `69d70fc2f9ef150b`; `sm_121` by `nvcc` 13.5.37; no compiler warning; 43 unit cases with `sense_core_device_vectors` on the device, none skipped; `sense_host` `04db81d45bec`, `sense_engine` `5b00db136c7e`; the loader resolves 9 libraries for `sense_host`, none of an interpreter, of a receiver or of Aerial |
+| Control | The Sprint 3.5 run `s35-spark-ecf8-20261122T155753Z`: the artifact `cusense-o3-v1` `f79cf8e924990703`, input `o3_fp16` of shape [1, 4, 612], a grid of 50 by 34 cells, threshold logit -7.698940; 480 held-out records and 160 scored windows |
+| Export | `model.onnx` of 9,559,754 bytes, `4125aa76b2daff60`, at operator set 17, the same bytes twice; in ONNX Runtime on the CPU within 1.29e-03 of the scores the Sprint 3.5 sensor wrote on its device |
+| Engine | FP32 without TF32, 51 layers, 9,712,452 bytes, `fd836c2d5333b525`, built in 2,091 ms; launched as a captured CUDA graph; refused with status 2 before a record is read for another GPU, another TensorRT version and another artifact |
+| Units on the device | 48 of 48 records through the ingest unit give the cube of the reference reader bit for bit, values and validity; 16 of 16 window means are bit-identical; the input within 0.064 of its declared bound; 16 submissions, no device call in an open window, 7 allocations, all at configuration |
+| Parity | 160 windows by the native core on `cuda:0` and by the reference on the CPU: the input within 0.069 of its bound (1.5e-06), the logit within 3.81e-06, the probability within 7.9e-08, a cell of the map within 6.1e-09; 160 of 160 decisions agree, no flip, no cell moved |
+| Live ring | 2,400 records at 500 us on a ring of 8 slots, read in place: 800 windows scored, none dropped, skipped or late against a window budget of 1,500 us; 800 submissions, each with its marks in order; 7 allocations before the first record; 19 files mapped and no Python library; the logits equal those of the archive replay exactly |
+| Overload | One record per 100 us against a sensor held 3,000 us on a window, 4 slots: 160 of 960 admitted, 800 dropped and counted; the producer kept 99.9 us per record with a publication of 1.49 us at the 99th percentile and no system call; 160 of 160 credits back; 27 windows scored and 27 gaps, never a backlog worked through |
+
+**Recorded, not graded.** `runtime_latency.json`, the sensor alone on the device, 800 windows of the native core and 798 of the reference:
+
+| Latency, us | Native, median | Native, 99th | Native, most | Reference, median | Reference, 99th |
+|---|---|---|---|---|---|
+| cuSense boundary: last record notified to decision | 130.0 | 183.4 | 267.0 | 624.0 | 1,118.3 |
+| Post-window: last record ready to decision | 131.1 | 184.1 | 267.7 | 630.2 | 1,897.9 |
+| End to end: first sample to decision | 1,485.5 | 1,538.6 | 1,622.2 | 1,984.6 | 3,252.3 |
+
+The native stages in the median: 1.0 us from the notification to the submission, 13.2 us to collect the window, 13.3 us for the ingest kernel, 6.0 us for the front-end kernel and 96.3 us for the engine (112.1 us at the 99th percentile). The engine is three quarters of the window. The reference runtime, PyTorch on `cuda:0`, spends 62.9 us in its front end and 367.7 us in its inference in the median, had one window of 24.8 ms, and its producer dropped 5 of 2,400 records. By the cuSense boundary the reference takes 4.8 times as long as the native core in the median and 6.1 times at the 99th percentile. The acquisition of a window is 1,354.4 us and the same for both, so end to end the ratio is 1.34.
+
+What these figures are not. No receiver ran: the arms with the receiver beside the sensor on one GPU are S4.1's, and this ticket closes with checkpoint D4. The host ran without MPS, with the performance governor and a load average near 1.7, and the driver's own Python process held a context of 170 MiB on the GPU during the run. `cusense_reference.json` puts the 130.0 us beside the published 241 us with `"graded": false` and seven differences: 51 resource blocks on two DM-RS symbols against 273 on three, about a ninth of the samples; a GB10 against a GH200 with MIG; a replayed simulated scene against an over-the-air room; a window of three slots; a cuSense-like implementation, since cuSense is not open source; and a sensor in a process of its own against a dApp beside a live L1. The position error is that of the Sprint 3.5 artifact, 2.33 m in the mean on the held-out windows from the raw map and 2.50 m after the mean of the maps and the Kalman filter, against the published 0.73 m, and is not changed by the runtime.
+
+Two findings for the next tickets. The TensorRT engine without TF32 on the GB10 lies within 3.81e-06 of the CPU reference, where the PyTorch sensor of Sprint 3.5 on the same GB10 lay within 1.70e-03: the larger difference belongs to the PyTorch path on the device, and the FP32 tolerance of this core has room. And the Spark's TensorRT is 11.5.0.63: `environments/sense-core-constraints.txt` pins it from this run on, and an FP16 engine needs a float16 export there ([Engine directory](#engine-directory)).

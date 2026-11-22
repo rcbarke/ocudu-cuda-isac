@@ -9,7 +9,11 @@
 # onnxruntime is used by that gate and by the integration driver to check an export on the CPU.
 # No sensor imports it.
 #
-# tensorrt-cu13 is the release that the pinned Aerial sample applications install for CUDA 13.
+# tensorrt-cu13 is the release that the DGX Spark spark-ecf8 accepted on 2026-11-22 (UTC), run
+# s36-spark-ecf8-20261122T194723Z: 11.5.0.63, which that host also holds as a package installation,
+# and the package installation is what the build finds first and links. Before that run the pin
+# was 10.14.1.48.post1, the release that the pinned Aerial sample applications install for CUDA 13:
+# the sources of the core compile against the headers of both.
 # Its PyPI package fetches the libraries from the index of NVIDIA and ships no headers: the
 # headers of the same release come from `python scripts/native_core.py headers`. A host with a
 # package installation of TensorRT, or with TENSORRT_ROOT, needs no wheel. Whether a TensorRT
@@ -22,4 +26,4 @@ onnx==1.23.2
 onnxruntime==1.29.0
 protobuf==7.36.1
 pybind11==3.1.0
-tensorrt-cu13==10.14.1.48.post1
+tensorrt-cu13==11.5.0.63

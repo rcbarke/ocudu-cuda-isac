@@ -88,7 +88,7 @@ Both NVIDIA repositories are pinned in `ext/lock.json` as reference sources and 
 | `dapps/common/e3_manager/` | The E3 Manager and `inference_engine.h`, the interface an inference backend implements | The seam where S11.2 attaches the native core |
 | `dapps/docs/data_representation.md` | Element order and type of every shared-memory stream | The `aerial_hest_c64` and `aerial_iq_fp16` layouts of the [observation contract](../interfaces/OBSERVATION.md#payload-layouts) |
 | `dapps/applications/` | Three PRB-power dApps: embedded Python, Triton C API and Triton gRPC | The dApp structure and its license notice. No cuSense dApp, checkpoint or native engine is in this release. |
-| `dapps/applications/*/deps/` | The versions the dApps install, among them TensorRT 10.14.1.48.post1 for CUDA 13 and pybind11 2.13 or later | The starting point for the pins of S3.6, to be confirmed on the Spark |
+| `dapps/applications/*/deps/` | The versions the dApps install, among them TensorRT 10.14.1.48.post1 for CUDA 13 and pybind11 2.13 or later | The starting point for the pins of S3.6. The Spark accepted S3.6 with TensorRT 11.5.0.63 from its system packages, and the pin follows that run |
 
 The Aerial tree tracks about 400 MB of test vectors and engines with Git LFS. `make hydrate` leaves them as pointer files. The standalone agent is built in its own container from the pinned tree, never in `isac`. The sample applications' changelog notes that the 26.2 standalone agent exits in synthetic mode when its example configuration names a replay file that does not exist.
 

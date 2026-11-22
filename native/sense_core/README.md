@@ -11,7 +11,7 @@ python tests/unit/test_sense_core.py -v          # the unit gate, beside the Pyt
 
 | Ticket | Adds |
 |---|---|
-| S3.6 `sense_core` | Built: the C API, the observation view, the ingest units, the cuSense front-end kernels with their host twin, the engine host, the plan, `sense_host`, `sense_feed`, `sense_engine`, `sense_probe`, the binding, `scripts/native_core.py` and the receipt `isac-core.json` |
+| S3.6 `sense_core` | Built and accepted on the Spark (run `s36-spark-ecf8-20261122T194723Z`, TensorRT 11.5.0.63): the C API, the observation view, the ingest units, the cuSense front-end kernels with their host twin, the engine host, the plan, `sense_host`, `sense_feed`, `sense_engine`, `sense_probe`, the binding, `scripts/native_core.py` and the receipt `isac-core.json` |
 | S6.12 `native_spectral` | Radar cube, delay-Doppler, clutter and CFAR kernels |
 | S6.13 `native_angle` | Covariance, Bartlett and MUSIC kernels with a batched Hermitian eigensolver |
 | S10.1, S10.2, S11.2 | Nothing here. The Aerial adapters link this core unchanged. |
