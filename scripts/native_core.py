@@ -183,6 +183,13 @@ def header_version(include):
     return ".".join(parts)
 
 
+def system_places():
+    """Where a package installation keeps TensorRT on this host: (header directories, library directories)."""
+    name = triplet()
+    return ([Path("/usr/include") / name, Path("/usr/include"), Path("/usr/local/include")],
+            [Path("/usr/lib") / name, Path("/usr/lib64"), Path("/usr/local/lib")])
+
+
 def find_tensorrt(args):
     """Where TensorRT is on this host: its headers, its libraries and what installed them.
 
@@ -190,7 +197,6 @@ def find_tensorrt(args):
     package installation, and the libraries of a Python wheel in this interpreter with headers
     that `native_core.py headers` fetched. Returns a record with "problem" when a part is missing.
     """
-    name = triplet()
     candidates = []
     root = getattr(args, "tensorrt_root", None) or os.environ.get("TENSORRT_ROOT")
     include = getattr(args, "tensorrt_include", None)
@@ -200,8 +206,7 @@ def find_tensorrt(args):
                            [Path(library)] if library else []))
     if root:
         candidates.append((f"TENSORRT_ROOT {root}", [Path(root) / "include"], [Path(root) / "lib", Path(root) / "lib64"]))
-    candidates.append(("system packages", [Path("/usr/include") / name, Path("/usr/include"), Path("/usr/local/include")],
-                       [Path("/usr/lib") / name, Path("/usr/lib64"), Path("/usr/local/lib")]))
+    candidates.append(("system packages",) + system_places())
     wheel = None
     for module in ("tensorrt_libs", "tensorrt_cu13_libs", "tensorrt_cu12_libs"):
         try:

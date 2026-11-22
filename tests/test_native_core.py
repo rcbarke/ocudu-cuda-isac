@@ -80,8 +80,11 @@ class NativeCoreTests(unittest.TestCase):
         (self.scratch / "old/NvInferVersion.h").write_text(OLD_HEADER)
         self.assertEqual(native_core.header_version(self.scratch / "old"), "8.6.1.6")
         arguments = argparse.Namespace(tensorrt_root=str(root), tensorrt_include=None, tensorrt_library=None)
+        # The host itself may hold TensorRT as a package installation, as the Spark does, and it is
+        # found after what is named: here no system directory of the host is looked at.
         with mock.patch.object(native_core.importlib.util, "find_spec", return_value=None), \
-                mock.patch.object(native_core, "HEADERS_DIR", self.scratch / "none"):
+                mock.patch.object(native_core, "HEADERS_DIR", self.scratch / "none"), \
+                mock.patch.object(native_core, "system_places", return_value=([], [])):
             found = native_core.find_tensorrt(arguments)
             self.assertIn("problem", found)
             (root / "include/NvInfer.h").write_text("")
@@ -98,6 +101,34 @@ class NativeCoreTests(unittest.TestCase):
             # Libraries without headers: the wheel. The message says how to get the headers.
             (root / "include/NvInfer.h").unlink()
             self.assertIn("native_core.py headers", native_core.find_tensorrt(arguments)["problem"])
+        # A package installation is found where nothing is named, and after what is named.
+        system = self.scratch / "system"
+        (system / "include").mkdir(parents=True)
+        (system / "lib").mkdir()
+        (system / "include/NvInferVersion.h").write_text(NEXT_HEADER)
+        for name in ("include/NvInfer.h", "include/NvOnnxParser.h", "lib/libnvinfer.so", "lib/libnvonnxparser.so"):
+            (system / name).write_text("")
+        (root / "include/NvInfer.h").write_text("")
+        nothing = argparse.Namespace(tensorrt_root=None, tensorrt_include=None, tensorrt_library=None)
+        with mock.patch.object(native_core.importlib.util, "find_spec", return_value=None), \
+                mock.patch.object(native_core, "HEADERS_DIR", self.scratch / "none"), \
+                mock.patch.object(native_core, "system_places", return_value=([system / "include"], [system / "lib"])), \
+                mock.patch.dict(native_core.os.environ):
+            native_core.os.environ.pop("TENSORRT_ROOT", None)
+            found = native_core.find_tensorrt(nothing)
+            self.assertEqual((found["origin"], found["include"], found["libnvinfer"], found["header_version"]),
+                             ("system packages", str(system / "include"), str(system / "lib/libnvinfer.so"), "11.5.0.63"))
+            found = native_core.find_tensorrt(arguments)
+            self.assertEqual((found["origin"], found["header_version"]), (f"TENSORRT_ROOT {root}", "10.14.1.48"))
+            # An empty place that was named is passed over, and the record says where was looked.
+            empty = argparse.Namespace(tensorrt_root=str(self.scratch / "nothing"), tensorrt_include=None, tensorrt_library=None)
+            found = native_core.find_tensorrt(empty)
+            self.assertEqual((found["origin"], [item["origin"] for item in found["searched"]]),
+                             ("system packages", [f"TENSORRT_ROOT {self.scratch / 'nothing'}", "system packages"]))
+        # The system directories of a host, as the build looks at them.
+        includes, libraries = native_core.system_places()
+        self.assertEqual((includes[0], libraries[0]),
+                         (Path("/usr/include") / native_core.triplet(), Path("/usr/lib") / native_core.triplet()))
 
     def test_the_tensorrt_sources_hold_for_tensorrt_10_and_11(self):
         # TensorRT 11 removed the weakly typed network with BuilderFlag::kFP16, and its runtime
@@ -132,7 +163,8 @@ class NativeCoreTests(unittest.TestCase):
             (root / name).write_text("")
         arguments = argparse.Namespace(tensorrt_root=str(root), tensorrt_include=None, tensorrt_library=None)
         with mock.patch.object(native_core.importlib.util, "find_spec", return_value=None), \
-                mock.patch.object(native_core, "HEADERS_DIR", self.scratch / "none"):
+                mock.patch.object(native_core, "HEADERS_DIR", self.scratch / "none"), \
+                mock.patch.object(native_core, "system_places", return_value=([], [])):
             found = native_core.find_tensorrt(arguments)
         self.assertEqual((found["header_version"], found["libnvinfer"], found["libnvonnxparser"]),
                          ("11.5.0.63", str(root / "lib/libnvinfer.so.11"), str(root / "lib/libnvonnxparser.so.11")))
