@@ -1,0 +1,175 @@
+diff --git a/include/ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h b/include/ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h
+new file mode 100644
+index 0000000..747b994
+--- /dev/null
++++ b/include/ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h
+@@ -0,0 +1,88 @@
++// SPDX-License-Identifier: BSD-3-Clause-Open-MPI
++// Local patch 0001 of the ocudu-cuda-isac project. This file is not part of the upstream tree.
++
++/// \file
++/// \brief Read-only tap on the channel estimate that the resident PUSCH demodulator leaves on the device.
++///
++/// The accelerated PUSCH demodulator estimates the channel on the device and keeps the result there: the processor
++/// passes a stub to the stages that would read a host estimate. This tap is the one route by which another component
++/// of the same process can see that estimate. The demodulator calls it once per PDU, on the thread that runs the
++/// demodulation, after every kernel that writes the estimate of that PDU was enqueued on its stream.
++///
++/// The tap is told where the estimate is and what it is. It gets no access to the demodulator. It must not write
++/// the buffer, must not wait for the device and must not throw. An observer that wants the values enqueues its own
++/// copy, ordered after the producer: on the stream it is given, or on a stream of its own that waits for an event
++/// recorded on the stream it is given. The buffer is owned by the kernel handle. The next PDU of the same
++/// demodulator overwrites it, and a larger allocation frees it.
++///
++/// Without a registered tap the demodulator makes one atomic load per PDU and nothing else.
++
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace ocudu {
++
++/// Version of this interface. An observer built for another version must not register.
++constexpr unsigned PUSCH_RESIDENT_ESTIMATE_TAP_VERSION = 1;
++
++/// What the resident PUSCH demodulator left on the device for one PDU.
++struct pusch_resident_estimate {
++  /// Device pointer of pusch_e2e_get_estimates_fp16(): complex half-precision pairs {real, imaginary}, laid out
++  /// [dmrs_symbol][prb][rx_port][tx_layer][subcarrier_in_prb] with the last axis fastest. Owned by the kernel handle.
++  const void* estimates = nullptr;
++  /// Size of the estimate in bytes: nof_dmrs_symbols * nof_prb * nof_rx_ports * nof_tx_layers * 12 * 4.
++  std::size_t nof_bytes = 0;
++  /// The cudaStream_t on which every kernel that writes the estimate of this PDU was enqueued.
++  void* stream = nullptr;
++  /// CUDA device of the demodulator.
++  int device_id = 0;
++  /// Counts the PDUs that reached this tap in this process, from 1.
++  std::uint64_t launch = 0;
++  /// Identity of the PDU.
++  std::uint16_t rnti       = 0;
++  std::uint16_t sfn        = 0;
++  std::uint16_t slot_index = 0;
++  std::uint16_t numerology = 0;
++  /// Allocation in the resource grid. start_prb is the lowest resource block of the PDU, counted from subcarrier 0
++  /// of the grid. The kernels take the nof_prb blocks from start_prb on: contiguous is false for an allocation with
++  /// a gap, whose estimate does not describe the blocks it names.
++  unsigned start_prb  = 0;
++  unsigned nof_prb    = 0;
++  bool     contiguous = true;
++  /// Bit n is set when symbol n of the slot carries DM-RS. One estimate per set bit, in rising order.
++  std::uint64_t dmrs_symbol_mask = 0;
++  unsigned      nof_dmrs_symbols = 0;
++  unsigned      nof_rx_ports     = 0;
++  unsigned      nof_tx_layers    = 0;
++  /// DM-RS configuration type, 1 or 2.
++  unsigned dmrs_type = 1;
++  /// Amplitude of the DM-RS relative to the data that the least-squares kernel divided by.
++  float dmrs_scaling = 1.0F;
++  /// Stages the kernels applied before this call returns to the demodulator. The estimate is per DM-RS symbol:
++  /// time interpolation happens later, inside the equalization kernel, and never writes this buffer.
++  bool frequency_interpolation = true;
++  bool frequency_smoothing     = false;
++  /// True when the demodulator runs in the resident mode, in which the soft bits stay on the device as well.
++  bool resident_mode = false;
++};
++
++/// Observer of the resident PUSCH channel estimate.
++class pusch_resident_estimate_tap
++{
++public:
++  virtual ~pusch_resident_estimate_tap() = default;
++
++  /// Called once per PDU by the thread that runs the demodulation. See the file description for the rules.
++  virtual void on_estimate(const pusch_resident_estimate& estimate) noexcept = 0;
++};
++
++/// Registers the tap of this process, or removes it with a null pointer. Returns the tap that was registered before.
++/// The caller keeps the tap alive until it has removed it and no demodulation is running.
++pusch_resident_estimate_tap* set_pusch_resident_estimate_tap(pusch_resident_estimate_tap* tap);
++
++/// The registered tap, or a null pointer.
++pusch_resident_estimate_tap* get_pusch_resident_estimate_tap();
++
++} // namespace ocudu
+diff --git a/lib/phy/upper/channel_processors/pusch/pusch_demodulator_gpu_impl.cpp b/lib/phy/upper/channel_processors/pusch/pusch_demodulator_gpu_impl.cpp
+index cc06f5b..b22a923 100644
+--- a/lib/phy/upper/channel_processors/pusch/pusch_demodulator_gpu_impl.cpp
++++ b/lib/phy/upper/channel_processors/pusch/pusch_demodulator_gpu_impl.cpp
+@@ -13,6 +13,7 @@
+ #include "ocudu/ocudulog/ocudulog.h"
+ #include "ocudu/phy/upper/channel_processors/pusch/pusch_codeword_buffer.h"
+ #include "ocudu/phy/upper/channel_processors/pusch/pusch_demodulator_notifier.h"
++#include "ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h"
+ #include "ocudu/ran/dmrs/dmrs.h"
+ #include "ocudu/ran/resource_block.h"
+ #include "ocudu/ran/sch/sch_dmrs_power.h"
+@@ -55,6 +56,11 @@ inline int clamp_host_llr(int value)
+   return std::max(-HOST_LLR_MAX, std::min(HOST_LLR_MAX, value));
+ }
+ 
++/// Observer of the channel estimate that stays on the device, or null (pusch_resident_estimate_tap.h).
++std::atomic<pusch_resident_estimate_tap*> resident_estimate_tap{nullptr};
++/// PDUs handed to an observer so far.
++std::atomic<uint64_t> resident_estimate_launches{0};
++
+ std::atomic<bool> logged_pusch_direct_grid_path{false};
+ std::atomic<bool> logged_pusch_owned_grid_path{false};
+ std::atomic<bool> logged_pusch_host_grid_path{false};
+@@ -510,6 +516,16 @@ void init_fp16_to_int8_lut(int8_t* lut, float scale)
+ 
+ } // namespace
+ 
++pusch_resident_estimate_tap* ocudu::set_pusch_resident_estimate_tap(pusch_resident_estimate_tap* tap)
++{
++  return resident_estimate_tap.exchange(tap, std::memory_order_acq_rel);
++}
++
++pusch_resident_estimate_tap* ocudu::get_pusch_resident_estimate_tap()
++{
++  return resident_estimate_tap.load(std::memory_order_acquire);
++}
++
+ /// Minimum symbols to use GPU (below this, CPU overhead wins).
+ static constexpr unsigned MIN_GPU_SYMBOLS = 256;
+ 
+@@ -2628,6 +2644,39 @@ void pusch_demodulator_gpu_impl::process_gpu_e2e(pusch_codeword_buffer&
+     return;
+   }
+ 
++  // Read-only tap on the channel estimate. Every kernel that writes the estimate of this PDU is enqueued on stream_
++  // by now. The transform-precoded path keeps its estimate in another buffer and is not tapped.
++  if (pusch_resident_estimate_tap* estimate_tap = resident_estimate_tap.load(std::memory_order_acquire);
++      (estimate_tap != nullptr) && !config.enable_transform_precoding) {
++    const unsigned          tap_nof_prb  = static_cast<unsigned>(config.rb_mask.count());
++    const unsigned          tap_nof_dmrs = static_cast<unsigned>(config.dmrs_symb_pos.count());
++    pusch_resident_estimate estimate;
++    estimate.estimates        = pusch_e2e_get_estimates_fp16(e2e_handle_);
++    estimate.nof_bytes        = static_cast<size_t>(tap_nof_dmrs) * tap_nof_prb * nof_rx_ports * nof_tx_layers *
++                                NOF_SUBCARRIERS_PER_RB * 2 * sizeof(uint16_t);
++    estimate.stream           = static_cast<void*>(stream_);
++    estimate.device_id        = device_id_;
++    estimate.launch           = resident_estimate_launches.fetch_add(1, std::memory_order_relaxed) + 1;
++    estimate.rnti             = static_cast<uint16_t>(config.rnti);
++    estimate.sfn              = static_cast<uint16_t>(config.slot.sfn());
++    estimate.slot_index       = static_cast<uint16_t>(config.slot.slot_index());
++    estimate.numerology       = static_cast<uint16_t>(config.slot.numerology());
++    estimate.start_prb        = static_cast<unsigned>(config.rb_mask.find_lowest());
++    estimate.nof_prb          = tap_nof_prb;
++    estimate.contiguous       = (config.rb_mask.find_highest() - config.rb_mask.find_lowest() + 1) ==
++                                static_cast<int>(tap_nof_prb);
++    estimate.dmrs_symbol_mask = config.dmrs_symb_pos.to_uint64();
++    estimate.nof_dmrs_symbols = tap_nof_dmrs;
++    estimate.nof_rx_ports     = nof_rx_ports;
++    estimate.nof_tx_layers    = nof_tx_layers;
++    estimate.dmrs_type        = static_cast<unsigned>(dmrs_type_int);
++    estimate.dmrs_scaling     = std::pow(10.0f, -get_sch_to_dmrs_ratio_dB(config.nof_cdm_groups_without_data) / 20.0f);
++    estimate.frequency_interpolation = true;
++    estimate.frequency_smoothing     = tap_nof_prb > 1;
++    estimate.resident_mode           = gpu_resident_mode_;
++    estimate_tap->on_estimate(estimate);
++  }
++
+   if (use_device_grid_reader) {
+     // A drain that times out leaves the read in flight; the timeout takes the GPU paths out of use, and the decoder's
+     // own wait on this stream reports the transport block as failed.

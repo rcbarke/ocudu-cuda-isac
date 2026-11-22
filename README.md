@@ -328,6 +328,23 @@ What the run found:
 
 Before the Spark run, a development host without an OCUDU build and without a CUDA device had passed the unit gate, and the integration driver against doubles of the native tool and of the ray tracer, where each of 22 injected faults fails the check that names it.
 
+### Sprint 5.2, implemented, Spark gate open
+
+Sprint 5.2 sits inside phase S3 and is the first sprint that changes the receiver. It exports the channel estimate that the resident CUDA path computes for its own equalizer, the stage O3: after pilot least squares, frequency interpolation and frequency smoothing, per DM-RS symbol and before time interpolation, in the FP16 of the device. That is the stage cuSense reads from Aerial. [Layout, patch, capture, plan and parity](docs/interfaces/NATIVE_ESTIMATE.md)
+
+| Part | Where |
+|---|---|
+| The receiver patch | `patches/ocudu/0001-pusch-resident-estimate-tap.patch`: one new header and 49 lines in `pusch_demodulator_gpu_impl.cpp`, no kernel. A read-only tap that costs one atomic load per PDU without an observer. `patches/ocudu/series.json` names its hashes, and `scripts/receiver_patch.py` reads it |
+| The patched build | `python scripts/native_ocudu.py build --patched`: a separate worktree of the pinned commit in `build/ocudu-src-o3`, built into `build/ocudu-spark-o3`. The submodule stays pristine and `isac/bin` keeps naming the accepted Sprint 1.1 build, the hook-free control |
+| The capture | `native/ocudu_adapter/estimate/`, host-free: expect before the decode, one asynchronous copy from the tap, ordered after the producer, and the completion event asked after the decode. Six outcomes, one account line per decode. The device calls are in `native/ocudu_adapter/observer/estimate_tap.h`, compiled only into the adapter build against the patched receiver (`python scripts/native_adapter.py build --o3`) |
+| The plan | `pilot-ls-plan/v3`: version 2 with an `estimate` object. A build without the route refuses it. O3 is written to `estimate/` and published on a ring of its own |
+| The reference | `src/ocudu_cuda_isac/sensing/native_estimate.py`: FP16, the layout, the matched estimator on the stage O2 and the parity rules. `src/ocudu_cuda_isac/episodes/native_estimate.py`: the plan, the reader and `o3_parity.json` |
+| The gate | `make accept-s5.2`: the series, the patched build, both adapters and ten cases on the plans of the accepted Sprint 3.1 run |
+
+**Not accepted yet.** On an x86_64 host without an OCUDU build and without a CUDA device the capture core passes its 11 cases, the unit gate 17 tests, and the driver 10 of 10 cases and 44 of 44 checks against a double of the patched tool, with nine injected faults each failing the check that names it. The receiver patch, the device calls and the edited `pilot_ls.cpp` were compiled for syntax only, against the headers of the pin and of CUDA 12.9. No CUDA call of the route has been executed. `make accept-s5.2` on the DGX Spark is its first execution.
+
+One finding at the pin is recorded with the sprint: the smoothing kernel filters its buffer in place and does not fix the order in which a block reads its neighbours, so the exported estimate is not guaranteed to be the same in two decodes of one grid. The parity tolerance is declared for every block order of the model.
+
 ### Verified configuration
 
 | Item | Value on the accepted host |
@@ -565,6 +582,20 @@ sha256sum "$run/train/artifact/weights.f32"
 ```
 
 The first two commands are the unit gate and the import rule. They need NumPy and PyTorch, which the full profile installs (`make env-full`), and CMake with a C++17 compiler for the case that attaches the sensor to a native producer of the ring. `make accept-s3.4` is the integration gate. It needs the accepted Sprint 3.3 run under `results/runs/`, with the runs its plans name still in place, and a traced episode set under `data/episodes/`. It rebuilds the adapter, which must have the bytes of that run, replays the training and the validation entries through the tapped receiver, fits and freezes the head, replays the held-out entries with the presence sensor in a second process on the CUDA device, scores the same records offline, and ends with `Sprint 3.4: ACCEPTED on this DGX Spark.` `S33_RUN=` and `EPISODE_SET=` name another control and another set. [Presence head](docs/interfaces/PRESENCE_HEAD.md)
+
+### The receiver's estimate (Sprint 5.2, gate open)
+
+```bash
+python tests/unit/test_native_estimate.py -v
+python scripts/receiver_patch.py check
+make accept-s5.2
+
+run=$(ls -d results/runs/s52-* | tail -1)
+cat "$run/summary.txt"
+python -m ocudu_cuda_isac.episodes.native_estimate show "$run/native_estimate/noisy/run/native"
+```
+
+The first command is the unit gate. It needs CMake and a C++17 compiler and no OCUDU build. The second checks the patch series against its files and the lock. The gate needs the accepted Sprint 1.1 build behind `isac/bin` and the accepted Sprint 3.1 run, and runs only on the DGX Spark: its first run builds the patched receiver, which takes as long as the Sprint 1.1 build. [The receiver's own estimate](docs/interfaces/NATIVE_ESTIMATE.md)
 
 ## Repository map
 

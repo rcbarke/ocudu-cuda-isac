@@ -1,4 +1,9 @@
-"""Build the locked OCUDU Release tree, run one isolated Spark PUSCH profile and grade the evidence of either."""
+"""Build the locked OCUDU Release tree, run one isolated Spark PUSCH profile and grade the evidence of either.
+
+With --patched the build takes its source from a separate tree of the pinned commit with the patch
+series of patches/ocudu/ applied (Sprint 5.2), into a build directory of its own. The locked
+checkout is never edited, and the links in isac/bin keep naming the unpatched build.
+"""
 
 import argparse
 import csv
@@ -18,8 +23,9 @@ import sys
 import tempfile
 
 try:  # imported as scripts.native_ocudu by the tests, run as a file otherwise
-    from scripts import verify_pusch_log
+    from scripts import receiver_patch, verify_pusch_log
 except ImportError:
+    import receiver_patch
     import verify_pusch_log
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -510,7 +516,13 @@ def built_targets(build, plan, executables):
     return targets
 
 
-def native_build(args, build, run, gpu, pin, selected_target, stage):
+def native_build(args, build, run, gpu, pin, selected_target, stage, source=None, patch=None):
+    """Configure, build and inspect one tree. source and patch name a patched tree and its series.
+
+    Without them the tree is the locked checkout, and its executables are published into isac/bin.
+    A patched build is never published there: the accepted unpatched build stays the control.
+    """
+    source = Path(source) if source is not None else SOURCE
     arch = gpu["compute_capability"].replace(".", "")
     mcpu = cpu_target(args.machine, args.mcpu)
     stage["stage"] = "configure"
@@ -530,11 +542,11 @@ def native_build(args, build, run, gpu, pin, selected_target, stage):
     # the enclosing research repository's HEAD as OCUDU's revision.
     cmake_env = os.environ.copy()
     cmake_env.pop("CLICOLOR_FORCE", None)  # keep terminal color codes out of the archived logs
-    if not (SOURCE / ".git").exists():
+    if not (source / ".git").exists():
         ceilings = cmake_env.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep)
-        cmake_env["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(filter(None, [str(SOURCE.parent), *ceilings]))
-    record_command(["cmake", "-S", SOURCE, "-B", build, *options], run, "configure.log", env=cmake_env, live=True)
-    expected = {"CMAKE_HOME_DIRECTORY": str(SOURCE), "CMAKE_BUILD_TYPE": "Release",
+        cmake_env["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(filter(None, [str(source.parent), *ceilings]))
+    record_command(["cmake", "-S", source, "-B", build, *options], run, "configure.log", env=cmake_env, live=True)
+    expected = {"CMAKE_HOME_DIRECTORY": str(source), "CMAKE_BUILD_TYPE": "Release",
                 "BUILD_TESTING": "ON", "ENABLE_CUDA": "ON", "CMAKE_CUDA_ARCHITECTURES": arch,
                 "CUDA_ACCEL_FOUND": "TRUE"}
     if mcpu:
@@ -561,10 +573,18 @@ def native_build(args, build, run, gpu, pin, selected_target, stage):
     cpu = {"MCPU": mcpu} if mcpu else {key: values.get(key) for key in ("MARCH", "MTUNE")}
     stamp = dict(schema="isac-native-build/v2", commit=pin, binary_sha256=digest(binary),
                  cache_sha256=digest(run / "CMakeCache.txt"), cuda_arch=arch, machine=args.machine,
-                 target=selected_target, build_evidence=str(run), source=str(SOURCE), build_directory=str(build),
-                 source_kind="git" if (SOURCE / ".git").exists() else "verified-archive",
+                 target=selected_target, build_evidence=str(run), source=str(source), build_directory=str(build),
+                 source_kind="git" if (source / ".git").exists() else "verified-archive",
                  options=options, cpu_target=cpu, toolchain=toolchain, compile=plan, jobs=args.jobs,
                  host=platform.node(), completed_utc=datetime.now(timezone.utc).isoformat())
+    if patch is not None:
+        # The receipt of a patched receiver names its series, and the tree is checked once more
+        # after the build: the objects were compiled from exactly the pin with the series applied.
+        stamp["patch"] = receiver_patch.verify_tree(source, receiver_patch.load_series())
+        if not receiver_patch.same_series(stamp["patch"], patch):
+            raise ValueError("The patch series changed while the patched receiver was built. Build again.")
+        stamp["source_kind"] = stamp["patch"]["tree_kind"]
+        stamp["locked_source"] = str(SOURCE)
     binaries = [binary]
     if selected_target == "all":
         gnb = build / GNB
@@ -576,6 +596,10 @@ def native_build(args, build, run, gpu, pin, selected_target, stage):
         stamp["gnb_sha256"] = digest(gnb)
         binaries.append(gnb)
     stamp["targets"] = built_targets(build, plan, binaries)
+    if patch is not None:
+        write_json(run / "native-build.json", stamp)
+        write_json(build / "isac-native.json", stamp)
+        return
 
     # Validate all destinations before replacing links. Builds in different build
     # directories can finish concurrently and publish into this same environment.
@@ -707,14 +731,18 @@ def grade(evidence, pin=None):
     lines = []
     failed = False
 
+    label = "S1.1"
+
     def check(passed, text, detail=""):
         nonlocal failed
         failed = failed or not passed
-        lines.append(f"{'PASS' if passed else 'FAIL'}  S1.1 {text}{'' if passed else detail}")
+        lines.append(f"{'PASS' if passed else 'FAIL'}  {label} {text}{'' if passed else detail}")
 
     try:
         status = dict(line.split("=", 1) for line in (evidence / "status.txt").read_text().split())
         receipt = json.loads((evidence / "native-build.json").read_text())
+        # The build of the patched receiver of Sprint 5.2 is graded by the same rules, under its own label.
+        label = "S5.2 patched receiver" if receipt.get("patch") else "S1.1"
         report = json.loads((evidence / "reference-environment.json").read_text())
         cache = cache_values(evidence / "CMakeCache.txt")
         overrides = json.loads((evidence / "platform.json").read_text()).get("overrides", {})
@@ -722,8 +750,20 @@ def grade(evidence, pin=None):
         toolchain, plan, targets = receipt["toolchain"], receipt["compile"], receipt["targets"]
         arch, cpu = receipt["cuda_arch"], receipt["cpu_target"]
     except (OSError, ValueError, KeyError, TypeError) as error:
-        return True, [f"FAIL  S1.1 build evidence is incomplete in {evidence}: {error!r}"]
+        return True, [f"FAIL  {label} build evidence is incomplete in {evidence}: {error!r}"]
 
+    if receipt.get("patch"):
+        # The series the receipt names must be the series of this tree, patch by patch and file by file.
+        patch = receipt["patch"]
+        try:
+            current = receiver_patch.identity(receiver_patch.load_series())
+            same, why = receiver_patch.same_series(patch, current), "the series of patches/ocudu/ differs from it"
+        except receiver_patch.PatchError as error:
+            same, why = False, str(error)
+        names = ", ".join(f"{item['file']} {item['sha256'][:12]}" for item in patch.get("patches", []))
+        check(same and receipt["source_kind"] in receiver_patch.KINDS and patch.get("base_commit") == receipt["commit"],
+              f"patch series {str(patch.get('series_sha256'))[:12]} on {receipt['commit'][:12]}: {names}, "
+              f"{len(patch.get('files', {}))} files touched, built from a {receipt['source_kind']}", f": {why}")
     check(status.get("stage") == "completed" and status.get("exit_code") == "0"
           and receipt["target"] == "all", "full Release build completed (target all)",
           f": stage={status.get('stage')}, exit_code={status.get('exit_code')}, target={receipt['target']}")
@@ -732,7 +772,7 @@ def grade(evidence, pin=None):
           f": ext/lock.json pins {pin}")
     revision = re.search(r"^OCUDU 5G gNB version \S+ \(([0-9a-f]*)\)$", banner, re.MULTILINE)
     named = bool(revision) and (pin.startswith(revision[1]) if revision[1]
-                                else receipt["source_kind"] == "verified-archive")
+                                else receipt["source_kind"] in ("verified-archive", receiver_patch.KIND_COPY))
     check(named, f"gNB version banner: {revision[0] if revision else 'absent'}",
           ": the banner must name the locked revision")
 
@@ -926,6 +966,10 @@ def main(argv=None):
     build_cmd.add_argument("--machine", choices=("spark", "local"), default="spark")
     build_cmd.add_argument("--mcpu", help="AArch64 CPU target on a local profile")
     build_cmd.add_argument("--target", choices=("all", "baseline"), default="all")
+    build_cmd.add_argument("--patched", action="store_true",
+                           help="build the pinned source with the series of patches/ocudu/ applied, from a tree of its own")
+    build_cmd.add_argument("--patched-source", type=Path,
+                           help="where the patched tree lies (default: build/ocudu-src-o3)")
     run_cmd.add_argument("--profile", choices=("smoke", "paper"), default="smoke")
     run_cmd.add_argument("--skip-build", action="store_true", help="verify the saved build identity and reuse it")
     run_cmd.set_defaults(machine="spark", mcpu=None)
@@ -938,10 +982,17 @@ def main(argv=None):
         parser.error("--jobs must be positive")
     if args.mcpu and args.machine != "local":
         parser.error("--mcpu can only be used with --machine local")
-    build = (ROOT / (args.build_dir or Path(f"build/ocudu-{args.machine}"))).resolve()
+    patched = bool(getattr(args, "patched", False))
+    if getattr(args, "patched_source", None) is not None and not patched:
+        parser.error("--patched-source can only be used with --patched")
+    build = (ROOT / (args.build_dir or Path(f"build/ocudu-{args.machine}{'-o3' if patched else ''}"))).resolve()
+    patched_source = (ROOT / (args.patched_source or Path("build/ocudu-src-o3"))).resolve() if patched else None
     for protected in [ROOT / "ext", ROOT / "isac"]:
-        if build == ROOT or build == protected or protected in build.parents:
-            parser.error("Choose a dedicated out-of-source build directory outside ext/ and isac/.")
+        for place in filter(None, [build, patched_source]):
+            if place == ROOT or place == protected or protected in place.parents:
+                parser.error("Choose dedicated directories outside ext/ and isac/ for the build and for the patched tree.")
+    if patched and (patched_source == build or build in patched_source.parents or patched_source in build.parents):
+        parser.error("The patched tree and its build directory must be two separate directories.")
     run = new_run_directory(args, "ocudu-build" if args.action == "build" else "spark-pusch")
     print(f"Run artifacts: {run}", flush=True)
     stage = {"stage": "preflight"}
@@ -991,7 +1042,16 @@ def main(argv=None):
         build.mkdir(parents=True, exist_ok=True)
         with (build / ".isac.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            if args.action == "build":
+            if args.action == "build" and patched:
+                # The locked checkout was just verified as pristine. The patched tree is made beside it.
+                stage["stage"] = "patch"
+                series = receiver_patch.load_series()
+                patch = receiver_patch.prepare_tree(SOURCE, patched_source, series)
+                write_json(run / "receiver-patch.json", patch)
+                print(f"Patched receiver source: {patched_source} ({patch['tree_kind']}, series "
+                      f"{patch['series_sha256'][:12]})", flush=True)
+                native_build(args, build, run, gpu, pin, args.target, stage, source=patched_source, patch=patch)
+            elif args.action == "build":
                 native_build(args, build, run, gpu, pin, args.target, stage)
             else:
                 if not args.skip_build and not (build / "isac-native.json").exists():

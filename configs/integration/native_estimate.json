@@ -1,0 +1,125 @@
+{
+  "schema": "integration-config/native_estimate/v1",
+  "selector": "native_estimate",
+  "adapter_build": "build/ocudu-adapter",
+  "o3_adapter_build": "build/ocudu-adapter-o3",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "observer": {
+    "tap": "pilot_ls",
+    "stage": "O2",
+    "source": "pusch_dmrs",
+    "epoch": 1
+  },
+  "estimate": {
+    "tap": "native_estimate",
+    "stage": "O3",
+    "copy_stream": "producer",
+    "landing": "slot",
+    "timeout_us": 2000
+  },
+  "control": {
+    "driver": "pilot_ls",
+    "flat": "unity/",
+    "varying": "direct",
+    "noisy": "reference-pair"
+  },
+  "rings": {
+    "o2": {
+      "stream": "o2",
+      "window_records": 3,
+      "burst_records": 3,
+      "slots": 8,
+      "attach_timeout_ms": 30000,
+      "drain_ms": 5000
+    },
+    "o3": {
+      "stream": "o3",
+      "window_records": 3,
+      "burst_records": 3,
+      "slots": 8,
+      "attach_timeout_ms": 30000,
+      "drain_ms": 5000
+    }
+  },
+  "tolerance": {
+    "flat": {
+      "abs_ulps": 1.0,
+      "relative": 0.002,
+      "nmse": 1e-06,
+      "smoothing_fraction": null
+    },
+    "varying": {
+      "abs_ulps": null,
+      "relative": null,
+      "nmse": 1e-06,
+      "smoothing_fraction": 0.25
+    },
+    "noisy": {
+      "abs_ulps": null,
+      "relative": null,
+      "nmse": 1e-06,
+      "smoothing_fraction": 0.25
+    },
+    "race_free_ulps": 1.0
+  },
+  "study": {
+    "what": "CPU model of the three steps of the receiver's estimate on calibration channels of 51 resource blocks: 2 to 6 paths with excess delays up to 50, 100, 200, 400 and 800 ns, without noise and at 30, 20 and 10 dB, 12 seeds each. The matched estimator reads every unfiltered pilot. Beside it: the same without a fused multiply-add, and the in-place filter in ascending order, in descending order and in four random schedules of blocks per case.",
+    "module": "ocudu_cuda_isac.sensing.native_estimate",
+    "rounding": {
+      "no_fused_multiply_add_max_fp16_ulps": 1.0,
+      "flat_max_fp16_ulps": 0.0
+    },
+    "in_place": {
+      "max_fraction_of_smoothing_effect": 0.077,
+      "max_nmse_noiseless": 2.15e-05,
+      "max_nmse_at_30_db": 5.5e-05,
+      "min_unsmoothed_nmse_at_30_db": 0.000433
+    },
+    "declared": "abs_ulps is the spacing of FP16 numbers at the magnitude of the reference value, so it follows the dtype. A flat channel is filtered to itself in every order, so it is held to one spacing. A varying or noisy estimate is held to an NMSE of 1e-6 against the matched estimator, or to a quarter of the NMSE that the smoothing step itself makes on the same pilots when that is larger: three times the largest in-place deviation of the study, and a quarter of what an estimate without smoothing shows."
+  },
+  "expect": {
+    "o2_unity": 1.001186490058899,
+    "o3_unity": 1.0009765625,
+    "payload_bytes": 19584,
+    "pair_opportunities": 48,
+    "shape": {
+      "demo-51prb-4rx": [
+        2,
+        51,
+        4,
+        12
+      ],
+      "table2-51prb-1rx": [
+        2,
+        51,
+        1,
+        12
+      ],
+      "two-prb-offset": [
+        2,
+        2,
+        1,
+        12
+      ]
+    },
+    "first_subcarrier": {
+      "demo-51prb-4rx": 0,
+      "table2-51prb-1rx": 0,
+      "two-prb-offset": 180
+    },
+    "element": {
+      "grant": "demo-51prb-4rx",
+      "index": [
+        1,
+        3,
+        2,
+        5
+      ],
+      "position": 2621,
+      "subcarrier": 41
+    }
+  }
+}

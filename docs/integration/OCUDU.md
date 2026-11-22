@@ -43,6 +43,8 @@ S5.2 exports the receiver's own estimate in the demonstration. At the pin the pi
 
 The estimate is per DMRS symbol, after frequency interpolation and smoothing and before time interpolation. That is the stage cuSense reads from Aerial. At the demonstration profile it is two DMRS symbols × 51 PRBs × four RX × 12 subcarriers, 19,584 bytes in FP16. The S5.2 patch gives the observer a read-only route from the demodulator, and the adapter copies on the producer's stream and publishes on the copy's completion event. A receive path must not synchronize the device the way the upstream test does.
 
+Sprint 5.2 builds that route. The patch `patches/ocudu/0001-pusch-resident-estimate-tap.patch` adds the header `pusch_resident_estimate_tap.h` and one call in `process_gpu_e2e`, after `pusch_e2e_process_full_gpu_optimized` returned: the demodulator reports the buffer, its size, its stream and the identity of the PDU to one registered observer, and makes one atomic load per PDU when none is registered. Two properties of the pin shape the adapter. The resident decode runs on the calling thread, so the observer is called inside the decode. And `kernel_fd_smoothing_fp16` filters `d_estimates_fp16` in place, one block per resource block and DM-RS symbol, each reading the pilots of up to two neighbouring blocks: the kernel does not fix whether a neighbour is read before or after it was written, so the estimate of one grid is not guaranteed to be the same in two decodes. [The receiver's own estimate](../interfaces/NATIVE_ESTIMATE.md)
+
 ## Functional splits and radios in the pinned tree
 
 | Application target | Split | Built by default |

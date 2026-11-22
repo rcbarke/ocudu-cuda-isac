@@ -262,6 +262,66 @@ class BuildRefusalTests(unittest.TestCase):
             self.assertEqual(list(ocudu.iterdir()), [])
 
 
+class PatchedReceiverTests(unittest.TestCase):
+    """Sprint 5.2: the adapter with the O3 route is built only against a build of the patched receiver."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.build = Path(temporary.name) / "ocudu-o3"
+        self.build.mkdir()
+        self.adapter = Path(temporary.name) / "adapter"
+
+    def run_build(self, *arguments):
+        with mock.patch("sys.stderr") as stderr:
+            status = native_adapter.main(["build", "--build-dir", str(self.adapter), *arguments])
+        return status, "".join(call.args[0] for call in stderr.write.call_args_list)
+
+    def series(self):
+        return native_adapter.receiver_patch.identity(native_adapter.receiver_patch.load_series())
+
+    def test_the_route_needs_the_receipt_of_a_patched_receiver_with_this_series(self):
+        status, said = self.run_build("--o3", "--ocudu-build-dir", str(self.build))
+        self.assertEqual(status, 1)
+        self.assertIn("it is not a build of the patched receiver", said)
+        (self.build / "isac-native.json").write_text(json.dumps({"source": "/somewhere", "commit": "0" * 40}))
+        status, said = self.run_build("--o3", "--ocudu-build-dir", str(self.build))
+        self.assertEqual(status, 1)
+        self.assertIn("is a build of the unpatched receiver: its receipt names no patch", said)
+        other = dict(self.series(), series_sha256="0" * 64)
+        (self.build / "isac-native.json").write_text(json.dumps({"source": "/somewhere", "patch": other}))
+        status, said = self.run_build("--o3", "--ocudu-build-dir", str(self.build))
+        self.assertEqual(status, 1)
+        self.assertIn("was built with another patch series than patches/ocudu/ holds now", said)
+        # The series is the right one and the tree it names is not the patched tree.
+        (self.build / "isac-native.json").write_text(json.dumps({"source": str(self.build), "patch": self.series()}))
+        status, said = self.run_build("--o3", "--ocudu-build-dir", str(self.build))
+        self.assertEqual(status, 1)
+        self.assertIn("is not the patched receiver source of the series", said)
+        self.assertFalse(self.adapter.exists())
+
+    def test_the_control_adapter_is_never_linked_against_the_patched_receiver(self):
+        (self.build / "isac-native.json").write_text(json.dumps({"source": "/somewhere", "patch": self.series()}))
+        status, said = self.run_build("--ocudu-build-dir", str(self.build))
+        self.assertEqual(status, 1)
+        self.assertIn("is the build of the patched receiver. Build the adapter against it with --o3", said)
+        self.assertFalse(self.adapter.exists())
+
+    def test_the_two_adapters_have_their_own_directories_and_a_route_is_required_where_asked(self):
+        self.assertEqual(native_adapter.DEFAULT_BUILD.name, "ocudu-adapter")
+        self.assertEqual(native_adapter.DEFAULT_BUILD_O3.name, "ocudu-adapter-o3")
+        self.assertEqual(native_adapter.DEFAULT_OCUDU_O3.name, "ocudu-spark-o3")
+        receipt = {"schema": native_adapter.RECEIPT_SCHEMA, "executables": {}, "sources": native_adapter.sources(),
+                   "ocudu_build": str(self.build), "ocudu_receipt_sha256": None,
+                   "pin": {"link_txt_sha256": "x", "flags_make_sha256": "y"}}
+        with mock.patch.object(native_adapter, "verified_receipt", return_value=receipt), \
+                mock.patch("sys.stderr") as stderr, mock.patch("sys.stdout"):
+            self.assertEqual(native_adapter.main(["verify", "--build-dir", str(self.adapter)]), 0)
+            self.assertEqual(native_adapter.main(["verify", "--o3", "--build-dir", str(self.adapter)]), 1)
+        self.assertIn("this adapter build has no O3 route",
+                      "".join(call.args[0] for call in stderr.write.call_args_list))
+
+
 class AdapterTreeTests(unittest.TestCase):
     def test_adapter_files_are_ascii_and_keep_the_pinned_fixture_calls(self):
         tree = ROOT / "native/ocudu_adapter"

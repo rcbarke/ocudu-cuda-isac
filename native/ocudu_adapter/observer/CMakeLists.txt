@@ -56,11 +56,55 @@ if(TARGET ocudu_pin_fixture)
   # Sprint 3.2: it also links the producer glue of transport/ and, through it, the observation ring.
   add_executable(pilot_ls pilot_ls.cpp)
   target_link_libraries(pilot_ls PRIVATE obs_publisher observer_core dispatch_core replay_core ocudu_pin_fixture)
+  # Sprint 5.2: the host-free capture core of estimate/. Every build links it and reads a plan of
+  # version 3 with it. The device side, estimate_tap.h, is compiled only with ISAC_O3_ROUTE.
+  target_link_libraries(pilot_ls PRIVATE estimate_core)
+  if(ISAC_O3_ROUTE)
+    if(NOT "ENABLE_CUDA" IN_LIST OCUDU_PIN_CXX_DEFINES)
+      message(FATAL_ERROR "ISAC_O3_ROUTE needs an OCUDU build with ENABLE_CUDA: the estimate is produced on the device.")
+    endif()
+    set(ISAC_O3_TAP_HEADER "ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h")
+    set(ISAC_O3_TAP_FOUND OFF)
+    foreach(directory IN LISTS OCUDU_PIN_INCLUDES)
+      if(EXISTS "${directory}/${ISAC_O3_TAP_HEADER}")
+        set(ISAC_O3_TAP_FOUND ON)
+      endif()
+    endforeach()
+    if(NOT ISAC_O3_TAP_FOUND)
+      message(FATAL_ERROR "ISAC_O3_ROUTE needs the patched receiver: no include directory of the imported OCUDU build "
+                          "holds ${ISAC_O3_TAP_HEADER}. Build it with: python scripts/native_ocudu.py build --patched")
+    endif()
+    # The CUDA runtime header for the copy and its event. The runtime library is on the link line
+    # of the imported build already, which links it for the kernels of the receiver.
+    find_package(CUDAToolkit REQUIRED)
+    target_include_directories(pilot_ls SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_compile_definitions(pilot_ls PRIVATE ISAC_O3_ROUTE)
+    set(ISAC_O3_RUNTIME_LINKED OFF)
+    foreach(item IN LISTS OCUDU_PIN_LINK_ITEMS OCUDU_PIN_ARCHIVES)
+      if(item MATCHES "cudart")
+        set(ISAC_O3_RUNTIME_LINKED ON)
+      endif()
+    endforeach()
+    if(NOT ISAC_O3_RUNTIME_LINKED)
+      target_link_libraries(pilot_ls PRIVATE CUDA::cudart)
+    endif()
+  endif()
 
   add_test(NAME pilot_ls_help COMMAND pilot_ls --help)
   set_tests_properties(pilot_ls_help PROPERTIES PASS_REGULAR_EXPRESSION "--plan FILE --output-dir DIR")
   add_test(NAME pilot_ls_refuses_missing_arguments COMMAND pilot_ls --no-grids)
   set_tests_properties(pilot_ls_refuses_missing_arguments PROPERTIES WILL_FAIL TRUE)
+  # Which receiver the tool is linked against. With the route it calls the accessor of the
+  # receiver patch, so the test also shows that the patched objects are the linked ones. It starts
+  # no work on a device.
+  add_test(NAME pilot_ls_o3_route COMMAND pilot_ls --route)
+  if(ISAC_O3_ROUTE)
+    set_tests_properties(pilot_ls_o3_route PROPERTIES
+      PASS_REGULAR_EXPRESSION "pilot_ls route: O3 from the patched receiver, tap interface version 1, no observer registered")
+  else()
+    set_tests_properties(pilot_ls_o3_route PROPERTIES
+      PASS_REGULAR_EXPRESSION "pilot_ls route: none, linked against the receiver without the patch")
+  endif()
   # A known grant through the pinned grid and the pinned host processor, with the tap off and on,
   # and once more in the mode timed through a ring without a consumer.
   # It requests no CUDA processor, so the adapter build starts no work on a device.

@@ -1,0 +1,53 @@
+{
+  "schema": "ocudu-patch-series/v1",
+  "dependency": "ocudu",
+  "base_commit": "27e84cb3da65205b55dbd56ace6fac93a035331e",
+  "base_ref": "nvcuda_accel_02",
+  "patches": [
+    {
+      "file": "0001-pusch-resident-estimate-tap.patch",
+      "sha256": "466d37cc4aeb4f361cb4f5dd48b17f4bb004083dfce9b3788b1024a45982d5a5",
+      "sprint": "5.2",
+      "selector": "native_estimate",
+      "reason": "The resident PUSCH demodulator keeps its channel estimate on the device and hands a stub to every stage that would read a host estimate. The patch gives one observer of the same process a read-only route to that buffer: once per PDU, after the kernels that write it were enqueued, the demodulator reports where the estimate is, what it is and on which stream it was produced.",
+      "interface": {
+        "header": "include/ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h",
+        "version": 1
+      },
+      "files": [
+        {
+          "path": "include/ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h",
+          "change": "added",
+          "sha256_before": null,
+          "sha256_after": "b37774fb7e50186af1c42951fd58be5a0ce6b3ef1dd240baeb90c6dd4b62781a",
+          "lines_added": 88,
+          "lines_removed": 0
+        },
+        {
+          "path": "lib/phy/upper/channel_processors/pusch/pusch_demodulator_gpu_impl.cpp",
+          "change": "modified",
+          "sha256_before": "476620c1608b8e442d964eb27fa1aac665d45d9a97a956cb53dbc9629c5c1590",
+          "sha256_after": "488af7104fa3a2abe6bd6ca9866135a13d4b2c32f4fad30c5c4112759cebe871",
+          "lines_added": 49,
+          "lines_removed": 0
+        }
+      ],
+      "symbols": [
+        "ocudu::pusch_resident_estimate (new)",
+        "ocudu::pusch_resident_estimate_tap (new)",
+        "ocudu::set_pusch_resident_estimate_tap (new)",
+        "ocudu::get_pusch_resident_estimate_tap (new)",
+        "ocudu::pusch_demodulator_gpu_impl::process_gpu_e2e (one call added after the channel-estimate kernels)"
+      ],
+      "kernels_changed": 0,
+      "ownership": "The estimate buffer stays owned by the kernel handle of the demodulator. The tap gets a const pointer, the size, the producing stream and the identity of the PDU. It must not write the buffer, must not wait for the device and must not throw. The next PDU of the same demodulator overwrites the buffer and a larger allocation frees it, so an observer orders its own copy after the producer on the stream it is given, or on its own stream behind an event recorded on that stream.",
+      "cost_without_observer": "one atomic load per PDU",
+      "unsupported": [
+        "transform precoding: that path keeps its estimate in another buffer and is not tapped",
+        "host path and every fallback to it: no device buffer exists, the tap is not called",
+        "more than one layer: reported with nof_tx_layers, refused by the observer of this project"
+      ],
+      "test": "make accept-s5.2: git apply --check on the pinned commit, the patched build with its own receipt, paired CRC and bytes against the unpatched build with the tap off and on, and the parity of the exported estimate against the matched estimator on O2 (o3_parity.json)"
+    }
+  ]
+}

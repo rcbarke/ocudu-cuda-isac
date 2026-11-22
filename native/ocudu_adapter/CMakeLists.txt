@@ -39,6 +39,12 @@ endif()
 target_link_libraries(ocudu_pin_fixture INTERFACE
   -Wl,--start-group ${OCUDU_PIN_ARCHIVES} -Wl,--end-group ${OCUDU_PIN_LINK_ITEMS})
 
+# Sprint 5.2: the route to the receiver's own channel estimate, the stage O3. It exists only where
+# the import names a build of the patched receiver (patches/ocudu/), and scripts/native_adapter.py
+# turns it on for that build alone. The adapter build against the accepted Sprint 1.1 build has
+# no such route: its pilot_ls refuses a plan that names an estimate.
+option(ISAC_O3_ROUTE "Compile the route to the estimate of the patched receiver into pilot_ls" OFF)
+
 enable_testing()
 add_subdirectory(fixtures)
 add_subdirectory(replay)
@@ -49,3 +55,6 @@ add_subdirectory(receiver)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../obs_ring" obs_ring)
 add_subdirectory(observer)
 add_subdirectory(transport)
+# The capture core of the stage O3: C++17 on the CPU with no OCUDU and no CUDA include. Every
+# adapter build has it and runs its cases. Only the build with ISAC_O3_ROUTE drives it.
+add_subdirectory(estimate)

@@ -221,8 +221,11 @@ def publication_violations(line):
     return found
 
 
-def open_output(directory):
+def open_output(directory, schema=NATIVE_SCHEMA):
     """Verify a native output of a plan of version 2 and return it.
+
+    schema is the report schema of this ticket unless a later plan version names its own (a run
+    of Sprint 5.2 writes the same files under the schema of its plan version).
 
     The radio side is verified as Sprint 2.4 verifies it, in both modes: a timed run writes the
     same records after its last opportunity, with the digests that its evaluator side took after
@@ -237,15 +240,15 @@ def open_output(directory):
         mode, tap, ring = report["evidence"]["mode"], report["observer"]["tap"], report["ring"]
     except (ContractError, OSError, KeyError, TypeError) as error:
         raise SnapshotRingError(f"{directory} is not a complete native output of a plan of version 2: {error}") from None
-    if report.get("schema") != NATIVE_SCHEMA or mode not in MODES or tap not in pl.TAPS:
-        raise SnapshotRingError(f"{directory / 'native.json'} is not a {NATIVE_SCHEMA} report of a known mode and tap")
+    if report.get("schema") != schema or mode not in MODES or tap not in pl.TAPS:
+        raise SnapshotRingError(f"{directory / 'native.json'} is not a {schema} report of a known mode and tap")
     observer = None
     try:
         if mode == "audit":
-            observer = pl.open_output(directory, schema=NATIVE_SCHEMA)
+            observer = pl.open_output(directory, schema=schema)
             radio = observer.radio
         else:
-            radio = rp.open_output(directory, schema=NATIVE_SCHEMA, taps=(tap,))
+            radio = rp.open_output(directory, schema=schema, taps=(tap,))
             if (directory / pl.OBSERVER_DIR).exists():
                 raise SnapshotRingError("a timed run holds observer/: its estimates exist in the slots of the ring only")
             if report["receiver"]["tap"] != tap or any(record["tap"] != tap for record in radio.records):

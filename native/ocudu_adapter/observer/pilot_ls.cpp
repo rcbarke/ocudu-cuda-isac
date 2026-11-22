@@ -44,9 +44,27 @@
 // on the evaluator side, the stored grids and the decoded bytes are digested, so that the files of
 // a timed run are read by the same readers as those of an audit run. One arithmetic serves both
 // modes: the same plan gives the same grids, the same estimates and the same decoded bytes.
-// Built out of the OCUDU tree against the accepted Sprint 1.1 build. ASCII only.
+//
+// Sprint 5.2 (native_estimate) adds the plan version pilot-ls-plan/v3, with one object, estimate.
+// It names the capture of the receiver's own channel estimate, the stage O3: what the resident
+// CUDA kernels of the pinned receiver leave on the device after pilot least squares, frequency
+// interpolation and frequency smoothing, per DM-RS symbol and before time interpolation. The
+// receiver patch of patches/ocudu/ tells this tool where that buffer is, once per PDU. For every
+// decode of the backend the plan names the tool expects one estimate before the decode starts,
+// enqueues one asynchronous copy of the buffer from the receiver's callback, ordered after the
+// kernels that wrote it, and after the decode asks the completion event of that copy for its
+// state. A completed copy of the expected estimate becomes one obs/v1 record of the stage O3 in
+// DIR/estimate/: archived with its digest in the mode audit, published on the ring of the O3
+// stream in both modes when the plan names one. Nothing here waits for the device while a decode
+// runs. The stage O2 is unchanged and stays a stream of its own. The rules of the capture are in
+// the host-free core of estimate/ (estimate_core.h) and its device calls in estimate_tap.h, which
+// exists only in the build against the patched receiver (ISAC_O3_ROUTE). Every other build
+// refuses a plan that names an estimate.
+// Built out of the OCUDU tree against the accepted Sprint 1.1 build, and a second time against
+// the patched build of Sprint 5.2. ASCII only.
 
 #include "dispatch_core.h"
+#include "estimate_core.h"
 #include "grant_pdu.h"
 #include "obs/ring.h"
 #include "obs_publisher.h"
@@ -97,6 +115,10 @@
 #include <sys/stat.h>
 #include <thread>
 #include <vector>
+#ifdef ISAC_O3_ROUTE
+// The device side of the capture. Only the build against the patched receiver has it.
+#include "estimate_tap.h"
+#endif
 
 using namespace isac_receiver;
 using isac_replay::allocation;
@@ -118,6 +140,9 @@ namespace {
 
 constexpr const char* NATIVE_SCHEMA  = "pilot-ls-native/v1";
 constexpr const char* NATIVE_SCHEMA_2 = "pilot-ls-native/v2"; // of a pilot-ls-plan/v2 run
+constexpr const char* NATIVE_SCHEMA_3 = "pilot-ls-native/v3"; // of a pilot-ls-plan/v3 run
+constexpr const char* ESTIMATE_DIR    = "estimate";
+constexpr const char* CAPTURE_SCHEMA  = "o3-capture/v1";
 constexpr const char* RING_DIR        = "ring";
 constexpr const char* PUBLICATION_SCHEMA = "obs-publication/v1";
 constexpr const char* RING_SCHEMA        = "obs-ring-report/v1";
@@ -308,12 +333,184 @@ json hash_json(const isac_replay::hash_count& from, const isac_replay::hash_coun
   return {{"digests", to.digests - from.digests}, {"updates", to.updates - from.updates}, {"bytes", to.bytes - from.bytes}};
 }
 
+/// What the receiver reported of one estimate, for the trace of the producer.
+json producer_record(const isac_estimate::producer_view& view)
+{
+  json symbols = json::array();
+  for (unsigned symbol = 0; symbol != 64; ++symbol) {
+    if (((view.dmrs_symbol_mask >> symbol) & 1U) != 0) {
+      symbols.push_back(symbol);
+    }
+  }
+  json steps = json::array({"pilot_ls"});
+  if (view.frequency_interpolation) {
+    steps.push_back("frequency_interpolation");
+  }
+  if (view.frequency_smoothing) {
+    steps.push_back("smoothing");
+  }
+  return {{"launch", view.launch},
+          {"device", view.device},
+          {"backend", "cuda"},
+          {"resident_mode", view.resident},
+          {"rnti", view.rnti},
+          {"sfn", view.sfn},
+          {"slot", view.slot},
+          {"numerology", view.numerology},
+          {"start_prb", view.start_prb},
+          {"prb_count", view.nof_prb},
+          {"contiguous", view.contiguous},
+          {"dmrs_symbols", symbols},
+          {"rx_ports", view.rx_ports},
+          {"layers", view.layers},
+          {"dmrs_type", view.dmrs_type},
+          {"scale", static_cast<double>(view.dmrs_scaling)},
+          {"steps", steps},
+          {"time_interpolation", false},
+          {"bytes", view.bytes}};
+}
+
+/// One line of the account of the capture: what became of the estimate of one decode. It is the
+/// trace of the producer and of the completion of the copy.
+json capture_record(const std::string& run_id, const std::string& mode, const std::string& backend,
+                    const isac_observer::bound_slot& slot, const json& opportunity_sequence,
+                    const obs::record_header& header, const isac_estimate::capture_line& got)
+{
+  const bool published = got.result == isac_estimate::outcome::published;
+  const bool copied    = *got.copy_stream != '\0';
+  return {{"schema", CAPTURE_SCHEMA},
+          {"run_id", run_id},
+          {"mode", mode},
+          {"stage", isac_estimate::STAGE_O3},
+          {"backend", backend},
+          {"opportunity_id", slot.opportunity_id},
+          {"opportunity_sequence", opportunity_sequence},
+          {"outcome", isac_estimate::to_string(got.result)},
+          {"reason", *got.reason != '\0' ? json(got.reason) : json(nullptr)},
+          {"admitted", got.admitted},
+          {"seen", got.seen},
+          {"landed", got.landed},
+          {"producer", got.seen ? producer_record(got.producer) : json(nullptr)},
+          {"copy",
+           copied ? json({{"stream", got.copy_stream},
+                          {"landing", got.landing},
+                          {"completion", "cuda_event"},
+                          {"polls", got.polls},
+                          {"submit_us", got.submit_us}})
+                  : json(nullptr)},
+          {"ring",
+           published ? json({{"epoch", got.epoch},
+                             {"sequence", got.sequence},
+                             {"depth", got.depth},
+                             {"bytes", got.bytes},
+                             {"window_calls", got.window_calls}})
+                     : json(nullptr)},
+          {"keys",
+           {{"episode", hex64(slot.episode)}, {"opportunity", hex64(slot.opportunity)}, {"grant", hex64(slot.grant)}}},
+          {"absolute_slot", slot.absolute_slot},
+          {"grid", {{"grid_index", got.grid.grid}, {"generation", got.grid.generation}}},
+          {"payload_bytes", header.payload_bytes},
+          {"valid", got.landed ? json(got.counts.valid) : json(nullptr)},
+          {"holes", got.landed ? json(got.counts.holes) : json(nullptr)},
+          {"nonzero", got.landed ? json(got.counts.nonzero) : json(nullptr)},
+          {"t_expect_ns", got.t_expect_ns},
+          {"t_tap_ns", got.seen ? json(got.t_tap_ns) : json(nullptr)},
+          {"t_submit_ns", got.seen ? json(got.t_submit_ns) : json(nullptr)},
+          {"t_resolve_ns", got.t_resolve_ns},
+          {"t_complete_ns", got.t_complete_ns != 0 ? json(got.t_complete_ns) : json(nullptr)},
+          {"t_publish_ns", published ? json(got.t_publish_ns) : json(nullptr)},
+          {"t_done_ns", got.t_done_ns},
+          {"resolve_us", got.resolve_us}};
+}
+
+/// The descriptor of one captured estimate of the receiver: the fields of its obs/v1 header as a
+/// JSON record, as observation_record gives them for the stage O2. It names no channel, no
+/// noise, no transport block and no label.
+json estimate_record(const std::string& run_id, std::uint64_t epoch, std::size_t number,
+                     const isac_observer::bound_slot& slot, const obs::record_header& header,
+                     const isac_estimate::capture_line& got, const std::string& source, const std::string& grant_id,
+                     std::size_t opportunity_sequence, const std::string& readback_sha256, const std::string& payload_file,
+                     const std::string& payload_sha256, const std::string& mask_file, const std::string& mask_sha256)
+{
+  const json producer  = producer_record(got.producer);
+  const bool published = got.result == isac_estimate::outcome::published;
+  json       map       = json::array();
+  for (unsigned plane = 0; plane != header.rx_count; ++plane) {
+    map.push_back(header.antenna_map[plane]);
+  }
+  return {{"schema", OBS_SCHEMA},
+          {"run_id", run_id},
+          {"keys",
+           {{"epoch", epoch},
+            {"sequence", number},
+            {"episode", hex64(slot.episode)},
+            {"opportunity", hex64(slot.opportunity)},
+            {"grant", hex64(slot.grant)}}},
+          {"radio",
+           {{"cell", slot.cell}, {"ue", slot.ue}, {"sfn", slot.sfn}, {"slot", slot.slot}, {"absolute_slot", slot.absolute_slot}}},
+          {"what",
+           {{"stage", isac_estimate::STAGE_O3},
+            {"producer", isac_estimate::PRODUCER},
+            {"producer_steps", producer["steps"]},
+            {"source", source},
+            {"port", header.port},
+            {"layout", isac_estimate::LAYOUT_O3_FP16},
+            {"dtype", isac_estimate::DTYPE_CFP16},
+            {"scale", producer["scale"]},
+            {"rule", isac_estimate::RULE},
+            {"precision", isac_estimate::PRECISION}}},
+          {"shape",
+           {{"rank", 4},
+            {"axes", {"dmrs_symbol", "prb", "rx_port", "subcarrier_in_prb"}},
+            {"shape", {header.shape[0], header.shape[1], header.shape[2], header.shape[3]}},
+            {"strides", {header.strides[0], header.strides[1], header.strides[2], header.strides[3]}}}},
+          {"allocation",
+           {{"first_subcarrier", header.first_subcarrier},
+            {"subcarrier_step", header.subcarrier_step},
+            {"subcarrier_count", header.subcarrier_count},
+            {"dmrs_symbols", producer["dmrs_symbols"]},
+            {"rx_count", header.rx_count},
+            {"layer_count", header.layer_count},
+            {"antenna_map", map},
+            {"coordinates_sha256", nullptr}}},
+          {"validity",
+           {{"mask_bytes", header.mask_bytes},
+            {"file", mask_file},
+            {"sha256", mask_sha256},
+            {"valid", got.counts.valid},
+            {"holes", got.counts.holes}}},
+          {"time",
+           {{"unit", isac_observer::TIME_UNIT_TC},
+            {"tc_per_second", isac_observer::TC_PER_SECOND},
+            {"t_first_sample", slot.t_first_sample},
+            {"t_last_sample", slot.t_last_sample},
+            {"t_ready_ns", got.t_complete_ns},
+            {"t_publish_ns", published ? json(got.t_publish_ns) : json(nullptr)}}},
+          {"payload",
+           {{"bytes", header.payload_bytes}, {"file", payload_file}, {"digest_kind", "sha256"}, {"digest", payload_sha256}}},
+          {"host",
+           {{"name", OBSERVER_HOST},
+            {"opportunity_id", slot.opportunity_id},
+            {"opportunity_sequence", opportunity_sequence},
+            {"grant_id", grant_id},
+            {"grant_record_sha256", slot.grant_record_sha256},
+            {"ingress",
+             {{"grid_index", got.grid.grid}, {"generation", got.grid.generation}, {"readback_sha256", readback_sha256}}},
+            {"completion", "cuda_event"},
+            {"producer", producer},
+            {"copy", {{"stream", got.copy_stream}, {"landing", got.landing}, {"polls", got.polls}}},
+            {"ring_sequence", published ? json(got.sequence) : json(nullptr)},
+            {"nonzero", got.counts.nonzero},
+            {"service_us", got.submit_us + got.resolve_us}}}};
+}
+
 void usage()
 {
   std::cout << "Usage: pilot_ls --plan FILE --output-dir DIR [--only OPPORTUNITY_ID]... [--no-grids]\n"
                "                [--phy-debug]\n"
                "       pilot_ls --self-test\n"
-               "Decodes the receiver replay that a pilot-ls-plan/v1 or v2 file names, as replay_pusch does, and with\n"
+               "       pilot_ls --route\n"
+               "Decodes the receiver replay that a pilot-ls-plan/v1, v2 or v3 file names, as replay_pusch does, and with\n"
                "the tap \"pilot_ls\" exports the stage O2 from every ready grid before it is decoded:\n"
                "" << isac_observer::RULE << " on the pilots of the grant's sensing source. It writes\n"
                "  DIR/ingress/ingress.jsonl  one o1-grid/v1 descriptor per opportunity\n"
@@ -331,10 +528,19 @@ void usage()
                "In the mode timed nothing is hashed between the first fill and the drain of the ring, observer/ is\n"
                "not written, because the estimate exists only in the slot, and every file is written after the\n"
                "last opportunity.\n"
+               "A pilot-ls-plan/v3 file may name the capture of the receiver's own estimate, the stage O3, which the\n"
+               "build against the patched receiver exports:\n"
+               "  DIR/estimate/captures.jsonl one o3-capture/v1 line per decode of the producing backend\n"
+               "  DIR/estimate/o3.jsonl       one obs-descriptor/v1 record per captured estimate (mode audit)\n"
+               "  DIR/estimate/NNNN.o3.fp16   the estimate, complex FP16 [dmrs_symbol, prb, rx_port, 12], as the\n"
+               "                              device holds it (mode audit)\n"
+               "  DIR/estimate/NNNN.o3.mask   its validity bits (mode audit)\n"
+               "  DIR/estimate/ring.json      the ring of the O3 stream, DIR/estimate/STREAM.sock, when the plan names one\n"
                "DIR must exist and must not hold a result. --only repeats named opportunities of the plan exactly.\n"
                "--phy-debug prints the path decision of the pinned processor for every PDU.\n"
                "--self-test decodes a two-block grant through the host processor with the tap off and on, and once\n"
                "more in the mode timed through a ring.\n"
+               "--route prints whether this build has the route to the estimate of the patched receiver.\n"
                "Exit status 2 for a refused plan, 1 for a decode without a completion or any other error.\n";
 }
 
@@ -986,6 +1192,8 @@ struct timed_slot {
   std::size_t               line      = 0; ///< Of the publisher's account.
   bool                      retained  = false;
   bool                      released  = false;
+  bool                      captured  = false; ///< The capture of the receiver's estimate was opened for this opportunity.
+  std::size_t               capture   = 0;     ///< Its line in the account of the capture.
   std::vector<timed_decode> decodes;
 };
 
@@ -1034,6 +1242,17 @@ int run(int argc, char** argv)
       self_check = true;
     } else if (arg == "--phy-debug") {
       phy_debug = true;
+    } else if (arg == "--route") {
+#ifdef ISAC_O3_ROUTE
+      // The accessor is defined by the receiver patch: this line links only against the patched objects.
+      std::cout << "pilot_ls route: O3 from the patched receiver, tap interface version "
+                << ocudu::PUSCH_RESIDENT_ESTIMATE_TAP_VERSION << ", "
+                << (ocudu::get_pusch_resident_estimate_tap() == nullptr ? "no observer registered" : "an observer registered")
+                << std::endl;
+#else
+      std::cout << "pilot_ls route: none, linked against the receiver without the patch" << std::endl;
+#endif
+      return 0;
     } else if (arg == "--help") {
       usage();
       return 0;
@@ -1062,7 +1281,9 @@ int run(int argc, char** argv)
   const std::string radio_path   = output_dir + "/" + RADIO_DIR;
   const std::string observer_path = output_dir + "/" + OBSERVER_DIR;
   const std::string ring_path     = output_dir + "/" + RING_DIR;
-  if (exists(report_path) || exists(ingress_path) || exists(radio_path) || exists(observer_path) || exists(ring_path)) {
+  const std::string estimate_path = output_dir + "/" + ESTIMATE_DIR;
+  if (exists(report_path) || exists(ingress_path) || exists(radio_path) || exists(observer_path) || exists(ring_path) ||
+      exists(estimate_path)) {
     throw input_error("the output directory already holds a result. Evidence is never overwritten.");
   }
 
@@ -1080,7 +1301,11 @@ int run(int argc, char** argv)
     throw input_error(std::string("the tap pilot_ls exports the stage ") + isac_observer::STAGE_O2 + " in the layout " +
                       isac_observer::LAYOUT_O2_COMB + " and names its sensing source");
   }
-  if (!tapped && (!tap.stage.empty() || !tap.layout.empty() || !tap.source.empty() || !tap.sources.empty())) {
+  // The capture of the receiver's estimate, which a plan of version 3 may name. It needs the
+  // sensing source of every grant as well: the records carry its keys and its sample times.
+  const bool estimating = tap.estimate.present;
+  if (!tapped && (!tap.stage.empty() || !tap.layout.empty() || !tap.source.empty() ||
+                  (!estimating && !tap.sources.empty()))) {
     throw input_error("a run without a tap names no stage, no layout and no sensing source");
   }
   // ---- The evidence mode and the ring of a plan of version 2. A plan of version 1 has neither. ----
@@ -1114,6 +1339,54 @@ int run(int argc, char** argv)
         tap.ring.stream.size() > 16) {
       throw input_error("ring.stream is at most 16 lower-case letters and digits");
     }
+  }
+  if (estimating) {
+    const isac_observer::plan_estimate& wanted = tap.estimate;
+    if (wanted.tap != isac_estimate::TAP_NATIVE_ESTIMATE || wanted.stage != isac_estimate::STAGE_O3 ||
+        wanted.layout != isac_estimate::LAYOUT_O3_FP16) {
+      throw input_error(std::string("the estimate of a plan is the tap ") + isac_estimate::TAP_NATIVE_ESTIMATE +
+                        ", which exports the stage " + isac_estimate::STAGE_O3 + " in the layout " +
+                        isac_estimate::LAYOUT_O3_FP16);
+    }
+    if (wanted.backend != "cuda") {
+      throw input_error("estimate.backend is \"cuda\": only the resident CUDA path of the receiver leaves its estimate "
+                        "on the device. The host path has no such buffer and is recorded as unsupported");
+    }
+    if (wanted.copy_stream != isac_estimate::COPY_PRODUCER && wanted.copy_stream != isac_estimate::COPY_SIDE) {
+      throw input_error("estimate.copy_stream is \"producer\" or \"side\"");
+    }
+    if (wanted.landing != isac_estimate::LANDING_SLOT && wanted.landing != isac_estimate::LANDING_STAGING) {
+      throw input_error("estimate.landing is \"slot\" or \"staging\"");
+    }
+    if (tapped && wanted.source != tap.source) {
+      throw input_error("the estimate names the sensing source " + wanted.source + ", and the observer taps " + tap.source);
+    }
+    if (timed && !wanted.ring.present) {
+      throw input_error("a timed estimate exists in a slot of its ring only: the plan names an estimate and no ring for it");
+    }
+    if (wanted.ring.present) {
+      const plan_ring_check rule = {wanted.ring.window_records, wanted.ring.burst_records};
+      if (wanted.ring.slots != rule.slots()) {
+        throw input_error("estimate.ring.slots is " + std::to_string(wanted.ring.slots) + ", and a window of " +
+                          std::to_string(wanted.ring.window_records) + " records with a burst of " +
+                          std::to_string(wanted.ring.burst_records) + " needs " + std::to_string(rule.slots()));
+      }
+      if (wanted.ring.wait != "spin" && wanted.ring.wait != "wait") {
+        throw input_error("estimate.ring.wait is \"spin\" or \"wait\"");
+      }
+      if (wanted.ring.attach != isac_observer::ATTACH_REQUIRED && wanted.ring.attach != isac_observer::ATTACH_NONE) {
+        throw input_error("estimate.ring.attach is \"required\" or \"none\"");
+      }
+      if (wanted.ring.stream.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789") != std::string::npos ||
+          wanted.ring.stream.size() > 16) {
+        throw input_error("estimate.ring.stream is at most 16 lower-case letters and digits");
+      }
+    }
+#ifndef ISAC_O3_ROUTE
+    throw input_error("the plan names the receiver's own estimate, and this build has no route to it: it is linked "
+                      "against the receiver without the patch of patches/ocudu/. Run the plan with the pilot_ls of the "
+                      "adapter build against the patched receiver (python scripts/native_adapter.py build --o3)");
+#endif
   }
   if (tap.replay_plan.sha256.empty()) {
     throw input_error("the replay plan is bound by no hash");
@@ -1149,6 +1422,11 @@ int run(int argc, char** argv)
     if (std::count(plan.receiver.backends.begin(), plan.receiver.backends.end(), name) != 1) {
       throw input_error("the backend " + name + " is listed twice");
     }
+  }
+  if (estimating && std::find(plan.receiver.backends.begin(), plan.receiver.backends.end(), tap.estimate.backend) ==
+                        plan.receiver.backends.end()) {
+    throw input_error("the plan names the estimate of the backend " + tap.estimate.backend +
+                      ", and the replay plan does not decode on it");
   }
   if (plan.channel_plan.sha256.empty()) {
     throw input_error("the channel plan is bound by no hash");
@@ -1238,8 +1516,13 @@ int run(int argc, char** argv)
   // ---- The observer: one sensing source per grant, bound by the hash that binds the grid. ----
   isac_observer::observer watcher(tap.run_id, tap.epoch, mode);
   isac_transport::ring_needs ring_needs;
+  // The slots of the O3 stream are bound by an observer of their own, so that both streams count
+  // the slots of an episode from the same start and neither depends on the other being on.
+  isac_observer::observer estimate_slots(tap.run_id, tap.epoch, mode);
+  const bool              sourced     = tapped || estimating;
+  const std::string       source_name = tapped ? tap.source : tap.estimate.source;
   for (const isac_replay::grant_spec& bound : spec.grants) {
-    if (!tapped) {
+    if (!sourced) {
       break;
     }
     const auto named = [&bound](const isac_observer::plan_source& item) { return item.grant_id == bound.grant_id; };
@@ -1258,8 +1541,8 @@ int run(int argc, char** argv)
     const isac_observer::source_spec source = isac_observer::load_source(*found, &files);
     const grant_record&              grant  = grants.at(bound.grant_id).record;
     const std::string                where  = "the sensing source of grant " + bound.grant_id;
-    if (source.source != tap.source) {
-      throw input_error(where + " is the source " + source.source + ", and the plan taps " + tap.source);
+    if (source.source != source_name) {
+      throw input_error(where + " is the source " + source.source + ", and the plan taps " + source_name);
     }
     if (source.grid_symbols != shape.symbols || source.grid_subcarriers != shape.subcarriers ||
         source.scs_khz != grant.scs_khz) {
@@ -1282,10 +1565,15 @@ int run(int argc, char** argv)
                           std::to_string(item.subcarrier) + ", outside the allocation of the grant");
       }
     }
-    watcher.bind(source);
-    ring_needs.include(watcher.source_of(bound.record_sha256));
+    if (tapped) {
+      watcher.bind(source);
+      ring_needs.include(watcher.source_of(bound.record_sha256));
+    }
+    if (estimating) {
+      estimate_slots.bind(source);
+    }
   }
-  if (tapped && tap.sources.size() != spec.grants.size()) {
+  if (sourced && tap.sources.size() != spec.grants.size()) {
     throw input_error("the plan lists a sensing source for a grant that the channel plan does not bind");
   }
 
@@ -1354,6 +1642,9 @@ int run(int argc, char** argv)
   if (tapped && !timed) {
     make_directory(observer_path);
   }
+  if (estimating) {
+    make_directory(estimate_path);
+  }
 
   // ---- The opportunities of this run, in the order of the plan, and what a slot must not look up. ----
   std::vector<std::size_t> chosen;
@@ -1413,6 +1704,112 @@ int run(int argc, char** argv)
     }
   }
 
+  // ---- The capture of the receiver's estimate: the ring of the O3 stream, the device objects,
+  // one expectation per decode of the producing backend, all before the first fill. The tap is
+  // registered with the receiver last. ----
+  std::unique_ptr<obs::producer> estimate_ring;
+  bool                           estimate_attached_at_start = false;
+  std::string                    estimate_socket;
+  std::vector<std::size_t>       estimate_handle(replay.opportunities(), NO_HANDLE);
+  std::vector<std::size_t>       estimate_slot_of; // capture handle -> slot of estimate_slots
+  isac_estimate::capture*        taker = nullptr;
+  std::size_t                    estimate_backend = backends.size();
+#ifdef ISAC_O3_ROUTE
+  std::unique_ptr<isac_estimate::device_route> route;
+#endif
+  if (estimating) {
+    for (std::size_t b = 0; b != backends.size(); ++b) {
+      if (backends[b]->name() == tap.estimate.backend) {
+        estimate_backend = b;
+      }
+    }
+    std::vector<isac_estimate::expectation> expected(replay.opportunities());
+    std::size_t                             largest = 0;
+    for (const std::size_t sequence : chosen) {
+      const opportunity_spec& item  = spec.opportunities[sequence];
+      const grant_record&     grant = grants.at(replay.scheduled(sequence).grant_id).record;
+      isac_estimate::expectation& want = expected[sequence];
+      want.rnti      = grant.rnti;
+      want.sfn       = item.sfn;
+      want.slot      = item.slot;
+      want.start_prb = grant.bwp_start_rb + grant.prb_start;
+      want.nof_prb   = grant.prb_count;
+      want.rx_ports  = static_cast<unsigned>(grant.rx_ports.size());
+      want.dmrs_type = grant.dmrs_config_type;
+      for (unsigned symbol : grant.dmrs_symbols) {
+        want.dmrs_symbol_mask |= std::uint64_t(1) << symbol;
+      }
+      largest = std::max(largest, want.shape().payload_bytes());
+    }
+    if (tap.estimate.ring.present) {
+      estimate_socket = estimate_path + "/" + tap.estimate.ring.stream + ".sock";
+      obs::ring_config config;
+      config.socket_path      = estimate_socket;
+      config.slot_count       = tap.estimate.ring.slots;
+      config.host_capacity    = sizeof(isac_transport::staged_host);
+      config.mask_capacity    = static_cast<std::uint32_t>((largest / isac_estimate::ELEMENT_BYTES + 7) / 8);
+      config.payload_capacity = static_cast<std::uint32_t>(largest);
+      config.first_epoch      = tap.epoch;
+      try {
+        estimate_ring = std::make_unique<obs::producer>(config);
+      } catch (const obs::ring_error& error) {
+        throw std::runtime_error(std::string("the ring of the O3 stream could not be created: ") + error.what());
+      }
+    }
+#ifdef ISAC_O3_ROUTE
+    if (!acceleration) {
+      throw std::runtime_error("the plan names the receiver's own estimate, and no CUDA device is usable at run time: "
+                               "the estimate exists only on the device");
+    }
+    isac_estimate::capture_config wanted;
+    wanted.mode             = mode;
+    wanted.slot_landing     = tap.estimate.landing == isac_estimate::LANDING_SLOT;
+    wanted.resolve_limit_ns = static_cast<std::int64_t>(tap.estimate.timeout_us) * 1000;
+    route = std::make_unique<isac_estimate::device_route>(tap.estimate.copy_stream == isac_estimate::COPY_SIDE, largest,
+                                                          estimate_ring.get(), wanted);
+    taker = &route->captures();
+#endif
+    for (const std::size_t sequence : chosen) {
+      if (taker == nullptr) {
+        break;
+      }
+      const opportunity_spec&     item  = spec.opportunities[sequence];
+      const allocation&           bound = replay.scheduled(sequence);
+      const grant_entry&          grant = grants.at(bound.grant_id);
+      isac_observer::slot_context where;
+      where.opportunity_id = item.opportunity_id;
+      where.episode_id     = item.realization_id;
+      where.sfn            = item.sfn;
+      where.slot           = item.slot;
+      where.cell           = grant.record.record.at("carrier").at("n_cell_id").get<unsigned>();
+      where.ue             = grant.record.rnti;
+      const std::size_t                  slot   = estimate_slots.prepare(where, bound.record_sha256);
+      const isac_observer::pilot_source& source = estimate_slots.source_of(bound.record_sha256);
+      estimate_handle[sequence] = taker->prepare(estimate_slots.prepared(slot), expected[sequence], source.spec().antenna_map,
+                                                 source.spec().ports.front(), static_cast<std::uint32_t>(sequence));
+      estimate_slot_of.push_back(slot);
+    }
+    if (taker != nullptr) {
+      taker->reserve(chosen.size());
+    }
+    if (estimate_ring) {
+      if (tap.estimate.ring.attach == isac_observer::ATTACH_REQUIRED) {
+        estimate_attached_at_start =
+            estimate_ring->wait_attached(std::chrono::milliseconds(tap.estimate.ring.attach_timeout_ms));
+        if (!estimate_attached_at_start) {
+          throw std::runtime_error("no consumer attached to " + estimate_socket + " within " +
+                                   std::to_string(tap.estimate.ring.attach_timeout_ms) + " ms, and the plan requires one");
+        }
+      } else {
+        estimate_ring->service();
+        estimate_attached_at_start = estimate_ring->attached();
+      }
+    }
+#ifdef ISAC_O3_ROUTE
+    route->open();
+#endif
+  }
+
   const std::chrono::milliseconds limit(plan.receiver.timeout_ms);
   json                            opportunities = json::array();
   std::string                     ingress_lines;
@@ -1436,6 +1833,45 @@ int run(int argc, char** argv)
   // The parts of the audited observations, and the times of the ring, for the report.
   std::vector<double> part_estimate, part_grid_digest, part_keys_mask, part_payload_digest, ring_publish, ring_estimate;
   json                publication_lines = json::array();
+  // What the capture of the receiver's estimate archives in the mode audit.
+  std::string estimate_lines;
+  std::size_t estimate_archived = 0;
+  // What became of the estimate of one decode, for the entry of its opportunity. In the mode
+  // audit a landed payload is archived here, with its digests, as its opportunity is done.
+  auto estimate_entry = [&](std::size_t sequence, const isac_estimate::capture_line& got, bool archive,
+                            const std::string& readback) {
+    json result = {{"outcome", isac_estimate::to_string(got.result)},
+                   {"reason", *got.reason != '\0' ? json(got.reason) : json(nullptr)},
+                   {"backend", tap.estimate.backend},
+                   {"ring", got.result == isac_estimate::outcome::published ? json(got.sequence) : json(nullptr)},
+                   {"launch", got.seen ? json(got.producer.launch) : json(nullptr)},
+                   {"valid", got.landed ? json(got.counts.valid) : json(nullptr)},
+                   {"holes", got.landed ? json(got.counts.holes) : json(nullptr)},
+                   {"nonzero", got.landed ? json(got.counts.nonzero) : json(nullptr)},
+                   {"payload_sha256", nullptr},
+                   {"mask_sha256", nullptr},
+                   {"submit_us", got.seen ? json(got.submit_us) : json(nullptr)},
+                   {"resolve_us", got.resolve_us}};
+    if (archive && got.landed) {
+      const obs::record_header& header       = taker->header_of(got.handle);
+      const std::string         payload_file = numbered(sequence, ".o3.fp16");
+      const std::string         mask_file    = numbered(sequence, ".o3.mask");
+      const std::string         payload_sha  = sha256_hex(taker->payload(), header.payload_bytes);
+      const std::string         mask_sha     = sha256_hex(taker->mask(), header.mask_bytes);
+      write_bytes(estimate_path + "/" + payload_file, taker->payload(), header.payload_bytes);
+      write_bytes(estimate_path + "/" + mask_file, taker->mask(), header.mask_bytes);
+      estimate_lines += estimate_record(tap.run_id, tap.epoch, estimate_archived,
+                                        estimate_slots.prepared(estimate_slot_of[got.handle]), header, got,
+                                        tap.estimate.source, replay.scheduled(sequence).grant_id, sequence, readback,
+                                        payload_file, payload_sha, mask_file, mask_sha)
+                            .dump() +
+                        "\n";
+      result["payload_sha256"] = payload_sha;
+      result["mask_sha256"]    = mask_sha;
+      ++estimate_archived;
+    }
+    return result;
+  };
   // The hash count before the first fill. A timed run must show the same count at the drain.
   const isac_replay::hash_count hash_bound = isac_replay::sha256_count();
 
@@ -1546,6 +1982,9 @@ int run(int argc, char** argv)
                                 {"sfn", item.sfn},
                                 {"slot", item.slot},
                                 {"decodes", json::array()}};
+    if (tap.version >= 3) {
+      entry["estimate"] = nullptr; // no decode of the producing backend was started for it
+    }
 
     ticket     key;
     const auto filling   = std::chrono::steady_clock::now();
@@ -1670,7 +2109,16 @@ int run(int argc, char** argv)
       } else {
         first_use = !used[backend->name()];
         backend->expect(item.opportunity_id, setups[sequence]);
+        // The receiver's estimate of this decode is expected before the decode starts and
+        // resolved after it. The decode never waits for the copy.
+        const bool captured = taker != nullptr && backend->name() == tap.estimate.backend;
+        if (captured) {
+          taker->expect(estimate_handle[sequence], key);
+        }
         const dispatched done = dispatch(book, *backend, name, key, bound.record_sha256, grant.original, limit);
+        if (captured) {
+          entry["estimate"] = estimate_entry(sequence, taker->resolve(), true, digest);
+        }
         if (done.admitted != admission::admitted) {
           throw std::runtime_error("the grid of opportunity " + item.opportunity_id + " was not admitted for " +
                                    backend->name() + ": " + done.reason);
@@ -1702,6 +2150,9 @@ int run(int argc, char** argv)
     have_previous   = true;
     if (ring) {
       ring->service(); // the control channel, after the decodes of this opportunity
+    }
+    if (estimate_ring) {
+      estimate_ring->service();
     }
   }
   if (have_previous) {
@@ -1782,8 +2233,18 @@ int run(int argc, char** argv)
           continue;
         }
         now.decodes[b].first_use = started[b] == 0;
+        // The receiver's estimate: the admission before the decode, the completion after it.
+        const bool captured = taker != nullptr && b == estimate_backend;
+        if (captured) {
+          now.capture = taker->account().size();
+          taker->expect(estimate_handle[sequence], key);
+        }
         const dispatched result  = dispatch(book, backend, names[n * backends.size() + b], key, bound.record_sha256,
                                             grant_of[n]->original, limit);
+        if (captured) {
+          taker->resolve();
+          now.captured = true;
+        }
         if (result.admitted != admission::admitted) {
           throw std::runtime_error("the grid of opportunity " + item.opportunity_id + " was not admitted for " +
                                    backend.name() + ": " + result.reason);
@@ -1815,6 +2276,9 @@ int run(int argc, char** argv)
       if (ring) {
         ring->service(); // the control channel, after the decodes of this opportunity
       }
+      if (estimate_ring) {
+        estimate_ring->service();
+      }
     }
     if (any) {
       retire_timed(kept[last]);
@@ -1834,6 +2298,27 @@ int run(int argc, char** argv)
     ring->finish();
     ring_counts   = ring->counts();
     consumer_wait = ring_counts.epochs == 0 ? "" : obs::to_string(ring->consumer_mode());
+  }
+  // The receiver calls no observer from here on. A copy that ran out of time is waited for now,
+  // after the last decode, and the O3 stream is drained as the O2 stream is.
+  std::uint64_t        estimate_pending = 0;
+  obs::producer_counts estimate_counts;
+  std::string          estimate_consumer_wait;
+  bool                 estimate_attached_at_drain = false;
+#ifdef ISAC_O3_ROUTE
+  if (route) {
+    route->close();
+  }
+#endif
+  if (taker != nullptr) {
+    taker->settle();
+  }
+  if (estimate_ring) {
+    estimate_pending           = estimate_ring->drain(std::chrono::milliseconds(tap.estimate.ring.drain_ms));
+    estimate_attached_at_drain = estimate_ring->attached();
+    estimate_ring->finish();
+    estimate_counts        = estimate_ring->counts();
+    estimate_consumer_wait = estimate_counts.epochs == 0 ? "" : obs::to_string(estimate_ring->consumer_mode());
   }
   const isac_replay::hash_count hash_drained = isac_replay::sha256_count();
 
@@ -1855,6 +2340,10 @@ int run(int argc, char** argv)
                                         {"decodes", json::array()}};
     json ingress = nullptr;
     entry["observer"] = nullptr;
+    if (tap.version >= 3) {
+      entry["estimate"] = now.captured ? estimate_entry(sequence, taker->account()[now.capture], false, std::string())
+                                       : json(nullptr);
+    }
     if (!now.delivered) {
       entry["grid_index"] = nullptr;
     } else {
@@ -1977,6 +2466,54 @@ int run(int argc, char** argv)
       lines += line.dump() + "\n";
     }
     write_bytes(ring_path + "/publications.jsonl", lines.data(), lines.size());
+  }
+
+  // ---- The account of the capture: one line per decode of the producing backend, in both modes.
+  // It is the trace of the producer and of the completion of every copy. ----
+  json                estimate_outcomes = json::object();
+  json                estimate_reasons  = json::object();
+  std::vector<double> estimate_submit, estimate_resolve;
+  std::size_t         estimate_landed = 0, estimate_valid = 0, estimate_holes = 0, estimate_nonzero = 0, estimate_bytes = 0;
+  std::uint32_t       estimate_polls = 0;
+  if (taker != nullptr) {
+    for (const char* name : {"published", "captured", "dropped", "absent", "refused", "failed"}) {
+      estimate_outcomes[name] = 0;
+    }
+    std::string lines;
+    std::size_t copied = 0;
+    for (const isac_estimate::capture_line& got : taker->account()) {
+      const staged_sequence where = {chosen, estimate_handle, got.handle};
+      lines += capture_record(tap.run_id, tap.evidence, tap.estimate.backend,
+                              estimate_slots.prepared(estimate_slot_of[got.handle]), where.sequence(),
+                              taker->header_of(got.handle), got)
+                   .dump() +
+               "\n";
+      const std::string result = isac_estimate::to_string(got.result);
+      estimate_outcomes[result] = estimate_outcomes[result].get<std::size_t>() + 1;
+      if (*got.reason != '\0') {
+        estimate_reasons[got.reason] = estimate_reasons.value(got.reason, std::size_t(0)) + 1;
+      }
+      if (*got.copy_stream != '\0') {
+        // The first copy of a run includes the set-up of the runtime for it.
+        if (copied != 0) {
+          estimate_submit.push_back(got.submit_us);
+          estimate_resolve.push_back(got.resolve_us);
+        }
+        ++copied;
+        estimate_polls = std::max(estimate_polls, got.polls);
+      }
+      if (got.landed) {
+        ++estimate_landed;
+        estimate_valid += got.counts.valid;
+        estimate_holes += got.counts.holes;
+        estimate_nonzero += got.counts.nonzero;
+        estimate_bytes += taker->header_of(got.handle).payload_bytes;
+      }
+    }
+    write_bytes(estimate_path + "/captures.jsonl", lines.data(), lines.size());
+    if (!timed) {
+      write_bytes(estimate_path + "/o3.jsonl", estimate_lines.data(), estimate_lines.size());
+    }
   }
 
   write_bytes(ingress_path + "/ingress.jsonl", ingress_lines.data(), ingress_lines.size());
@@ -2173,6 +2710,104 @@ int run(int argc, char** argv)
     const std::string ring_text = ring_report.dump(2) + "\n";
     write_bytes(ring_path + "/ring.json", ring_text.data(), ring_text.size());
   }
+  json estimate_ring_report = nullptr;
+  if (estimate_ring) {
+    estimate_ring_report = {
+        {"schema", RING_SCHEMA},
+        {"layout", "obs-ring/v1"},
+        {"definition", hex64(obs::DEFINITION)},
+        {"stream", tap.estimate.ring.stream},
+        {"socket", std::string(ESTIMATE_DIR) + "/" + tap.estimate.ring.stream + ".sock"},
+        {"window_records", tap.estimate.ring.window_records},
+        {"burst_records", tap.estimate.ring.burst_records},
+        {"slot_count", estimate_ring->header().slot_count},
+        {"slot_bytes", estimate_ring->header().slot_bytes},
+        {"segment_bytes", estimate_ring->segment_bytes()},
+        {"payload_capacity", estimate_ring->header().payload_capacity},
+        {"mask_capacity", estimate_ring->header().mask_capacity},
+        {"host_capacity", estimate_ring->header().host_capacity},
+        {"memory_path", RING_MEMORY},
+        {"clock", "CLOCK_MONOTONIC, read without a system call where the host has a vDSO clock"},
+        {"wait",
+         {{"planned", tap.estimate.ring.wait},
+          {"consumer", estimate_consumer_wait.empty() ? json(nullptr) : json(estimate_consumer_wait)}}},
+        {"attach", tap.estimate.ring.attach},
+        {"attached_at_start", estimate_attached_at_start},
+        {"attached_at_drain", estimate_attached_at_drain},
+        {"first_epoch", tap.epoch},
+        {"last_epoch", estimate_ring->epoch()},
+        {"drain_ms", tap.estimate.ring.drain_ms},
+        {"pending_at_cutoff", estimate_pending},
+        {"eligible", taker != nullptr ? taker->account().size() : 0},
+        {"counts",
+         {{"admitted", estimate_counts.admitted},
+          {"published", estimate_counts.published},
+          {"dropped", estimate_counts.dropped},
+          {"cancelled", estimate_counts.cancelled},
+          {"released", estimate_counts.released},
+          {"reclaimed", estimate_counts.reclaimed},
+          {"pending", estimate_counts.pending},
+          {"faults", estimate_counts.faults},
+          {"epochs", estimate_counts.epochs},
+          {"refused", estimate_counts.refused},
+          {"wakes", estimate_counts.wakes},
+          {"window_calls", estimate_counts.window_calls},
+          {"max_depth", estimate_counts.max_depth}}}};
+    const std::string ring_text = estimate_ring_report.dump(2) + "\n";
+    write_bytes(estimate_path + "/ring.json", ring_text.data(), ring_text.size());
+  }
+  // ---- What the capture of the receiver's estimate did. ----
+  json estimate_report = nullptr;
+  if (estimating) {
+    const char* const first_copy = "the first copy of the run";
+    json              landing    = {{"planned", tap.estimate.landing}, {"effective", nullptr}, {"refusal", nullptr}};
+    json              device     = nullptr;
+    json              interface  = nullptr;
+#ifdef ISAC_O3_ROUTE
+    // In the mode audit every copy lands in the staging, because its payload is archived.
+    landing["effective"] = timed && route->slot_landing() ? isac_estimate::LANDING_SLOT : isac_estimate::LANDING_STAGING;
+    if (!route->landing_refusal().empty()) {
+      landing["refusal"] = route->landing_refusal();
+    }
+    device    = {{"id", route->copier_of().device_id()},
+                 {"copies_submitted", route->copier_of().submitted()},
+                 {"last_error", route->copier_of().last_error().empty() ? json(nullptr) : json(route->copier_of().last_error())}};
+    interface = {{"header", "ocudu/phy/upper/channel_processors/pusch/pusch_resident_estimate_tap.h"},
+                 {"version", ocudu::PUSCH_RESIDENT_ESTIMATE_TAP_VERSION}};
+#endif
+    estimate_report = {
+        {"tap", tap.estimate.tap},
+        {"stage", tap.estimate.stage},
+        {"source", tap.estimate.source},
+        {"layout", tap.estimate.layout},
+        {"dtype", isac_estimate::DTYPE_CFP16},
+        {"backend", tap.estimate.backend},
+        {"producer", isac_estimate::PRODUCER},
+        {"rule", isac_estimate::RULE},
+        {"precision", isac_estimate::PRECISION},
+        {"interface", interface},
+        {"copy_stream", tap.estimate.copy_stream},
+        {"landing", landing},
+        {"timeout_us", tap.estimate.timeout_us},
+        {"completion", "one CUDA event recorded behind the copy and queried after the decode, never waited for"},
+        {"device", device},
+        {"mode", tap.evidence},
+        {"eligible", taker != nullptr ? taker->account().size() : 0},
+        {"outcomes", estimate_outcomes},
+        {"reasons", estimate_reasons},
+        {"landed", estimate_landed},
+        {"archived", estimate_archived},
+        {"valid", estimate_valid},
+        {"holes", estimate_holes},
+        {"nonzero", estimate_nonzero},
+        {"payload_bytes", estimate_bytes},
+        {"unexpected", taker != nullptr ? taker->unexpected() : 0},
+        {"overruns", taker != nullptr ? taker->overruns() : 0},
+        {"max_polls", estimate_polls},
+        {"submit_us", time_stats(estimate_submit, first_copy)},
+        {"resolve_us", time_stats(estimate_resolve, first_copy)},
+        {"ring", estimate_ring_report}};
+  }
   const json observer_report = {
       {"tap", tap.tap},
       {"stage", tapped ? json(tap.stage) : json(nullptr)},
@@ -2195,8 +2830,8 @@ int run(int argc, char** argv)
       {"sources", source_list}};
 
   const std::uint16_t endian = 1;
-  const json          report = {
-      {"schema", tap.version == 2 ? NATIVE_SCHEMA_2 : NATIVE_SCHEMA},
+  json                report = {
+      {"schema", tap.version == 3 ? NATIVE_SCHEMA_3 : tap.version == 2 ? NATIVE_SCHEMA_2 : NATIVE_SCHEMA},
       {"run_id", tap.run_id},
       {"plan", {{"file", plan_path}, {"sha256", plan_sha256}}},
       {"evidence", evidence_report},
@@ -2263,6 +2898,19 @@ int run(int argc, char** argv)
       {"built_with_cuda", false},
 #endif
   };
+  if (tap.version >= 3) {
+    // A report of version 3 names the capture, or null, and whether this build has the route.
+    report["estimate"] = estimate_report;
+#ifdef ISAC_O3_ROUTE
+    report["o3_route"] = true;
+#else
+    report["o3_route"] = false;
+#endif
+    report["access"]["estimate"] =
+        "estimate/ holds one o3-capture/v1 line per decode of the producing backend and, in the mode audit, one "
+        "obs-descriptor/v1 record, one payload and one validity mask per captured estimate of the receiver, and "
+        "nothing else";
+  }
   const std::string text = report.dump(2) + "\n";
   write_bytes(report_path, text.data(), text.size());
 
@@ -2272,6 +2920,11 @@ int run(int argc, char** argv)
     std::cout << ", ring " << ring_counts.published << " published, " << ring_counts.dropped << " dropped, "
               << ring_counts.released << " released, " << ring_counts.reclaimed << " reclaimed, " << pending_at_cutoff
               << " pending at the cutoff";
+  }
+  if (taker != nullptr) {
+    std::cout << ", estimate " << estimate_outcomes["published"] << " published, " << estimate_outcomes["captured"]
+              << " captured, " << estimate_outcomes["dropped"] << " dropped, " << estimate_outcomes["absent"] << " absent, "
+              << estimate_outcomes["refused"] << " refused, " << estimate_outcomes["failed"] << " failed";
   }
   for (const json& backend : backend_list) {
     std::cout << ", " << backend["name"].get<std::string>() << " " << backend["outcomes"]["decoded"] << " of "

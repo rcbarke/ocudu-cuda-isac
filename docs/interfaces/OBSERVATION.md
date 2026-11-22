@@ -30,6 +30,8 @@ Little-endian, fixed-width fields, no pointers. The header has one fixed size pe
 | Payload | `payload_bytes`, `digest_kind`, `digest` | The digest is SHA-256 or absent. A timed run may leave it out and let the evaluator digest the archived payload. |
 | Host | `host_bytes` | An opaque block for fields only one host has. The sensing core never reads it. |
 
+Sprint 5.2 produces the stage O3 in the layout `ocudu_o3_fp16` from the receiver's own device buffer, with the steps pilot LS and frequency interpolation, and smoothing for more than one resource block. It publishes on a ring of its own, beside the O2 stream. [The receiver's own estimate](NATIVE_ESTIMATE.md)
+
 Nothing in the record is truth. H, W, the original transport block and the labels stay with the evaluator.
 
 Sprint 3.1 writes these fields as one JSON record per observation, `obs-descriptor/v1`, with the groups `keys`, `radio`, `what`, `shape`, `allocation`, `validity`, `time`, `payload` and `host`, beside the payload and the validity bits as files. The binary header of Sprint 3.2 packs the same values. In the staged harness the join keys are the leading 64 bits of the SHA-256 of the opaque identifiers, hashed when the plan is bound and not per slot, and `time_unit` is T_c from slot 0 of the epoch. [Record and layout of O2](PILOT_LS.md#the-record-obs-descriptorv1)

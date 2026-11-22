@@ -777,6 +777,84 @@ class ReferenceEnvironmentTest(unittest.TestCase):
                 native_ocudu.selected_gpu()
 
 
+class PatchedBuildTest(FakeBuildCase):
+    """Sprint 5.2: the receiver with the patch series is built from its own tree and never published."""
+
+    PIN = LOCK_ENTRY["commit"]
+    IDENTITY = {"schema": "receiver-patch/v1", "series": "patches/ocudu/series.json", "series_sha256": "ab" * 32,
+                "base_commit": LOCK_ENTRY["commit"], "patches": [{"file": "0001-tap.patch", "sha256": "cd" * 32}],
+                "files": {"include/tap.h": "ef" * 32, "lib/demod.cpp": "01" * 32}, "interfaces": []}
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self.root / "ext/ocudu-o3"  # beside the locked source, as the double of the commands expects
+        self.tree.mkdir()
+        self.cache["CMAKE_HOME_DIRECTORY:INTERNAL"] = str(self.tree)
+        self.identity = dict(self.IDENTITY, tree_kind="patched-copy", tree=str(self.tree))
+        patched = native_ocudu.receiver_patch
+        self.stack.enter_context(patch.object(patched, "load_series", side_effect=lambda: {"sha256": "ab" * 32}))
+        self.stack.enter_context(patch.object(patched, "verify_tree", side_effect=lambda tree, series: self.identity))
+        self.stack.enter_context(patch.object(patched, "identity", side_effect=lambda series: dict(self.IDENTITY)))
+
+    def build_patched(self):
+        args = Namespace(jobs=8, machine="spark", mcpu=None)
+        native_ocudu.native_build(args, self.build, self.run, self.gpu, self.PIN, "all", {}, source=self.tree,
+                                  patch=dict(self.identity))
+
+    def test_the_receipt_carries_the_series_and_nothing_is_published(self):
+        self.build_patched()
+        receipt = json.loads((self.build / "isac-native.json").read_text())
+        self.assertEqual(receipt, json.loads((self.run / "native-build.json").read_text()))
+        self.assertEqual((receipt["source"], receipt["locked_source"], receipt["source_kind"]),
+                         (str(self.tree), str(self.source), "patched-copy"))
+        self.assertEqual(receipt["patch"]["series_sha256"], "ab" * 32)
+        self.assertEqual(receipt["patch"]["patches"], [{"file": "0001-tap.patch", "sha256": "cd" * 32}])
+        self.assertIn("gnb_sha256", receipt)
+        # The links in isac/bin belong to the unpatched build: the control.
+        self.assertEqual(self.published(), [])
+        configure = next(command for command in self.commands if command[:2] == ["cmake", "-S"])
+        self.assertEqual(configure[2], str(self.tree))
+        # A build of the locked source says nothing of a patch and is published as before.
+        self.cache["CMAKE_HOME_DIRECTORY:INTERNAL"] = str(self.source)
+        self.build_full(pin=self.PIN)
+        self.assertNotIn("patch", json.loads((self.build / "isac-native.json").read_text()))
+        self.assertEqual(self.published(), ["gnb", "pusch_e2e_pipeline_test"])
+
+    def test_a_series_that_changed_during_the_build_leaves_no_receipt(self):
+        self.identity = dict(self.identity, series_sha256="00" * 32)
+        with self.assertRaisesRegex(ValueError, "The patch series changed while the patched receiver was built"):
+            native_ocudu.native_build(Namespace(jobs=8, machine="spark", mcpu=None), self.build, self.run, self.gpu,
+                                      self.PIN, "all", {}, source=self.tree, patch=dict(self.IDENTITY))
+        self.assertFalse((self.build / "isac-native.json").exists())
+
+    def test_the_patched_build_is_graded_under_its_own_label_against_the_series(self):
+        self.banner = "OCUDU 5G gNB version 26.04.0 ()"  # a copy has no revision of its own
+        self.build_patched()
+        native_ocudu.write_json(self.run / "reference-environment.json", reference_report("spark", spark_facts(), "neoverse-v2"))
+        native_ocudu.write_json(self.run / "platform.json", {"overrides": {}})
+        (self.run / "status.txt").write_text("stage=completed\nexit_code=0\n")
+        failed, lines = native_ocudu.grade(self.run, pin=self.PIN)
+        self.assertFalse(failed, lines)
+        self.assertIn(f"PASS  S5.2 patched receiver patch series {'ab' * 6} on {self.PIN[:12]}: 0001-tap.patch "
+                      f"{'cd' * 6}, 2 files touched, built from a patched-copy", lines)
+        self.assertTrue(all(line.startswith(("PASS  S5.2 patched receiver ", "NOTE  ")) for line in lines), lines)
+        # The series of the tree moved on: the build is no longer the patched receiver of this tree.
+        self.IDENTITY = dict(self.IDENTITY, series_sha256="11" * 32)
+        failed, lines = native_ocudu.grade(self.run, pin=self.PIN)
+        self.assertTrue(failed)
+        self.assertIn("the series of patches/ocudu/ differs from it", "\n".join(lines))
+
+    def test_the_patched_tree_and_its_build_get_their_own_directories(self):
+        for arguments, words in ((["build", "--patched-source", "build/x"], "--patched-source can only be used with"),
+                                 (["build", "--patched", "--patched-source", "ext/x"], "outside ext/ and isac/"),
+                                 (["build", "--patched", "--build-dir", "build/a", "--patched-source", "build/a/src"],
+                                  "must be two separate directories")):
+            said = io.StringIO()
+            with self.assertRaises(SystemExit), redirect_stderr(said):
+                native_ocudu.main(arguments)
+            self.assertIn(words, said.getvalue())
+
+
 class EvidenceGradeTest(FakeBuildCase):
     """Grade the files a finished build leaves behind, then damage them one at a time."""
 
