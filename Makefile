@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 accept-s5.2 native-deps native-build native-build-o3 adapter-build adapter-build-o3 episode-pair episode-set paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 accept-s3.5 accept-s5.2 native-deps native-build native-build-o3 adapter-build adapter-build-o3 episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -23,6 +23,7 @@ help:
 	@echo "make accept-s3.3     Form the radar cube, the delay-Doppler view and the causal features of the pair from the ring of the accepted Sprint 3.2 run, from the files of its observer and from a live ring, verify the known return, grade and archive (REHEARSAL=1 on a host without CUDA)"
 	@echo "make accept-s3.4     Train one linear presence head on receiver-derived records of an episode set, freeze its artifact, score held-out records in a second CUDA process and offline, grade and archive (S33_RUN=, EPISODE_SET=, REHEARSAL=1 on a host without CUDA)"
 	@echo "make accept-s5.2     Build the patched receiver from its own tree and the adapter with the O3 route, export the receiver's CUDA channel estimate on the plans of the accepted Sprint 3.1 run, compare it with the matched estimator and the decodes with the unpatched build, grade and archive (S31_RUN=, JOBS=8)"
+	@echo "make accept-s3.5     Run the cuSense-like branch on the receiver's own estimate: fit the background template and the z-score on the training trajectories of the episode set of the accepted Sprint 3.4 run, train the location map and the presence logit, freeze one artifact per input entry, score held-out records in a second CUDA process and offline, grade and archive (S34_RUN=, S52_RUN=, EPISODE_SET=)"
 	@echo "make native-build-o3 Build the pinned receiver with the patch series of patches/ocudu, from a separate tree, into build/ocudu-spark-o3"
 	@echo "make adapter-build-o3 Build the adapter against the patched receiver, with the O3 route, into build/ocudu-adapter-o3"
 	@echo "make episode-pair    Trace the reference pair alone into a new directory under data/episodes (CONFIG=, OUT=)"
@@ -126,6 +127,17 @@ accept-s3.4:
 # are not touched. There is no rehearsal: the estimate exists only on a CUDA device.
 accept-s5.2:
 	bash scripts/accept_s5_2.sh $(if $(S31_RUN),--s31-run $(S31_RUN)) $(if $(JOBS),--jobs $(JOBS))
+
+# Sprint 3.5 follows Sprint 5.2: its input is the receiver's own estimate. The controls are the
+# accepted Sprint 3.4 run and the accepted Sprint 5.2 run: the newest of each, or S34_RUN and
+# S52_RUN. The stimulus is the episode set that the Sprint 3.4 run was graded on, or EPISODE_SET.
+# The gate changes no native source: it rebuilds the adapter with the O3 route against the patched
+# receiver in build/ocudu-spark-o3, which must have the bytes of the Sprint 5.2 run, and never
+# rebuilds the receiver. It trains and scores the reference of the branch, NumPy and PyTorch in
+# the interpreter of isac, which needs the full profile. There is no rehearsal: the estimate
+# exists only on a CUDA device.
+accept-s3.5:
+	bash scripts/accept_s3_5.sh $(if $(S34_RUN),--s34-run $(S34_RUN)) $(if $(S52_RUN),--s52-run $(S52_RUN)) $(if $(EPISODE_SET),--episode-set $(EPISODE_SET))
 
 native-build-o3:
 	$(PYTHON) scripts/native_ocudu.py build --patched $(if $(JOBS),--jobs $(JOBS))

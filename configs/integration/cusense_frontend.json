@@ -1,0 +1,213 @@
+{
+  "schema": "integration-config/cusense_frontend/v1",
+  "selector": "cusense_frontend",
+  "adapter_build": "build/ocudu-adapter-o3",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "control": {
+    "driver": "presence_head"
+  },
+  "set": {
+    "entries_per_run": 25,
+    "expect": {
+      "set_id": "demo-set-v1",
+      "episodes": {
+        "training": 300,
+        "validation": 40,
+        "held_out": 10
+      },
+      "windows_per_realization": 8,
+      "grid": [
+        50,
+        34
+      ]
+    }
+  },
+  "receiver": {
+    "keep_grids": false
+  },
+  "rings": {
+    "o2": {
+      "stream": "o2",
+      "window_records": 3,
+      "burst_records": 3,
+      "slots": 8,
+      "wait": "wait",
+      "attach_timeout_ms": 30000,
+      "drain_ms": 5000
+    },
+    "o3": {
+      "stream": "o3",
+      "window_records": 3,
+      "burst_records": 3,
+      "slots": 8,
+      "wait": "wait",
+      "attach_timeout_ms": 30000,
+      "drain_ms": 5000
+    }
+  },
+  "estimate": {
+    "copy_stream": "producer",
+    "landing": "slot",
+    "timeout_us": 2000
+  },
+  "arms": {
+    "o3": {
+      "spec": {
+        "schema": "cusense-spec/v1",
+        "spec_id": "cusense-o3-period",
+        "input": {
+          "stage": "O3",
+          "source": "pusch_dmrs",
+          "layout": "ocudu_o3_fp16",
+          "dtype": "<cfp16",
+          "entry": "o3_fp16"
+        },
+        "radio": {
+          "scs_khz": 30,
+          "period_slots": 10
+        },
+        "window": {
+          "slots_in_period": [
+            7,
+            8,
+            9
+          ],
+          "min_valid_fraction": 0.9
+        },
+        "support": {
+          "first_subcarrier": 0,
+          "subcarrier_step": 1,
+          "subcarriers": 612,
+          "dmrs_symbols": 2,
+          "rx": 4
+        },
+        "steps": {
+          "ingest": "ocudu_o3_fp16",
+          "window": "coherent_mean",
+          "clutter": "background_magnitude",
+          "symbols": "dmrs_mean",
+          "normalizer": "zscore_global"
+        },
+        "validity": {
+          "tau": 1e-10
+        }
+      },
+      "model_id": "cusense-o3-v1"
+    },
+    "o2": {
+      "spec": {
+        "schema": "cusense-spec/v1",
+        "spec_id": "cusense-o2-period",
+        "input": {
+          "stage": "O2",
+          "source": "pusch_dmrs",
+          "layout": "ocudu_o2_comb_c64",
+          "dtype": "<c8",
+          "entry": "o2_comb"
+        },
+        "radio": {
+          "scs_khz": 30,
+          "period_slots": 10
+        },
+        "window": {
+          "slots_in_period": [
+            7,
+            8,
+            9
+          ],
+          "min_valid_fraction": 0.9
+        },
+        "support": {
+          "first_subcarrier": 0,
+          "subcarrier_step": 2,
+          "subcarriers": 306,
+          "dmrs_symbols": 2,
+          "rx": 4
+        },
+        "steps": {
+          "ingest": "ocudu_o2_comb_c64",
+          "window": "coherent_mean",
+          "clutter": "background_magnitude",
+          "symbols": "dmrs_mean",
+          "normalizer": "zscore_global"
+        },
+        "validity": {
+          "tau": 1e-10
+        }
+      },
+      "model_id": "cusense-o2-v1"
+    }
+  },
+  "training": {
+    "schema": "cusense-train-config/v1",
+    "model_id": "cusense-o3-v1",
+    "model": {
+      "stem_channels": 64,
+      "stem_kernel": 7,
+      "block_channels": [
+        128,
+        256,
+        512
+      ],
+      "block_kernel": 3,
+      "hidden": [
+        512,
+        256
+      ],
+      "dropout": [
+        0.3,
+        0.15
+      ]
+    },
+    "loss": {
+      "grid_weight": 1.0,
+      "sigma_cells": 8.0
+    },
+    "optimizer": {
+      "entry": "adam",
+      "learning_rate": 0.001,
+      "batch_size": 256,
+      "epochs": 100,
+      "weight_decay": 0.0
+    },
+    "seed": 20261122,
+    "device": "auto",
+    "min_per_class": 20,
+    "threshold": {
+      "target_false_alarm": 0.05,
+      "min_negatives": 20
+    },
+    "smoothing": {
+      "entry": "map_mean_kalman",
+      "maps": 10,
+      "process_noise_m2_s3": 1.0,
+      "measurement_noise_m2": 0.25,
+      "initial_speed_m_s": 1.5
+    }
+  },
+  "sensor": {
+    "device": "cuda",
+    "ready_timeout_ms": 120000
+  },
+  "selection": {
+    "window": "last"
+  },
+  "tolerance": {
+    "logit_absolute": 0.001,
+    "logit_relative": 0.0001,
+    "probability_absolute": 0.00025,
+    "map_absolute": 0.0001,
+    "reload_absolute": 1e-05,
+    "window_relative": 1e-06
+  },
+  "expect": {
+    "validation_auc_min": 0.75,
+    "published": {
+      "mean_position_error_cm": 73,
+      "live_inference_us": 241
+    }
+  }
+}

@@ -81,7 +81,8 @@ class CoreImportTests(unittest.TestCase):
             names.append(name)
             with self.subTest(module=name):
                 self.assertEqual(violations(path.read_text(encoding="ascii"), name, path.name == "__init__.py"), [])
-        for needed in ("features", "obs", "pilot_ls", "presence", "sources", "sources.pusch_dmrs"):
+        for needed in ("cusense", "features", "models", "models.cusense_cnn", "native_estimate", "obs", "pilot_ls",
+                       "presence", "sources", "sources.pusch_dmrs"):
             self.assertIn(f"{PACKAGE}.{needed}", names)
 
     def test_the_rule_finds_what_it_forbids(self):
@@ -106,14 +107,25 @@ class CoreImportTests(unittest.TestCase):
         self.assertIn(PACKAGE, imports_of(evaluator, "ocudu_cuda_isac.episodes.presence_head", False))
         self.assertEqual(violations("from . import features\nfrom . import obs\nimport torch\nimport numpy as np",
                                     f"{PACKAGE}.presence"), [])
+        # And for the cuSense-like branch of Sprint 3.5: the model entry is a module of the core, under models/,
+        # and the positions of a target are the evaluator's.
+        evaluator = (ROOT / "src/ocudu_cuda_isac/episodes/cusense_frontend.py").read_text(encoding="ascii")
+        self.assertIn(PACKAGE, imports_of(evaluator, "ocudu_cuda_isac.episodes.cusense_frontend", False))
+        self.assertEqual(violations("from . import presence\nfrom .models import cusense_cnn\nimport torch",
+                                    f"{PACKAGE}.cusense"), [])
+        self.assertEqual(violations("import torch\nfrom torch import nn\nimport numpy as np",
+                                    f"{PACKAGE}.models.cusense_cnn"), [])
+        self.assertEqual(violations("from ...episodes import cusense_frontend", f"{PACKAGE}.models.cusense_cnn"),
+                         ["ocudu_cuda_isac.episodes"])
 
     def test_an_interpreter_that_imported_the_core_holds_no_host_module(self):
         names = [module_name(path) for path in self.modules()]
-        # The reference of the features is NumPy, and that of the head PyTorch on top of it.
+        # The reference of the features is NumPy, and that of the head and of the cuSense-like branch PyTorch on
+        # top of it.
         if importlib.util.find_spec("numpy") is None:
-            names = [name for name in names if not name.endswith((".features", ".presence"))]
+            names = [name for name in names if not name.endswith((".features", ".presence", ".cusense", ".cusense_cnn"))]
         elif importlib.util.find_spec("torch") is None:
-            names = [name for name in names if not name.endswith(".presence")]
+            names = [name for name in names if not name.endswith((".presence", ".cusense", ".cusense_cnn"))]
         script = ("import importlib, json, sys\n"
                   f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
                   f"for name in {names!r}:\n"

@@ -131,12 +131,12 @@ Names are the entries of the [ablation axes](ABLATIONS.md). The reference column
 | Stage | Entries | Reference | Native unit | Tickets |
 |---|---|---|---|---|
 | Ingest | `ocudu_o3_fp16`, `ocudu_o2_comb_c64`, `ocudu_o1_cbf16`, `aerial_hest_c64`, `aerial_iq_fp16` | The record reader | `src/ingest/` | S3.6, S10.2, S11.2 |
-| cuSense front end | Window average with PRB placement, `background_magnitude`, DMRS average, z-score | `cusense.py` | `src/kernels/` | S3.5, S3.6 |
+| cuSense front end | Window average with PRB placement, `background_magnitude`, DMRS average, z-score. Built in S3.5 as reference entries: the inputs `o3_fp16` and `o2_comb`, window `coherent_mean`, clutter `background_magnitude`, symbols `dmrs_mean`, normalizer `zscore_global`, and the optional stage `map_mean_kalman`. [Definitions](../interfaces/CUSENSE_FRONTEND.md) | `cusense.py` | `src/kernels/` | S3.5, S3.6 |
 | Radar cube and delay-Doppler | Cube formation, windows, regular and irregular transforms. Built in S3.3 as reference entries: `comb_cube`, static removal `window_mean`, delay `ifft`, Doppler `fft` and `ndft`, features `dd_compact`. [Definitions](../interfaces/PILOT_FEATURES.md) | `features.py`, `spectral.py` | `src/kernels/` with cuFFT | S3.3, S6.2, S6.12 |
 | Clutter | `background_complex`, `background_recursive`, `mti_2`, `mti_3`, `whitening`, `projection`, `nlms`, `rls` | `spectral.py` | `src/kernels/` | S6.2, S6.12 |
 | Detector | `frozen_threshold`, `cfar_ca`, `cfar_os`, `cfar_go`, `cfar_so`. Built in S3.4 as a reference entry: `frozen_threshold`, a logit of a target-absent validation window. [Definitions](../interfaces/PRESENCE_HEAD.md) | `presence.py`, `spectral.py` | `src/kernels/` | S3.4, S6.2, S6.12 |
 | Angle | Covariance, `bartlett`, `music`, model order | `angle.py` | `src/kernels/` with a batched Hermitian eigensolver | S6.3, S6.13 |
-| Models | `cusense_cnn`, `linear`, `gru`, `transformer`, `joint`, learned covariance heads. Built in S3.4 as reference entries: `linear` with its normalizer `zscore`, frozen as the artifact `presence-head/v1`. | `presence.py`, `models/` | `src/engine/` | S3.4, S3.5, S6.5, S6.6, S6.11, exported by the route of S3.6 |
+| Models | `cusense_cnn`, `linear`, `gru`, `transformer`, `joint`, learned covariance heads. Built in S3.4 as reference entries: `linear` with its normalizer `zscore`, frozen as the artifact `presence-head/v1`. Built in S3.5 as a reference entry: `cusense_cnn` with the heads `location_grid` and `presence`, frozen as the artifact `cusense-artifact/v1` of four files. | `presence.py`, `cusense.py`, `models/` | `src/engine/` | S3.4, S3.5, S6.5, S6.6, S6.11, exported by the route of S3.6 |
 
 ## Runtime axis
 
