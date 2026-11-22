@@ -254,4 +254,6 @@ The four cases and their checks:
 
 Decided on 2026-11-20: S2.3 applies the grid gain as a requirement, `demo_set.json` is sufficient as the initial configuration and is tuned once the remaining components are built, and a transport block per opportunity is assigned to S2.4. Still open: the target-absent channel is stored once per opportunity although it does not change, and the target-absent runs of a set differ by their noise only.
 
+**Replaying a set (Sprint 3.4).** An entry of a set binds no transmit grid: only the reference pair of the gate does. A set has the grant record and the schedule of the pair, so the plan of a set replay takes the grids that the pair recorded, grant by grant, and requires the same grant record. An episode has the group of its trajectory, and that assignment is the split of the presence head: training, validation and held-out windows never share a trajectory. An entry of the demonstration set lasts eight periods, one window of the delay-Doppler branch, so each realization gives one window. [Presence head](PRESENCE_HEAD.md)
+
 The evidence is on the Spark under `results/runs/`, which Git ignores.

@@ -104,6 +104,8 @@ An override is allowed for a fixture that has no entry, such as the unit vectors
 
 `entry_plan(run_id, entries, stores)` builds a plan from one or more episode entries. It verifies each entry with `open_episode`, takes the gain from its calibration and requires one value across entries. For every grant it opens the store entry with `open_store` and requires the hash of `x.npy` to be the one the entry binds, looking first at the directory the entry recorded and then under `<root>/<grant_id>/store` of each named root. The occupied elements are `pilot_index.npy` and `data_index.npy` of that store. `fixture_plan(...)` builds a plan from arrays a test wrote, with an override.
 
+**Entries of a set.** The exporter writes the entries of an episode set without a transmit grid, and `entry_plan` refuses such an entry. Sprint 3.4 added one argument: `entry_plan(run_id, entries, stores, cases, bindings)`. `bindings` maps a grant to the `x_sha256` and the store that an accepted entry recorded for the grant of that name, and serves an entry that binds none itself. The store must still hold the grant record of the entry, by its hash and field by field. Without the argument the plan is unchanged. [Replaying a set](PRESENCE_HEAD.md#the-evaluator-side)
+
 **Who binds what.** The plan builder decides which grid an entry binds, because only it reads the entry. The native tool reads the plan and no manifest: it verifies every file against the hash the plan names, and it would have to read the truth of an entry to do more. A plan names no transport block and no label, and identifiers are opaque: `rz-` and twelve hexadecimal digits for a realization, that and the opportunity index for an opportunity.
 
 ## The native core

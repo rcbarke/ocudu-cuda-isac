@@ -459,7 +459,7 @@ def _bound_store(grant_id, binding, roots):
                          f"{grant_id}/store with --grant-store.")
 
 
-def entry_plan(run_id, entries, stores=(), cases=("a", "b")):
+def entry_plan(run_id, entries, stores=(), cases=("a", "b"), bindings=None):
     """A plan that replays episode entries: one or more channel-episode/v1 directories.
 
     Every entry is verified by open_episode. Its gain is calibration.grid_gain, and all entries of
@@ -467,6 +467,12 @@ def entry_plan(run_id, entries, stores=(), cases=("a", "b")):
     store entry whose hash the entry binds: the directory the entry recorded, or
     <root>/<grant_id>/store under one of stores. Opportunities follow in the order of the entries,
     the cases and the schedule, under opaque identifiers.
+
+    An entry of an episode set is exported without a transmit grid. bindings, when given, maps a
+    grant to the {"x_sha256", "store"} that an accepted entry recorded for the grant of that name,
+    and serves an entry that binds none itself. The store must hold the grant record of the entry,
+    by its hash and field by field, as for a grid the entry binds. Without bindings such an entry
+    is refused, as before.
     """
     if not entries:
         raise GridApplyError("a plan needs at least one episode entry")
@@ -492,7 +498,10 @@ def entry_plan(run_id, entries, stores=(), cases=("a", "b")):
             raise GridApplyError(f"episode {episode.episode_id} has the carrier grid {shape}, the run has {carrier}")
         for grant_id, grant in sorted(episode.schedule.grants.items()):
             described = manifest["grants"][grant_id]
-            store = _bound_store(grant_id, described.get("x"), stores)
+            binding = described.get("x")
+            if binding is None and bindings is not None:
+                binding = bindings.get(grant_id)
+            store = _bound_store(grant_id, binding, stores)
             item = grant_from_store(store)
             if item["record_sha256"] != described["record_sha256"] or store.grant.record() != grant.record():
                 raise GridApplyError(f"the store entry of grant {grant_id} holds another grant record than the entry")

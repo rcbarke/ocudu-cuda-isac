@@ -19,6 +19,7 @@
 | [Observation contract](interfaces/OBSERVATION.md) | The observation record, the shared-memory ring between the receiver and the sensor, payload layouts and the view the native core consumes |
 | [Observations on the ring](interfaces/SNAPSHOT_RING.md) | Sprint 3.2: what the ring and the timed path are built from, the plan `pilot-ls-plan/v2`, the files and the account of a run, the gate and what a development host checked |
 | [Radar cube and features](interfaces/PILOT_FEATURES.md) | Sprint 3.3: the cube and its axes, the specification of a sensor, what a causal stream answers at each record, the delay-Doppler view and the feature vector with a baked example, the registry of steps with their devices, the files of a sensor, the evaluator side and the gate |
+| [Presence head](interfaces/PRESENCE_HEAD.md) | Sprint 3.4: the artifact of two files and its arithmetic with a baked example, how a head binds to the names of a vector, what the fit and the threshold may read, the decision record, the files of a sensor and of a training run, the split of an episode set and its replay, and the gate |
 | [KPI stream and live page](interfaces/KPI.md) | KPI record and catalog, page rules and commands for the demonstration |
 | [Offline RT exporter](interfaces/RT_EXPORT.md) | The four-time, twelve-tone diagnostic pair, kept as a regression of the axis order |
 | [Measurement protocol](research/EVALUATION.md) | Deadlines, denominators, splits, scientific controls and uncertainty |

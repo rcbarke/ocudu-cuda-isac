@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 native-deps native-build adapter-build episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -21,6 +21,7 @@ help:
 	@echo "make accept-s3.1     Build the tapped receiver replay, export the pilot LS (O2) from the grids of the accepted Sprint 2.4 run, compare the decodes, grade and archive (REHEARSAL=1 on a host without CUDA)"
 	@echo "make accept-s3.2     Build the observation ring and the timed path, publish the pair of the accepted Sprint 3.1 run to a consumer in the modes audit and timed, grade and archive (REHEARSAL=1 on a host without CUDA)"
 	@echo "make accept-s3.3     Form the radar cube, the delay-Doppler view and the causal features of the pair from the ring of the accepted Sprint 3.2 run, from the files of its observer and from a live ring, verify the known return, grade and archive (REHEARSAL=1 on a host without CUDA)"
+	@echo "make accept-s3.4     Train one linear presence head on receiver-derived records of an episode set, freeze its artifact, score held-out records in a second CUDA process and offline, grade and archive (S33_RUN=, EPISODE_SET=, REHEARSAL=1 on a host without CUDA)"
 	@echo "make episode-pair    Trace the reference pair alone into a new directory under data/episodes (CONFIG=, OUT=)"
 	@echo "make episode-set     Trace an episode set into a new directory under data/episodes (CONFIG=, OUT=, VARIANT=)"
 	@echo "make paper-baseline  Execute the DeepSig one-layer comparison alone on Spark"
@@ -107,6 +108,14 @@ accept-s3.2:
 # path against a rehearsed Sprint 3.2 run. It ends REHEARSED and never ACCEPTED.
 accept-s3.3:
 	bash scripts/accept_s3_3.sh $(if $(S32_RUN),--s32-run $(S32_RUN)) $(if $(REHEARSAL),--host-rehearsal)
+
+# The control is the accepted Sprint 3.3 run: the newest one, or S33_RUN. The stimulus is an episode
+# set under data/episodes: the newest demo-set-*, or EPISODE_SET. "make episode-set" traces one.
+# This gate changes no native source. It trains and scores the reference of the head, PyTorch in
+# the interpreter of isac, which needs the full profile. REHEARSAL=1 grades the host path against
+# a rehearsed Sprint 3.3 run and scores on the CPU. It ends REHEARSED and never ACCEPTED.
+accept-s3.4:
+	bash scripts/accept_s3_4.sh $(if $(S33_RUN),--s33-run $(S33_RUN)) $(if $(EPISODE_SET),--episode-set $(EPISODE_SET)) $(if $(REHEARSAL),--host-rehearsal)
 
 # Offline channel generation. The output directory must be new. VARIANT selects the Mitsuba variant.
 VARIANT ?= llvm_ad_mono_polarized

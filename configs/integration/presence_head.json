@@ -1,0 +1,99 @@
+{
+  "schema": "integration-config/presence_head/v1",
+  "selector": "presence_head",
+  "adapter_build": "build/ocudu-adapter",
+  "backends": [
+    "cpu",
+    "cuda"
+  ],
+  "control": {
+    "driver": "pilot_features",
+    "run": "live"
+  },
+  "set": {
+    "entries_per_run": 25,
+    "expect": {
+      "set_id": "demo-set-v1",
+      "episodes": {
+        "training": 300,
+        "validation": 40,
+        "held_out": 10
+      }
+    }
+  },
+  "receiver": {
+    "keep_grids": false
+  },
+  "ring": {
+    "stream": "o2",
+    "window_records": 3,
+    "burst_records": 3,
+    "slots": 8,
+    "wait": "wait",
+    "attach_timeout_ms": 30000,
+    "drain_ms": 5000
+  },
+  "spec": {
+    "schema": "pilot-features-spec/v1",
+    "spec_id": "dd-uniform-8",
+    "input": {
+      "stage": "O2",
+      "source": "pusch_dmrs",
+      "layout": "ocudu_o2_comb_c64",
+      "dtype": "<c8"
+    },
+    "radio": {
+      "scs_khz": 30,
+      "period_slots": 10
+    },
+    "sequence": {
+      "slots_in_period": [
+        7
+      ],
+      "reference_symbols": [
+        0
+      ]
+    },
+    "window": {
+      "periods": 8,
+      "hop_periods": 8,
+      "min_valid_fraction": 0.9
+    },
+    "steps": {
+      "cube": "comb_cube",
+      "static": "window_mean",
+      "delay": "ifft",
+      "doppler": "fft",
+      "features": "dd_compact"
+    },
+    "view": {
+      "delay_bins": 32,
+      "doppler_grid": null,
+      "floor_db": 120.0
+    }
+  },
+  "training": {
+    "schema": "presence-train-config/v1",
+    "head_id": "dd-linear-v1",
+    "columns": [
+      "peak_to_median_db",
+      "profile_db@*"
+    ],
+    "l2": 0.01,
+    "max_iterations": 200,
+    "min_per_class": 20,
+    "threshold": {
+      "target_false_alarm": 0.05,
+      "min_negatives": 20
+    }
+  },
+  "sensor": {
+    "device": "cuda",
+    "ready_timeout_ms": 120000
+  },
+  "tolerance": {
+    "logit_absolute": 0.0001,
+    "probability_absolute": 1e-05,
+    "reload_absolute": 1e-06
+  }
+}
