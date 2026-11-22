@@ -2,7 +2,7 @@
 
 Sprint 5.2 exports the channel estimate that the resident CUDA path of the pinned receiver computes for its own equalizer. It is the first sprint that changes the receiver, by one patch of 137 added lines and no kernel, and the first whose observation is produced on the device. The stage O2 of Sprint 3.1 is unchanged and stays a stream of its own: it is the parity reference and the fallback input.
 
-Status: implemented and unit accepted on an x86_64 host without an OCUDU build and without a CUDA device. The hardware gate `make accept-s5.2` is open until it has run on the DGX Spark. Nothing in this page is a measurement of the Spark.
+Status: **accepted on the DGX Spark `spark-ecf8` on 2026-11-22 (UTC).** `make accept-s5.2` passed on `spark-ecf8` on 2026-11-22 (UTC) at commit `2238d8c`, run `s52-spark-ecf8-20261122T045318Z`, on the first attempt: 69 gate lines, 10 of 10 cases and 44 of 44 checks, hardware gate closed, 583 unit tests with none skipped. [Accepted run](#accepted-run)
 
 ## What O3 is
 
@@ -124,6 +124,24 @@ make accept-s5.2                                      # every gate, on the DGX S
 ```
 
 `make accept-s5.2` checks the series, builds the patched receiver and both adapters, and runs ten cases on the plans of the accepted Sprint 3.1 run: `control`, `patch`, `flat`, `varying`, `noisy`, `hook-off`, `side-stream`, `timed`, `refusals`, `backends`. It ends ACCEPTED only when every decode of the patched receiver is the one the unpatched build wrote (key, CRC flag, decoded bytes, executed path), the stage O2 is the accepted one, every decode on the resident path left one estimate, and every estimate meets its declared tolerance.
+
+## Accepted run
+
+`s52-spark-ecf8-20261122T045318Z`, commit `2238d8c`, about 18 minutes, including the unit tests and the first build of the patched receiver. The patched receiver built from a worktree of the pinned commit (18 kernel sources for `sm_121`, nvcc 13.5.37), and the accepted Sprint 1.1 build kept its receipt and its links. Over six audited runs and one timed run the patched receiver decoded 448 times, and every radio record equals the one the unpatched build wrote: key, CRC flag, decoded bytes and executed path. Every stage O2 payload has the digest of the accepted Sprint 3.1 run. Each of the 176 decodes on the resident CUDA path with an observer left exactly one estimate, with none absent, refused, failed or outside a capture, and every completion event was found complete at the first query. The flat estimates are exactly 1.0009765625 on every element. Against the matched estimator on the pilot support the 128 audited estimates give a numerator of 6.81e-04 over a denominator of 3.10e+05 on 309,084 samples, an NMSE of 2.2e-09: 4.4e-10 on the varying channel against a bound of 1.9e-06, and at most 6.7e-09 per estimate on the noisy pair against a bound of 9.7e-05.
+
+| Case | Run | Estimates | Result |
+|---|---|---|---|
+| flat | three grants, shapes `[2,51,4,12]`, `[2,51,1,12]`, `[2,2,1,12]` | 8 | every element 1.0009765625+0j, deviation 0 FP16 spacings |
+| varying | direct path, no noise | 24 | NMSE 4.4e-10 against 1.9e-06, largest deviation 0.75 FP16 spacings |
+| noisy | reference pair, 30 dB | 48 | NMSE 2.8e-09 in total, at most 6.7e-09 against 9.7e-05, largest deviation 4.0 FP16 spacings |
+| side-stream | the same pair, copy on the observer's stream | 48 | NMSE 2.7e-09, the same decodes |
+| timed | both stages on their rings, one consumer each | 48 published, 48 released | 0 digests in the window, 0 system calls in a publication, every record within the tolerance |
+
+What the run settled about the three risks below, none of it graded:
+
+- **The copy on the producer's stream is cheap on the GB10.** The tap takes 4.2 us inside the decode in the mean (at most 7.1 us), and the completion, the validity bits and the publication take 5.3 us after it. The CUDA service time of the audited pair is 201.2 us with the hook off and 210.0 us with it on, a difference of 8.8 us, and 205.9 us with the copy on the side stream. The 308.1 us of the unpatched control come from the Sprint 2.4 run of another day and another tool and are not a like-for-like arm. The timed distribution stays an S5.5 cell.
+- **`cudaHostRegister` accepts the shared ring segment on the GB10.** The timed copy landed in its slot, without a fallback.
+- **The exported estimate is not bit-reproducible, as the source said.** 45 of the 48 timed payloads have the bytes of the audited run of the same plan, and 3 do not. On the noisy pair no estimate lies within one FP16 spacing of the matched order on every pilot (1.75 to 4.0 spacings at the worst pilot of each), while the NMSE stays three orders of magnitude below what a fully sequential in-place order gives in the model (5.7e-06). That is what a few in-place reads per estimate would look like. The run does not prove that cause: the kernel was not instrumented. On the channels without noise all 32 estimates lie within one spacing.
 
 ## Open risks carried by the gate
 
