@@ -2,7 +2,7 @@
 
 Sprint 3.3, selector `pilot_features`. This page states what the sprint built, the cube and its axes, the specification a sensor is bound to, what a causal stream answers at each record, the view and the vector with a baked example, the files of a sensor, and how the sprint is accepted. The record a stream reads is fixed in the [observation contract](OBSERVATION.md), and the ring it arrives on in [Observations on the ring](SNAPSHOT_RING.md). Tickets: [S3.3](../dev/DEVELOPMENT.md#phase-s3), [stage registry](../architecture/RUNTIME.md#stage-registry), [episode with the known return](EPISODE.md#the-reference-pair-and-its-analytic-check).
 
-**Status.** Delivered and unit accepted on a development host on 2026-11-21 (UTC). A first run of `make accept-s3.3` on the DGX Spark passed 7 of 8 cases and found one defect in the reference sensor, which is corrected: [first run on the Spark](#first-run-on-the-spark). The integration gate is open until it has passed there. [What a development host checked](#checked-on-a-development-host) | [what the Spark run must show](#what-the-spark-run-must-show)
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-22 (UTC), run `s33-spark-ecf8-20261122T004801Z`: 43 gate lines, 8 of 8 cases and 28 of 28 checks, hardware gate closed. On the traced reference pair the return lies at delay bin 3 and Doppler bin -2, within one resolvable bin of its geometry and 22.3 dB above the median of its view, and the live sensor gives the features of the recorded stream bit for bit. [Accepted run](#accepted-run) | [first run and its defect](#first-run-on-the-spark) | [what a development host checked](#checked-on-a-development-host)
 
 ## Run it
 
@@ -206,6 +206,49 @@ The gate runner adds its own lines: the unit suite, the unit gate and the import
 
 **Why three sources.** The recorded ring is what a sensor saw. The files of the audited observer are the same O2 by another path, so a window logic or a transform that is wrong in the stream does not agree with them. The live ring shows that the stream does the same in a second process on records as they arrive, with the receiver decoding.
 
+## Accepted run
+
+`make accept-s3.3 S32_RUN=results/runs/s32-spark-ecf8-20261121T204425Z` on `spark-ecf8` (aarch64, Python 3.12.3, NumPy 2.5.5) at commit `0c4ad18`, run `s33-spark-ecf8-20261122T004801Z`. The control is the accepted Sprint 3.2 run, graded at commit `9b96578`. The adapter was rebuilt with 75 tests and no warning, and `pilot_ls` `24bc3181359f` and the five other executables have the bytes of that run.
+
+| Case | Measured |
+|---|---|
+| `control` | 48 payloads and validity masks that the native consumer kept from the ring have the SHA-256 of the files of the audited observer. The entry `reference-pair-20m` verifies with 24 opportunities per case. |
+| `stream` | 48 records: 2 complete windows, 14 answers of a filling window, 32 records outside the sequence, no gap, no invalid window, no rejected record, one new history at the second episode key. Each window: 8 samples of 8 observations, every element valid, 35.03 ms. |
+| `offline` | 2 eligible windows of 2 with the same contributing opportunities. Largest cell difference 3.9e-15 of the peak, largest feature difference 1.8e-14 in its unit. |
+| `known-return` | Peak at delay bin 3 and Doppler bin -2, 163.4 ns and -50.0 Hz. The geometry gives 179.8 ns and -43.3 Hz, 112.9 ns behind the direct path: -16.4 ns and -6.7 Hz from the peak. 22.3 dB above the median with the target, 6.2 dB without. 21.9 dB above the cell at Doppler bin +2. |
+| `causality` | Seven answers `insufficient_history`. The window is the same line with the 2 later records at `1e30`, with the 11 header fields outside the input list changed, and behind 21 records of an earlier epoch. |
+| `mask` | 4 holes on 4 lines at a fill of 0.9996: the same line with `1e30` and with zero behind them. The holes change the view by 1.6e-03 of its peak. Without observation 33 the window is a gap that names period 3, slot 7. |
+| `live` | 48 published, 0 dropped, 48 released. 96 decodes equal to the control, 48 on the resident CUDA path. The sensor read 48 records with no stale read. 16 answers equal to the recorded stream, 2 view hashes and 2 vectors bit for bit. |
+| `refusals` | 15 of 15 by the check and 15 of 15 by the command line |
+
+**The two vectors.** One window per member, as the stream wrote them.
+
+| Name | Target present | Target absent |
+|---|---|---|
+| `peak_to_median_db` | 22.35 | 6.23 |
+| `moving_to_static_db` | -33.02 | -33.57 |
+| `peak_delay_ns` | 163.4 | 1,634.0 |
+| `peak_doppler_hz` | -50.0 | -100.0 |
+| `doppler_centroid_hz` | -31.2 | -13.0 |
+| `doppler_spread_hz` | 47.0 | 62.1 |
+| `profile_db@-100Hz` | 6.68 | 6.23 |
+| `profile_db@-75Hz` | 9.59 | 3.94 |
+| `profile_db@-50Hz` | 22.35 | 4.17 |
+| `profile_db@-25Hz` | 14.10 | 3.99 |
+| `profile_db@+25Hz` | 6.83 | 4.26 |
+| `profile_db@+50Hz` | 3.31 | 3.88 |
+| `profile_db@+75Hz` | 4.49 | 4.45 |
+
+**Recorded, not graded.** The static part peaks at delay bin 1, where the direct path of 66.9 ns lies. The return moves +0.43 ns and -0.02 Hz over the window. The share of the moving power in the peak cell is 0.34: the return lies 0.30 of a delay bin and 0.27 of a Doppler bin from the cell centre, and the rest is its leakage and noise. On the live ring the producer published a record every 0.96 ms in the median and 0.57 ms at the least, the ring held one record at most, and the sensor read a record 20.9 us (median) and 209 us (largest) after its publication store. From that store to the complete vector: 756 and 871 us for the two windows. The warm-up before the attach took 6.41 ms. These times are Python and NumPy on the CPU behind a reader that sleeps, `runtime: reference`. They are no latency of the sensing core.
+
+**Learnings.**
+
+- **One cell through the whole chain.** The traced channel, the pinned grid, the native observer, the ring and the reference put the return in the cell that the Sprint 2.2 check found on the channel itself. The analytic rehearsal on a development host gave the same cell and 22.6 dB.
+- **Moving over static power does not see this target.** The return is 42 dB under the direct path and the noise 30 dB under it per resource element, so the power that static removal leaves is noise with or without the target: -33.0 and -33.6 dB. The coherent gain of the two transforms is what lifts the return, and the peak over the median and the Doppler profile carry it. Neighbouring Doppler bins rise with it, 14.1 dB at -25 Hz and 9.6 dB at -75 Hz, which is the rectangular taper on a return between bins.
+- **A window without a target still has a strongest cell.** It lies at 1,634 ns and -100 Hz here, a noise cell. The peak delay and the peak Doppler shift are a location, to be read only beside the first value.
+- **The margin of the gate is wide.** 22.3 dB against a floor of 15, 6.2 dB against a ceiling of 10, 21.9 dB against 10. One pair is one draw of the noise: a distribution over episodes is S4.6 and S8 work.
+- **Overload behaves as specified.** The first run stalled the sensor for 8.4 ms. The receiver was not delayed, six observations were dropped and counted, and the window that lost them was a gap without a vector.
+
 ## Checked on a development host
 
 On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.5.3) without an OCUDU build and with two cores.
@@ -225,7 +268,7 @@ The double of the live case models the ring and runs the real sensing code on it
 
 ## First run on the Spark
 
-`make accept-s3.3` ran on `spark-ecf8` on 2026-11-21 (UTC) at commit `eb7a68d`, run `s33-spark-ecf8-20261121T223346Z`, and ended NOT ACCEPTED: 7 of 8 cases and 26 of 28 checks. The run stays in `results/runs/` as a failed attempt.
+`make accept-s3.3` first ran on `spark-ecf8` on 2026-11-21 (UTC) at commit `eb7a68d`, run `s33-spark-ecf8-20261121T223346Z`, and ended NOT ACCEPTED: 7 of 8 cases and 26 of 28 checks. The run stays in `results/runs/` as a failed attempt. The accepted run above is the second one, with the correction below.
 
 | | First run |
 |---|---|
@@ -240,7 +283,9 @@ The double of the live case models the ring and runs the real sensing code on it
 
 **What the finding says beyond the fix.** A stall of the sensor never reaches the receiver, and a window with a dropped observation is answered as a gap and not with a vector. Both held on real hardware. The native core warms its plans and its engine before the first slot for the same reason ([RUNTIME.md](../architecture/RUNTIME.md#how-contention-is-handled)).
 
-## What the Spark run must show
+## What the Spark run closed
+
+Every row was open on the development host and is closed by the run `s33-spark-ecf8-20261122T004801Z`.
 
 | Open on the development host | Closed by `make accept-s3.3` |
 |---|---|
@@ -249,7 +294,7 @@ The double of the live case models the ring and runs the real sensing code on it
 | The sample times of the native records against the rule of the reference | No record is rejected in `stream` and in `live` |
 | The same executables as the accepted Sprint 3.2 run | The gate line on the bytes of every tool |
 
-The driver's expectations for the Spark are those of the table of the gate. A drop in `live` fails the case: the reference sensor copies what it needs and releases at once, so the ring of eight slots is not expected to fill. If it does, the finding is the pace of a Python consumer and not the features, and the sensor's own account names it.
+The driver's expectations are those of the table of the gate. A drop in `live` fails the case: the reference sensor copies what it needs and releases at once, and in the accepted run the ring of eight slots held one record at most. If it fills on another host, the finding is the pace of a Python consumer and not the features, and the account of the producer names it.
 
 ## Choices made here
 
