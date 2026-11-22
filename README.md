@@ -8,7 +8,7 @@ Receiver-aware integrated sensing and communication on CUDA-accelerated OCUDU. T
 
 ## CURRENT STATUS
 
-As of 2026-11-22 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row) and Sprint 2 (a known uplink waveform through a traced channel and the native receiver, decoded by the host and the CUDA PUSCH processor to the original transport block) are accepted on one DGX Spark.** **Sprint 3.1 (the first observer: pilot least squares, the stage O2, exported from the grid that both PUSCH processors decode, with every decode unchanged) is accepted on the same Spark.** **Sprint 3.2 (the observation ring between the receiver and a sensor process, and the timed path without a checksum) is accepted on the same Spark: the tap takes 11.0 us in the mean, against 1,472 us with every digest.** **Sprint 3.3 (the radar cube, the delay-Doppler view and the causal features on the records of the ring, with the known return of the reference pair) is accepted on the same Spark: the return lies at delay bin 3 and Doppler bin -2, within one resolvable bin of its geometry and 22.3 dB above the median of its view, and the features agree bit for bit from the recorded ring and from a live ring.** **Sprint 3.4 (one linear presence head on those features, trained on receiver-derived records of an episode set, frozen as an artifact of two files and scored in a second process) is built and unit accepted on a development host. Its hardware gate, `make accept-s3.4`, is open until it has run on the Spark.** S3.5 to S11 are specified and not yet implemented. One requirement was added on 2026-11-21: no checksum runs in a timed path. The plan was audited on 2026-11-20 against the evaluation plan of that date, and again for the code level of every ticket: sensing that is timed runs in a native core of CUDA kernels and TensorRT engines, and the demonstration shows that latency. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built) · [code level of every ticket](docs/dev/DEVELOPMENT.md#code-level-of-every-ticket)
+As of 2026-11-22 (UTC), **Sprint 0 (install and verify), Sprint 1 (native Release build and the DeepSig Table II row) and Sprint 2 (a known uplink waveform through a traced channel and the native receiver, decoded by the host and the CUDA PUSCH processor to the original transport block) are accepted on one DGX Spark.** **Sprint 3.1 (the first observer: pilot least squares, the stage O2, exported from the grid that both PUSCH processors decode, with every decode unchanged) is accepted on the same Spark.** **Sprint 3.2 (the observation ring between the receiver and a sensor process, and the timed path without a checksum) is accepted on the same Spark: the tap takes 11.0 us in the mean, against 1,472 us with every digest.** **Sprint 3.3 (the radar cube, the delay-Doppler view and the causal features on the records of the ring, with the known return of the reference pair) is accepted on the same Spark: the return lies at delay bin 3 and Doppler bin -2, within one resolvable bin of its geometry and 22.3 dB above the median of its view, and the features agree bit for bit from the recorded ring and from a live ring.** **Sprint 3.4 (one linear presence head on those features, trained on receiver-derived records of the demonstration set, frozen as an artifact of two files and scored in a second process) is accepted on the same Spark: 32,640 decodes of 340 traced pairs gave 680 windows, the frozen head scores the 20 held-out windows on the GB10 and offline within 9.5e-07 of a logit, and every target-present window of the set scores above every target-absent one.** The next ticket is S5.2. S3.5 to S11 are specified and not yet implemented. One requirement was added on 2026-11-21: no checksum runs in a timed path. The plan was audited on 2026-11-20 against the evaluation plan of that date, and again for the code level of every ticket: sensing that is timed runs in a native core of CUDA kernels and TensorRT engines, and the demonstration shows that latency. [Build order](docs/dev/DEVELOPMENT.md#build-order) · [requirements table](docs/dev/DEVELOPMENT.md#requirements-and-where-they-are-built) · [code level of every ticket](docs/dev/DEVELOPMENT.md#code-level-of-every-ticket)
 
 ### Sprint 0 acceptance
 
@@ -291,7 +291,7 @@ What the run found:
 
 Before the Spark run, a development host without an OCUDU build had passed the unit gate, among it the reference pair synthesized from its analytic model with the same peak cell, and the integration driver against a double of the native tool, where each of 17 injected faults fails the check that names it.
 
-### Sprint 3.4, built, hardware gate open
+### Sprint 3.4, accepted
 
 Sprint 3.4 turns the feature vector into a decision. `src/ocudu_cuda_isac/sensing/presence.py` holds one linear head with a frozen normalizer and a frozen threshold, and `scripts/train_presence.py` fits it. It changes no native source. [Artifact, fit, decisions and gate](docs/interfaces/PRESENCE_HEAD.md)
 
@@ -305,7 +305,28 @@ Sprint 3.4 turns the feature vector into a decision. `src/ocudu_cuda_isac/sensin
 | The evaluator | `src/ocudu_cuda_isac/episodes/presence_head.py`: the split table of a set, the plans of its replay with the transmit grids of the reference pair, and the comparison of two decision sets by window and input digest |
 | The gate | `make accept-s3.4`: ten cases on the accepted Sprint 3.3 run and a traced episode set |
 
-**Checked on a development host on 2026-11-22 (UTC), not yet on the Spark.** Unit gate 30 cases, import rule 3, driver 10 of 10 cases and 35 of 35 checks against doubles with 22 injected faults each failing its check, gate runner 8 tests, suite 540 tests. The receiver replay of a whole episode set, the fit on traced windows and the head on the GB10 are open until `make accept-s3.4` has run. [Open until the Spark run](docs/interfaces/PRESENCE_HEAD.md#open-until-the-spark-run)
+**Accepted on the DGX Spark `spark-ecf8` on 2026-11-22 (UTC)**: `make accept-s3.4` passed at commit `b812d12`, run `s34-spark-ecf8-20261122T024432Z`, on the first attempt: 49 gate lines, 10 of 10 cases and 35 of 35 checks, hardware gate closed, 540 unit tests, and every executable with the bytes of the accepted Sprint 3.3 run. The stimulus is the demonstration set, traced on the Spark for the first time (`demo-set-20261122T022210Z`, 350 pairs). [Accepted run](docs/interfaces/PRESENCE_HEAD.md#accepted-run)
+
+| | Accepted run |
+|---|---|
+| Receiver replay of the training and validation entries | 14 runs, 16,320 opportunities: 32,640 of 32,640 decodes original, 16,320 on the resident CUDA path, no observation dropped, 121 s |
+| Windows | 600 training and 80 validation windows, one per realization, no gap and no rejected record |
+| Head | `dd-linear-v1`, artifact `4b1444fa8b0deeeb`: 8 columns, 36 bytes of weights. Loss from 0.693 to 0.045 in 20 evaluations. |
+| Threshold | Logit -3.675: 2 of the 40 target-absent validation windows above it, as a false-alarm target of 0.05 allows |
+| Freeze | 2026-11-22T02:53:45Z, before the first plan of a held-out entry. No held-out key in a manifest. |
+| Held-out run | 480 opportunities, 960 decodes original. The sensor loaded the artifact once on `cuda:0` (NVIDIA GB10), was warm 5.4 s before the first record and lost none: 20 scored windows. |
+| Device against offline | The same features and input digests. Largest difference 9.5e-07 on a logit and 1.9e-08 on a probability, against 1e-04 and 1e-05. The same 20 decisions. |
+| Recorded, not graded | Held-out: 10 of 10 target-present episodes detected, 1 of 10 target-absent alarmed. One inference on the GB10: 372 us in the median, `runtime: reference`. |
+
+What the run found:
+
+- **The two classes do not overlap on this set.** The peak over the median is at least 17.1 dB with the person and at most 7.7 dB without, and the area under the curve is 1.000 on the training, the validation and the held-out windows.
+- **The threshold lies inside the target-absent windows, because its rule puts it there.** Two of forty validation negatives may exceed it, so 12 of 300 training and 1 of 10 held-out target-absent windows do. A threshold between the logits -3.38 and -0.44 would have given no alarm and no miss. The rule was fixed before the held-out windows were read and stays: the operating point is set in S4.6.
+- **The target-absent windows of a set differ by their noise only**, so a false-alarm rate on them is that of the noise at 30 dB.
+- **A set replays through the receiver.** No entry of a set had been decoded before. With the transmit grids of the reference pair every block of the 350 pairs came back, in runs without stored grids, which had not been exercised on hardware either.
+- **A second CUDA process beside the receiver lost no observation**, without MPS, with the sensor started first.
+
+Before the Spark run, a development host without an OCUDU build and without a CUDA device had passed the unit gate, and the integration driver against doubles of the native tool and of the ray tracer, where each of 22 injected faults fails the check that names it.
 
 ### Verified configuration
 
@@ -345,11 +366,12 @@ The gates were tested for what they refuse, in the unit suite or in an end-to-en
 
 ### Open items
 
-- **Demonstration set.** `configs/episodes/demo_set.json` is the initial configuration: 350 matched pairs, about 7 GB, a grid of 50 by 34 cells over 6.78 by 10.06 m, nine trajectories. It was judged sufficient to start on 2026-11-20 and will be tuned once the remaining components are built, so it keeps the status `proposed`. The gate exported the five-pair smoke set. `make episode-set` exports the full set when a consumer needs it. The target-absent runs of a set differ by their noise only.
+- **Demonstration set.** `configs/episodes/demo_set.json` is the initial configuration: 350 matched pairs, about 7 GB, a grid of 50 by 34 cells over 6.78 by 10.06 m, nine trajectories. It was judged sufficient to start on 2026-11-20 and will be tuned once the remaining components are built, so it keeps the status `proposed`. `make episode-set` traced it on the Spark on 2026-11-22 (`data/episodes/demo-set-20261122T022210Z`), and Sprint 3.4 trained on it. The accepted Sprint 3.4 run names that directory by absolute path, so it must stay where it is. The target-absent runs of a set differ by their noise only.
 - **Payload.** The stored episode entries carry the transport block of the base grant at every opportunity (`payload: fixed`). Sprint 2.4 builds a transport block per opportunity (`per_opportunity`) on the slot grants and records the rule of every run. It is accepted, and no stored episode set carries such blocks yet.
 - **Fixture adapter teardown.** The loopback of `grant_fixture` destroys its processor before its workers are joined and can end in a segmentation fault on a loaded host. The fix is one moved line. It changes the hash of an accepted executable, so apply it together with `make accept-s2 RERUN=1`. Until then a Sprint 2.1 or 2.2 gate that reports `the fixture adapter exited with status -11` is run again on a quiet host.
 - **Fill time.** One grid of 4 by 14 by 612 elements takes 1.44 ms to fill on one core of the Spark, and a slot lasts 0.5 ms. About nine tenths of that is the readback digest and not the arithmetic: on a development host the channel application takes 123 us and the digest 1,069 us. The value is recorded and not graded. S4.1 prepares each grid ahead of its slot and leaves the digest out.
-- **Next step.** Run the Sprint 3.4 gate on the Spark: `make episode-set` once, then `make accept-s3.4`. After it S5.2, the receiver's own estimate. [Cards](docs/dev/DEVELOPMENT.md#phase-s3)
+- **Next step.** S5.2: the receiver's own estimate, the stage O3. [Cards](docs/dev/DEVELOPMENT.md#phase-s5)
+- **Operating point of the presence head.** The frozen threshold follows a false-alarm target of 0.05 on forty validation negatives and lies inside the target-absent windows, although the classes of the demonstration set do not overlap. S4.6 sets the operating point of the demonstration. Until then the head alarms on about one target-absent window in twenty.
 - **Set entries bind no transmit grid.** The exporter binds a grid per grant for the reference pair only. Sprint 3.4 replays the entries of a set with the grids that the pair recorded, under the same grant record (`entry_plan(bindings=...)`). A set on another grant needs its own stores first.
 - **Two generations of Sprint 2 runs.** Sprint 3.2 amended two cores of Sprint 2, so `replay_pusch` and `grid_apply` have other bytes than the first accepted runs name. The Sprint 2 gates were run again on the amended tree and passed (`s2-spark-ecf8-20261121T202119Z`). The accepted Sprint 3.1 run `s31-spark-ecf8-20261121T174511Z` lies on the first generation and is the reference of the Sprint 3.2 gate, so the runs `s24-spark-ecf8-20261121T083424Z` and `s31-spark-ecf8-20261121T174511Z` must stay in `results/runs/`. A new `make accept-s3.1` takes the newest Sprint 2.4 run as its control.
 - **Allocations in the staged harness.** A timed run computes no checksum, but the ledger and the processor wrapper of the staged harness still allocate and take a mutex once per decode, between a ready grid and the decoder's callback. S4.1 removes them. The observer and the ring do not allocate.
@@ -526,13 +548,13 @@ python -m ocudu_cuda_isac.sensing.features replay --archive "$s32/snapshot_ring/
 
 The first two commands are the unit gate and the import rule. They need NumPy, and CMake with a C++17 compiler for the case that attaches the reference sensor to a native producer of the ring. `make accept-s3.3` is the integration gate. It needs the accepted Sprint 3.2 run under `results/runs/`, with the runs its plans name still in place, rebuilds the adapter, which must have the bytes of that run, computes the features of the reference pair from the recorded ring, from the files of the audited observer and from a live ring with the reference sensor in a second process, compares the three, checks the return against the geometry of the episode, and ends with `Sprint 3.3: ACCEPTED on this DGX Spark.` `S32_RUN=` names another control, and `REHEARSAL=1` rehearses on a host without CUDA. [Cube, view, vector and gate](docs/interfaces/PILOT_FEATURES.md)
 
-### Presence head (Sprint 3.4, hardware gate open)
+### Presence head (Sprint 3.4 accepted)
 
 ```bash
 source isac/bin/activate
 python tests/unit/test_presence_head.py -v
 python tests/unit/test_core_imports.py -v
-make episode-set            # once: the demonstration set, about 7 GB under data/episodes
+make episode-set            # once: the demonstration set, about 7 GB under data/episodes (done on spark-ecf8)
 make accept-s3.4
 
 # Read the frozen head and a held-out decision back

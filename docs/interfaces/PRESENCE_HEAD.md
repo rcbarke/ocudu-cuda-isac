@@ -2,7 +2,7 @@
 
 Sprint 3.4, selector `presence_head`. This page states what the sprint built, the artifact and its arithmetic with a baked example, how the head binds to the names of a vector, the rules of the fit and of the threshold, the decision record, the files of a sensor and of a training run, the evaluator side, and how the sprint is accepted. The vector a head reads is fixed in [Radar cube and features](PILOT_FEATURES.md), and the record behind it in the [observation contract](OBSERVATION.md). Tickets: [S3.4](../dev/DEVELOPMENT.md#phase-s3), [stage registry](../architecture/RUNTIME.md#stage-registry), [episode set](EPISODE.md).
 
-**Status.** Built and unit accepted on a development host on 2026-11-22 (UTC). The hardware gate `make accept-s3.4` is open until it has run on the DGX Spark: the receiver replay of an episode set, the fit on its records and the head on the CUDA device have been exercised against doubles only. [What a development host checked](#checked-on-a-development-host) | [what the Spark run must close](#open-until-the-spark-run)
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-22 (UTC), run `s34-spark-ecf8-20261122T024432Z`: 49 gate lines, 10 of 10 cases and 35 of 35 checks, hardware gate closed. One head was trained on 600 windows of receiver-derived records, frozen, and scored on 20 held-out windows in a second process on the GB10 and again offline: the logits agree within 9.5e-07. [Accepted run](#accepted-run) | [what a development host checked](#checked-on-a-development-host) | [what the Spark run closed](#what-the-spark-run-closed)
 
 ## Run it
 
@@ -216,9 +216,62 @@ The gate runner adds its own lines: the unit suite, the unit gate and the import
 | `held_out_evaluation.json` | Counts by label at the frozen threshold, `"graded": false` |
 | `recover.json` | Where a second reader starts |
 
+## Accepted run
+
+`make accept-s3.4` on `spark-ecf8` (aarch64, Python 3.12.3, NumPy 2.5.5, PyTorch 2.15.0+cu132 with the CUDA runtime 13.2) at commit `b812d12`, run `s34-spark-ecf8-20261122T024432Z`, on the first attempt. The control is the accepted Sprint 3.3 run `s33-spark-ecf8-20261122T004801Z`. The stimulus is `demo-set-20261122T022210Z`, traced on the same host just before with `make episode-set`: `demo-set-v1`, 350 pairs, 8,400 opportunities per case, one grid gain of 1,140.80, training coverage 318 of 1,700 cells. The adapter was rebuilt with 75 tests and no warning, and `pilot_ls` `24bc3181359f`, `obs_tail` `04cde6b49d21` and the four other executables have the bytes of the control. The unit suite ran 540 tests, the unit gate 30 and the import rule 3, none skipped.
+
+| Case | Measured |
+|---|---|
+| `control` | The Sprint 3.3 run is accepted with the specification `dd-uniform-8` `d0911a9f28337a9c`. The plan of its live run replays the entry `reference-pair-20m`, which binds the transmit grid of six grants. |
+| `split` | 300 training, 40 validation and 10 held-out pairs on 5, 2 and 2 trajectories, assignment `c8219a9d42ae8e84`, 700 realizations under distinct keys. Every grant of every entry has the record hash of the pair's. |
+| `records` | 14 runs of `pilot_ls` in the mode `timed` without stored grids, 16,320 opportunities: 32,640 of 32,640 decodes original, 16,320 on the resident CUDA path, 16,320 observations published and kept, 0 dropped, ring depth 0 of 8. 121.2 s of wall time. |
+| `features` | 600 training and 80 validation windows, one per realization, 4,760 answers of a filling window, 10,880 records outside the sequence, no gap, no invalid window, no rejected record |
+| `train` | Head `dd-linear-v1`, artifact `4b1444fa8b0deeeb`, weights `5c34fe37c50f8650` (36 bytes), normalizer `d78fc4150b176e5c`. The loss falls from 0.693147 to 0.044780 in 20 evaluations. Threshold: logit -3.675034, with 2 of 40 validation negatives above it. Reload difference 0. |
+| `freeze` | Frozen 2026-11-22T02:53:45Z. The manifests list 600 and 80 keys of their own split and none of the 20 held-out keys. |
+| `live` | First held-out plan 0.4 s after the freeze. 480 opportunities, 960 of 960 decodes original, 480 resident. The sensor loaded the artifact once on `cuda:0` (NVIDIA GB10), was ready 5.4 s before the first record, read 480 records with no stale read and none dropped: 160 decisions, 20 scored. |
+| `parity` | 160 feature lines and 20 view hashes equal. 20 windows joined with the same input digest: largest difference of a logit 9.5e-07 and of a probability 1.9e-08, against 1e-04 and 1e-05. No decision differs. |
+| `causality` | 140 decisions without a score. The window `1/6510fe80507d2ece/7` is the same line with the 2 later records at `1e30` and with 1000 added to the 5 values the head does not read. None of the 359 trajectory and episode identifiers is in an output. |
+| `refusals` | 18 of 18 by the interface and 8 of 8 by the command lines |
+
+**The head that was frozen.** Weights on the normalized columns, with a bias of +1.680.
+
+| Column | Weight | Training mean | Training deviation |
+|---|---|---|---|
+| `peak_to_median_db` | +1.025 | 17.84 | 13.53 |
+| `profile_db@-100Hz` | +0.546 | 11.27 | 8.41 |
+| `profile_db@-75Hz` | +0.571 | 11.58 | 8.58 |
+| `profile_db@-50Hz` | +0.695 | 12.86 | 9.87 |
+| `profile_db@-25Hz` | +1.039 | 16.10 | 12.96 |
+| `profile_db@+25Hz` | +1.077 | 16.19 | 13.05 |
+| `profile_db@+50Hz` | +0.707 | 12.81 | 9.86 |
+| `profile_db@+75Hz` | +0.610 | 11.56 | 8.66 |
+
+**Recorded, not graded.** These are the samples of one set at one noise level, and the quality of the demonstration is graded in Sprint 4.
+
+| | Target present | Target absent |
+|---|---|---|
+| `peak_to_median_db`, training windows | 17.1 to 46.1 dB, median 30.4 | 3.8 to 7.7 dB, median 4.9 |
+| `peak_to_median_db`, validation windows | 17.6 to 39.0 dB, median 29.3 | 4.0 to 6.4 dB, median 5.0 |
+| Logit, training windows | -0.44 and above, median 7.34 | -4.63 to -3.38, median -4.08 |
+| Logit, validation windows | -0.24 and above, median 6.68 | -4.46 to -3.58, median -4.04 |
+| Logit, held-out windows | 1.05 to 15.00 | -4.39 to -3.60 |
+| Above the frozen threshold of -3.675 | 300 of 300, 40 of 40, 10 of 10 | 12 of 300, 2 of 40, 1 of 10 |
+
+The area under the curve is 1.000 on all three splits. One inference of the head on `cuda:0` took 372 us in the median and 455 us at most over 20 windows, from the vector in host memory to the score in host memory. From the publication store of the completing record to the decision: 1,690 us in the median and 2,810 us at most. The warm-up before the attach took 7.0 ms for the feature steps and 147.3 ms for the head. Over the 16,800 observations of the 15 runs the tap took 15.3 us in the median and 33.0 us at the 99th percentile, with two values of 232 and 245 us in the run `training-08`. All of these carry `runtime: reference` or belong to a host that is not tuned, and none is a result.
+
+**Learnings.**
+
+- **The two classes do not overlap on this set.** Every target-present window of the 350 scores above every target-absent one: the lowest present logit is -0.44 and the highest absent one -3.38. The peak over the median separates them alone, 17.1 dB at the least against 7.7 dB at the most. The median with the person is 30.4 dB, against 22.3 dB for the one window of the reference pair.
+- **The threshold lies inside the absent windows, because its rule puts it there.** A target of 0.05 allows two of forty validation negatives above the threshold, so the threshold is the third highest of them, -3.675. It then gives what it was asked for: 12 of 300 training, 2 of 40 validation and 1 of 10 held-out target-absent windows above it, and every target-present one. The held-out alarm is the window `1/629303a778d5970f/7`, 0.072 above the threshold. A threshold anywhere between -3.38 and -0.44 would have given no alarm and no miss on these windows. The rule was fixed before a held-out window was read and is not changed after it: the operating point of the demonstration is the subject of S4.6.
+- **The absent windows of a set differ by their noise only.** Their peak over the median lies between 3.8 and 7.7 dB in every split, which is the largest of 224 noise cells over their median. A false-alarm rate measured on them is that of the noise at 30 dB and of nothing else in the room.
+- **The device and the CPU agree to the last bits.** 9.5e-07 on a logit is one unit in the last place of a float32 between 8 and 16, a hundred times inside the tolerance.
+- **A second CUDA process beside the receiver lost nothing.** Without MPS, with the receiver decoding 960 blocks, the ring held no record when the next one came. The sensor was started first and the receiver after its ready file.
+- **A timed run without stored grids verifies.** `pilot_ls --no-grids` in the mode `timed` had not run on hardware before. The 15 native outputs verify with their reader, and the run directory holds 577 MB, nearly all of it the kept records and the decoded blocks.
+- **The set replays as planned.** No entry of a set had been through the receiver before. With the grids of the pair every one of the 33,600 decodes of the 350 pairs gave its original block.
+
 ## Checked on a development host
 
-On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.5.3, PyTorch 2.15.0 without a CUDA device) without an OCUDU build and with two cores, on 2026-11-22 (UTC).
+On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.5.3, PyTorch 2.15.0 without a CUDA device) without an OCUDU build and with two cores, on 2026-11-22 (UTC), before the Spark run.
 
 | | Development host |
 |---|---|
@@ -231,19 +284,21 @@ On an x86_64 host (Ubuntu 24.04, GCC 13.3.0, CMake 3.28.3, Python 3.13, NumPy 2.
 
 The doubles model the receiver and the ring and run the real sensing code, the real training command and the real evaluator. A window of two periods has one moving Doppler cell, so the head of the driver tests reads two columns, and what it learns from four windows means nothing.
 
-## Open until the Spark run
+## What the Spark run closed
+
+Every row was open on the development host and is closed by the run `s34-spark-ecf8-20261122T024432Z`.
 
 | Open on the development host | Closed by `make accept-s3.4` |
 |---|---|
-| The receiver replay of set entries bound to the grids of the pair: 14 runs, 16,320 opportunities, never done before | `records`: every decode original, the account balanced with no drop |
-| `pilot_ls --no-grids` in the mode `timed` | `records` and `live`: the native output verifies with its reader |
-| One complete window per realization on traced channels | `features` |
-| The fit on 600 traced windows | `train` |
+| The receiver replay of set entries bound to the grids of the pair: 14 runs, 16,320 opportunities, never done before | `records`: 32,640 decodes original, the account balanced with no drop |
+| `pilot_ls --no-grids` in the mode `timed` | `records` and `live`: the 15 native outputs verify with their reader |
+| One complete window per realization on traced channels | `features`: 680 windows for 680 realizations |
+| The fit on 600 traced windows | `train`: 20 evaluations, the normalizer and the threshold recomputed |
 | PyTorch on the GB10 in a second process beside the receiver, without MPS | `live`: the sensor ran on `cuda:0` and lost no observation |
-| The same score on the device and on the CPU | `parity`: the largest difference of a logit against `1e-4` |
+| The same score on the device and on the CPU | `parity`: 9.5e-07 against `1e-4` |
 | The same executables as the accepted Sprint 3.3 run | The gate line on the bytes of every tool |
 
-If `records` fails because the native output of a run without stored grids does not verify, set `receiver.keep_grids` to `true` in the configuration: the runs then store every grid as Sprint 3.2 did, about 4.6 GB for the demonstration set. A drop in `records` or `live` fails the case and is a finding about the pace of a consumer, as in Sprint 3.3. A flip in `parity` names a window whose logit lies within the tolerance of the threshold.
+The rehearsal of the fit on a free-space channel had given a loss of 0.228 and six validation misses. On the traced set the loss is 0.045 and nothing is missed: the rehearsal showed that the code runs at that size and was no prediction of the traced room. `receiver.keep_grids` stays `false`. Setting it to `true` stores every grid of every run, about 4.6 GB for the demonstration set, and is needed only where the grids themselves are evidence.
 
 ## Choices made here
 
