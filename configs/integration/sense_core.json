@@ -1,0 +1,45 @@
+{
+  "schema": "integration-config/sense_core/v1",
+  "selector": "sense_core",
+  "core_build": "build/sense-core",
+  "control": {
+    "driver": "cusense_frontend",
+    "min_windows": 100
+  },
+  "engine": {
+    "precision": "fp32"
+  },
+  "units": {
+    "windows": 16
+  },
+  "live": {
+    "repeat": 5,
+    "ring_slots": 8,
+    "slot_us": 500,
+    "wait": "spin",
+    "min_windows": 500,
+    "ready_timeout_ms": 180000,
+    "budget_us": [
+      0,
+      0,
+      0,
+      1500
+    ]
+  },
+  "overload": {
+    "repeat": 2,
+    "ring_slots": 4,
+    "period_us": 100,
+    "hold_us": 3000,
+    "budget_us": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "expect": {
+    "cuda_architecture": 121,
+    "published_live_inference_us": 241
+  }
+}

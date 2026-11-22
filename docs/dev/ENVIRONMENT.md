@@ -114,7 +114,19 @@ bash scripts/run_spark_baseline.sh --profile paper --skip-build
 
 **Entry.** S3.6 builds `native/sense_core/` on a host that passed S1.1, with the same compiler and CUDA toolkit and with `nvcc` targeting that host's GPU architecture, 121 on the Spark. The core needs no OCUDU build and no simulator. It adds three things to a host: a TensorRT build with headers for the installed CUDA major version, ONNX in `isac` for the export step, and pybind11 for the binding. [Code levels and the native core](../architecture/RUNTIME.md)
 
-**What is known.** `environments/full-constraints.txt` pins PyTorch 2.15.0 with the cuFFT and cuSOLVER libraries and names no TensorRT, ONNX or pybind11 package. The pinned sample applications install `tensorrt_cu13` 10.14.1.48.post1, `onnx` 1.21 or later and `pybind11` 2.13 or later for their dApps, and the cuSense paper reports TensorRT engines running on a DGX Spark. Whether such a build installs on `spark-ecf8` beside CUDA 13.5 and driver 580.178.04 has not been established from this repository.
+**What is known.** `environments/full-constraints.txt` pins PyTorch 2.15.0 with the cuFFT and cuSOLVER libraries and names no TensorRT, ONNX or pybind11 package. `environments/sense-core-constraints.txt` pins what the core adds: `onnx` 1.23.2, `onnxruntime` 1.29.0 and `pybind11` 3.1.0, exercised by the unit gate on x86_64, and `tensorrt-cu13` 10.14.1.48.post1, the release the pinned sample applications install. The sources of the core compile against the headers of that TensorRT release and for `sm_121` with `nvcc` 13.2.86. The cuSense paper reports TensorRT engines running on a DGX Spark. Whether such a build installs and runs on `spark-ecf8` beside CUDA 13.5 and driver 580.178.04 is what the probe records, and has not been established yet.
+
+**Commands.**
+
+```bash
+PIP_CONSTRAINT="$PWD/environments/sense-core-constraints.txt" make core-env            # onnx, onnxruntime, pybind11
+PIP_CONSTRAINT="$PWD/environments/sense-core-constraints.txt" make core-env-tensorrt   # only without a package installation
+make core-probe          # checkpoint D0: writes build/sense-core/sense-probe.json
+make core-build          # build/sense-core with CTest, writes isac-core.json
+make core-build-host     # build/sense-core-host: the host twin, on a host without CUDA
+```
+
+TensorRT is found in this order: `TENSORRT_ROOT` or the options of `scripts/native_core.py`, a package installation with its headers in the system directories, and the wheel in `isac`. The wheel ships libraries and no headers: `make core-env-tensorrt` fetches the open-source headers of the same release into `build/tensorrt-headers/` and refuses headers of another version. The probe compiles one file against what it found, builds a one-layer engine on the GPU, executes it by an enqueue and as a captured CUDA graph, and names the device it ran on. Its report names the TensorRT version of the headers and of the library, the origin, and the usable backend.
 
 **Probe first.** The demonstration requires the TensorRT backend, so on `spark-ecf8` this probe is checkpoint D0 of the critical path. The first step of S3.6 on a host records the TensorRT version and its origin, builds a one-layer engine on the GPU, executes it and reads back the device the engine reports. Pin the versions the probe accepted in `environments/` with that patch, and extend the environment report with them. A host whose probe fails records the reason. Its kernels still build, because TensorRT is an optional component of the core, and its models run through the LibTorch backend of the pinned PyTorch distribution once the probe has confirmed that the distribution ships the C++ headers and libraries that backend needs. The backend is named in every manifest.
 

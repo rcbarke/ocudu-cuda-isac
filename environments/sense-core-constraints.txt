@@ -1,0 +1,25 @@
+# Third-party distributions of the native sensing core (Sprint 3.6), resolved on 2026-11-22.
+# They are installed beside either profile, into the same isac:
+#
+#   PIP_CONSTRAINT="$PWD/environments/sense-core-constraints.txt" make core-env            # export and binding
+#   PIP_CONSTRAINT="$PWD/environments/sense-core-constraints.txt" make core-env-tensorrt   # the TensorRT wheel
+#
+# onnx, onnxruntime and pybind11 with what they pull in were installed from PyPI on linux x86_64
+# and exercised there by the unit gate of the core: python tests/unit/test_sense_core.py.
+# onnxruntime is used by that gate and by the integration driver to check an export on the CPU.
+# No sensor imports it.
+#
+# tensorrt-cu13 is the release that the pinned Aerial sample applications install for CUDA 13.
+# Its PyPI package fetches the libraries from the index of NVIDIA and ships no headers: the
+# headers of the same release come from `python scripts/native_core.py headers`. A host with a
+# package installation of TensorRT, or with TENSORRT_ROOT, needs no wheel. Whether a TensorRT
+# builds and runs an engine on a host is what checkpoint D0 records, not this file:
+# `python scripts/native_core.py probe` writes the version it accepted, with its origin, into
+# sense-probe.json. Change this pin with the run that shows another version accepted.
+flatbuffers==25.12.19
+ml_dtypes==0.7.0
+onnx==1.23.2
+onnxruntime==1.29.0
+protobuf==7.36.1
+pybind11==3.1.0
+tensorrt-cu13==10.14.1.48.post1

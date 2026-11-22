@@ -95,6 +95,13 @@ WINDOWS_DIR = "windows"
 RECORDS_DIR = "records"
 RUNTIME = features.RUNTIME
 STATUSES = features.STATUSES
+# The native core of Sprint 3.6 writes the same two files under its own runtime entry. It has two
+# statuses that only a live core has: a record of the window was rewritten while it was read, and
+# the window was overtaken by a newer complete one before it ran. A reader of an output accepts
+# both runtimes, and the reference writes its own entry only.
+NATIVE_RUNTIME = "native"
+RUNTIMES = (RUNTIME, NATIVE_RUNTIME)
+NATIVE_STATUSES = ("stale", "stale_skipped")
 SPLITS = presence.SPLITS
 TC_PER_SECOND = estimator.TC_PER_SECOND
 EPSILON = 1e-8
@@ -731,6 +738,7 @@ class Windows:
     def __init__(self, directory, report, lines):
         self.directory, self.report, self.lines = directory, report, lines
         self.spec = report["spec"]
+        self.runtime = report["runtime"]["entry"]
         self.ok = [line for line in lines if line["status"] == "ok"]
         self.by_window = {line["window"]["id"]: line for line in self.ok}
 
@@ -738,11 +746,13 @@ class Windows:
 def open_windows(directory):
     """Verify a window output and return it.
 
-    The report names the specification with its hash and the reference runtime. The lines count
-    from zero, each names a known status and the hash of the specification, and their counts are
-    those of the report. A complete window names the slots of its period in order, one record
-    per slot, and the hash of its mean and of its count. The directory holds nothing else but the
-    archive of the records.
+    The report names the specification with its hash and its runtime: the reference, or the
+    native core of Sprint 3.6. The lines count from zero, each names a known status of that
+    runtime and the hash of the specification, and their counts are those of the report. A
+    complete window names the slots of its period in order, one record per slot, and the hash of
+    its mean and of its count. A native sensor in the evidence mode timed leaves the mean on its
+    device: its report says so, and its lines name no digest of it. The directory holds nothing
+    else but the archive of the records.
     """
     directory = Path(directory)
     try:
@@ -754,14 +764,17 @@ def open_windows(directory):
     if not isinstance(report, dict) or report.get("schema") != WINDOWS_REPORT_SCHEMA:
         raise CuSenseError(f"{directory / WINDOWS_REPORT_FILE} is not a {WINDOWS_REPORT_SCHEMA} report")
     spec = check_spec(report.get("spec"))
-    if report.get("spec_sha256") != spec_sha256(spec) or (report.get("runtime") or {}).get("entry") != RUNTIME:
-        raise CuSenseError("the report does not name its specification and the reference runtime")
-    counts, complete = dict.fromkeys(STATUSES, 0), 0
+    runtime = (report.get("runtime") or {}).get("entry")
+    if report.get("spec_sha256") != spec_sha256(spec) or runtime not in RUNTIMES:
+        raise CuSenseError("the report does not name its specification and the reference runtime or the native one")
+    statuses = STATUSES + (NATIVE_STATUSES if runtime == NATIVE_RUNTIME else ())
+    timed = runtime == NATIVE_RUNTIME and (report.get("source") or {}).get("evidence") == "timed"
+    counts, complete = dict.fromkeys(statuses, 0), 0
     slots, period_slots = spec["window"]["slots_in_period"], spec["radio"]["period_slots"]
     for number, line in enumerate(lines):
         if not isinstance(line, dict) or line.get("schema") != WINDOW_SCHEMA or line.get("line") != number \
-                or line.get("status") not in STATUSES or line.get("spec_sha256") != report["spec_sha256"] \
-                or line.get("runtime") != RUNTIME:
+                or line.get("status") not in statuses or line.get("spec_sha256") != report["spec_sha256"] \
+                or line.get("runtime") != runtime:
             raise CuSenseError(f"line {number} of {WINDOWS_FILE} is not a {WINDOW_SCHEMA} line of this specification")
         counts[line["status"]] += 1
         if line["status"] != "ok":
@@ -769,8 +782,9 @@ def open_windows(directory):
                 raise CuSenseError(f"line {number} has the status {line['status']} and names a window tensor")
             continue
         try:
+            digests = (line["mean"]["sha256"], line["count"]["sha256"])
             good = line["mean"]["index"] == complete and line["mean"]["shape"] == shape_of(spec) \
-                and len(line["mean"]["sha256"]) == 64 and len(line["count"]["sha256"]) == 64 \
+                and (digests == (None, None) if timed else all(len(value) == 64 for value in digests)) \
                 and [item["absolute_slot"] for item in line["contributing"]] \
                 == [line["window"]["period"] * period_slots + slot for slot in slots] \
                 and line["history"] == {"have": len(slots), "need": len(slots)} \
@@ -782,7 +796,7 @@ def open_windows(directory):
             raise CuSenseError(f"line {number}: the window does not name the slots of its period in order with the "
                                "hashes of its tensors")
         complete += 1
-    if any(report["counts"].get(status) != counts[status] for status in STATUSES) or report.get("lines") != len(lines) \
+    if any(report["counts"].get(status) != counts[status] for status in statuses) or report.get("lines") != len(lines) \
             or report.get("windows") != complete:
         raise CuSenseError("the counts of the report are not those of its lines")
     extra = sorted(path.name for path in directory.iterdir()
@@ -1787,7 +1801,8 @@ class Output:
 def open_output(directory):
     """Verify the output of a cuSense-like sensor and return it.
 
-    The window output it names verifies with its own reader. The report embeds an artifact
+    The window output it names verifies with its own reader, and the output is of the same
+    runtime: the reference, or the native core of Sprint 3.6. The report embeds an artifact
     manifest that has the hash it names. There is one decision per window line, with the number,
     the status and the window of that line. A scored decision names the model of the report, an
     input and a map that have the hashes it names, a map that sums to one with the location at
@@ -1812,10 +1827,18 @@ def open_output(directory):
     except (KeyError, TypeError) as error:
         raise CuSenseError(f"the report of {directory} is incomplete: {error!r}") from None
     wanted = Artifact(directory, manifest, None, None, None).model()
-    if model != wanted or report.get("entries") != resolve(manifest["input"]["spec"], manifest["smoothing"]["entry"]) \
-            or (report.get("runtime") or {}).get("entry") != RUNTIME:
+    runtime = (report.get("runtime") or {}).get("entry")
+    entries, named = resolve(manifest["input"]["spec"], manifest["smoothing"]["entry"]), report.get("entries")
+    if runtime == NATIVE_RUNTIME:
+        # The native core names the same entries, each with the unit that runs it and where.
+        same = isinstance(named, dict) and set(named) == set(entries) \
+            and all(isinstance(named[stage], dict) and named[stage].get("entry") == entries[stage]["entry"]
+                    and named[stage].get("runtime") == NATIVE_RUNTIME for stage in entries)
+    else:
+        same = named == entries
+    if model != wanted or not same or runtime not in RUNTIMES or runtime != windows.runtime:
         raise CuSenseError("the report does not name the model of its artifact, the entries of the registry and the "
-                           "reference runtime")
+                           "runtime of its windows")
     if windows.report["spec_sha256"] != manifest["input"]["spec_sha256"]:
         raise CuSenseError("the windows were computed with another specification than the model was trained on")
     if len(decisions) != len(windows.lines):
@@ -1831,7 +1854,7 @@ def open_output(directory):
     for number, (decision, line) in enumerate(zip(decisions, windows.lines)):
         if not isinstance(decision, dict) or decision.get("schema") != DECISION_SCHEMA or decision.get("line") != number \
                 or decision.get("status") != line["status"] or decision.get("window") != line["window"] \
-                or decision.get("trigger") != line["trigger"] or decision.get("runtime") != RUNTIME \
+                or decision.get("trigger") != line["trigger"] or decision.get("runtime") != runtime \
                 or decision.get("model") != wanted:
             raise CuSenseError(f"decision {number} is not the {DECISION_SCHEMA} line of window line {number} with the "
                                "model of the report")

@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 accept-s3.5 accept-s5.2 native-deps native-build native-build-o3 adapter-build adapter-build-o3 episode-pair episode-set paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 accept-s3.5 accept-s3.6 accept-s5.2 native-deps native-build native-build-o3 adapter-build adapter-build-o3 core-env core-env-tensorrt core-probe core-build core-build-host episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -24,6 +24,12 @@ help:
 	@echo "make accept-s3.4     Train one linear presence head on receiver-derived records of an episode set, freeze its artifact, score held-out records in a second CUDA process and offline, grade and archive (S33_RUN=, EPISODE_SET=, REHEARSAL=1 on a host without CUDA)"
 	@echo "make accept-s5.2     Build the patched receiver from its own tree and the adapter with the O3 route, export the receiver's CUDA channel estimate on the plans of the accepted Sprint 3.1 run, compare it with the matched estimator and the decodes with the unpatched build, grade and archive (S31_RUN=, JOBS=8)"
 	@echo "make accept-s3.5     Run the cuSense-like branch on the receiver's own estimate: fit the background template and the z-score on the training trajectories of the episode set of the accepted Sprint 3.4 run, train the location map and the presence logit, freeze one artifact per input entry, score held-out records in a second CUDA process and offline, grade and archive (S34_RUN=, S52_RUN=, EPISODE_SET=)"
+	@echo "make accept-s3.6     Build the native sensing core with its CUDA kernels and its TensorRT engine, run it beside the reference on the held-out records of the accepted Sprint 3.5 run, record parity and latency, grade and archive (S35_RUN=)"
+	@echo "make core-env        Install ONNX, ONNX Runtime and pybind11 in isac for the export and the binding of the sensing core (pins: environments/sense-core-constraints.txt)"
+	@echo "make core-env-tensorrt Install the TensorRT wheel for CUDA 13 in isac and fetch the headers of its release: for a host without a package installation of TensorRT"
+	@echo "make core-probe      Checkpoint D0: find TensorRT and build and run a one-layer engine on this GPU"
+	@echo "make core-build      Build and test the native sensing core into build/sense-core and write isac-core.json (TENSORRT=auto|on|off, JOBS=)"
+	@echo "make core-build-host Build and test the host twin of the sensing core into build/sense-core-host: no CUDA"
 	@echo "make native-build-o3 Build the pinned receiver with the patch series of patches/ocudu, from a separate tree, into build/ocudu-spark-o3"
 	@echo "make adapter-build-o3 Build the adapter against the patched receiver, with the O3 route, into build/ocudu-adapter-o3"
 	@echo "make episode-pair    Trace the reference pair alone into a new directory under data/episodes (CONFIG=, OUT=)"
@@ -138,6 +144,31 @@ accept-s5.2:
 # exists only on a CUDA device.
 accept-s3.5:
 	bash scripts/accept_s3_5.sh $(if $(S34_RUN),--s34-run $(S34_RUN)) $(if $(S52_RUN),--s52-run $(S52_RUN)) $(if $(EPISODE_SET),--episode-set $(EPISODE_SET))
+
+# Sprint 3.6 gate: the native sensing core beside the reference of Sprint 3.5. It probes TensorRT
+# first, builds the core with its CUDA device, and replays the held-out records of the accepted
+# Sprint 3.5 run. No receiver runs and nothing of OCUDU is built. A host without a GPU builds the
+# twin with core-build-host and rehearses the driver: docs/interfaces/SENSE_CORE.md.
+accept-s3.6:
+	bash scripts/accept_s3_6.sh $(if $(S35_RUN),--s35-run $(S35_RUN))
+
+# What the sensing core adds to isac. Both use the interpreter of isac, and both honour
+# PIP_CONSTRAINT: environments/sense-core-constraints.txt names the versions that were exercised.
+core-env:
+	isac/bin/python -m pip install onnx onnxruntime pybind11
+
+core-env-tensorrt:
+	isac/bin/python -m pip install tensorrt-cu13
+	isac/bin/python scripts/native_core.py headers
+
+core-probe:
+	$(PYTHON) scripts/native_core.py probe
+
+core-build:
+	$(PYTHON) scripts/native_core.py build $(if $(TENSORRT),--tensorrt $(TENSORRT)) $(if $(JOBS),--jobs $(JOBS))
+
+core-build-host:
+	$(PYTHON) scripts/native_core.py build --host-only $(if $(JOBS),--jobs $(JOBS))
 
 native-build-o3:
 	$(PYTHON) scripts/native_ocudu.py build --patched $(if $(JOBS),--jobs $(JOBS))

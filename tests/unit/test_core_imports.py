@@ -19,8 +19,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "ocudu_cuda_isac.sensing"
 SOURCE = ROOT / "src/ocudu_cuda_isac/sensing"
-# What the reference of the sensing core is written in.
-LIBRARIES = ("numpy", "torch")
+# What the reference of the sensing core is written in, and what the export of a frozen model for
+# the native core of Sprint 3.6 is written with: the ONNX package, and ONNX Runtime where a host
+# checks an export without a GPU.
+LIBRARIES = ("numpy", "torch", "onnx", "onnxruntime")
 # Named so that a failure says what was imported: the offline side, the hosts and the simulators.
 FORBIDDEN = ("ocudu_cuda_isac.episodes", "ocudu_cuda_isac.replay", "ocudu_cuda_isac.telemetry",
              "ocudu_cuda_isac.evaluation", "sionna", "sionna_rt", "mitsuba", "drjit", "tensorflow", "ocudu", "srsran",
@@ -81,8 +83,8 @@ class CoreImportTests(unittest.TestCase):
             names.append(name)
             with self.subTest(module=name):
                 self.assertEqual(violations(path.read_text(encoding="ascii"), name, path.name == "__init__.py"), [])
-        for needed in ("cusense", "features", "models", "models.cusense_cnn", "native_estimate", "obs", "pilot_ls",
-                       "presence", "sources", "sources.pusch_dmrs"):
+        for needed in ("cusense", "export", "features", "models", "models.cusense_cnn", "native_estimate", "obs",
+                       "pilot_ls", "presence", "runtime", "sources", "sources.pusch_dmrs"):
             self.assertIn(f"{PACKAGE}.{needed}", names)
 
     def test_the_rule_finds_what_it_forbids(self):
@@ -117,15 +119,27 @@ class CoreImportTests(unittest.TestCase):
                                     f"{PACKAGE}.models.cusense_cnn"), [])
         self.assertEqual(violations("from ...episodes import cusense_frontend", f"{PACKAGE}.models.cusense_cnn"),
                          ["ocudu_cuda_isac.episodes"])
+        # And for the native core of Sprint 3.6: the export and the loader of the binding are modules of the
+        # core, and the parity and the latencies of the two runtimes are the evaluator's.
+        evaluator = (ROOT / "src/ocudu_cuda_isac/episodes/sense_core.py").read_text(encoding="ascii")
+        self.assertIn(PACKAGE, imports_of(evaluator, "ocudu_cuda_isac.episodes.sense_core", False))
+        self.assertEqual(violations("from . import cusense\nimport numpy as np\ndef late():\n    import onnx\n"
+                                    "    import onnxruntime\n    import torch", f"{PACKAGE}.export"), [])
+        self.assertEqual(violations("from ..episodes import sense_core", f"{PACKAGE}.runtime"),
+                         ["ocudu_cuda_isac.episodes"])
+        self.assertEqual(violations("import native_core", f"{PACKAGE}.runtime"), ["native_core"])
 
     def test_an_interpreter_that_imported_the_core_holds_no_host_module(self):
         names = [module_name(path) for path in self.modules()]
         # The reference of the features is NumPy, and that of the head and of the cuSense-like branch PyTorch on
         # top of it.
+        # The export of Sprint 3.6 reads an artifact through the branch, and the loader of the native core
+        # returns NumPy arrays. Neither imports ONNX or the binding before it is asked to.
         if importlib.util.find_spec("numpy") is None:
-            names = [name for name in names if not name.endswith((".features", ".presence", ".cusense", ".cusense_cnn"))]
+            names = [name for name in names if not name.endswith((".features", ".presence", ".cusense", ".cusense_cnn",
+                                                                  ".export", ".runtime"))]
         elif importlib.util.find_spec("torch") is None:
-            names = [name for name in names if not name.endswith((".presence", ".cusense", ".cusense_cnn"))]
+            names = [name for name in names if not name.endswith((".presence", ".cusense", ".cusense_cnn", ".export"))]
         script = ("import importlib, json, sys\n"
                   f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
                   f"for name in {names!r}:\n"
