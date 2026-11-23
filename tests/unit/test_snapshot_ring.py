@@ -492,7 +492,11 @@ class TreeTests(unittest.TestCase):
     def test_the_timed_loop_of_the_tool_takes_no_digest_writes_no_file_and_builds_no_record(self):
         tool = (ADAPTER / "observer/pilot_ls.cpp").read_text()
         start = tool.index("    for (std::size_t n = 0; n != chosen.size(); ++n) {\n      const std::size_t       sequence = chosen[n];")
-        loop = tool[start:tool.index("  // ---- The drain:")]
+        # The timed loop ends where the next section begins. Sprint 4.1 put the paced run between it and the drain,
+        # and tests/unit/test_mps_pacing.py holds the paced loop to the same rule.
+        loop = tool[start:tool.index("  // ---- The paced run (Sprint 4.1).")]
+        self.assertLess(start, tool.index("  // ---- The paced run (Sprint 4.1)."))
+        self.assertLess(tool.index("  // ---- The paced run (Sprint 4.1)."), tool.index("  // ---- The drain:"))
         for word in ("sha256_hex", "sha256(", "sha256_count", "digest()", "write_bytes", "json", ".dump(", "read_back(",
                      "std::cout", "make_directory", "watcher.observe("):
             self.assertNotIn(word, loop, word)

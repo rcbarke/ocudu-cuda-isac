@@ -416,7 +416,10 @@ class TreeTests(unittest.TestCase):
     def test_the_tool_expects_before_each_decode_and_resolves_after_it(self):
         tool = (ADAPTER / "observer/pilot_ls.cpp").read_text()
         audit = tool[tool.index("  // ---- The audited run:"):tool.index("  // ---- The timed run.")]
-        timed = tool[tool.index("  // ---- The timed run."):tool.index("  // ---- The drain:")]
+        # The timed run ends where the next section begins. Sprint 4.1 put the paced run between it and the drain,
+        # and tests/unit/test_mps_pacing.py holds the paced loop to the same rule.
+        timed = tool[tool.index("  // ---- The timed run."):tool.index("  // ---- The paced run (Sprint 4.1).")]
+        self.assertLess(tool.index("  // ---- The paced run (Sprint 4.1)."), tool.index("  // ---- The drain:"))
         for loop, start in ((audit, "const dispatched done = dispatch(book, *backend, name, key"),
                             (timed, "dispatch(book, backend, names[n * backends.size() + b], key")):
             self.assertLess(loop.index("taker->expect(estimate_handle[sequence], key);"), loop.index(start))

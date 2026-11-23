@@ -764,6 +764,21 @@ class TreeTests(unittest.TestCase):
         before = paced[:paced.index("    pace->begin(")]
         self.assertLess(before.index("paced_jobs->prepare(name, bound.grant_id, bound.record_sha256"),
                         before.index("backends[b]->arrange(t, *paced_jobs);"))
+        # The paced run says one thing, once: the start of its schedule, after the preparation and before the
+        # schedule exists. The launcher reads that line, so both sides share its words.
+        said = 'std::cout << "pilot_ls: schedule start " << schedule_start << " ns on the host monotonic clock, "'
+        self.assertEqual((paced.count("std::cout"), before.count(said)), (1, 1))
+        self.assertLess(before.index("backends[b]->arrange(t, *paced_jobs);"), before.index(said))
+        # Apart from that line the whole paced section, its preparation too, is held to what the tree checks of
+        # Sprint 3.2 and Sprint 5.2 require of the timed run: no digest, no file, no record, no output.
+        line = paced[paced.index("    std::cout << "):paced.index("    pace->begin(")]
+        self.assertEqual((line.count(";"), line.count("std::endl;")), (1, 1))
+        for word in ("sha256_hex", "sha256(", "sha256_count", "digest()", "write_bytes", "json", ".dump(", "read_back(",
+                     "estimate_entry", "std::cout", "make_directory", "watcher.observe("):
+            self.assertNotIn(word, paced.replace(line, ""), word)
+        self.assertEqual(run_m1.SCHEDULE_MARK.search(
+            "cmd line\npilot_ls: schedule start 297698971293180 ns on the host monotonic clock, 960 releases\n")[1],
+            "297698971293180")
         # The unpaced timed loop and the audited loop are the ones that were accepted: they keep the ledger.
         timed = tool[tool.index("  // ---- The timed run."):tool.index("  // ---- The paced run (Sprint 4.1).")]
         self.assertIn("if (timed && !paced) {", timed)
