@@ -86,6 +86,41 @@ void check(const schedule& plan)
   }
 }
 
+void check(const schedule& plan, const lead_in& warm, std::int64_t start_delay_ns)
+{
+  check(plan);
+  if (warm.releases == 0) {
+    return;
+  }
+  if (warm.releases > plan.release_ns.size()) {
+    throw input_error("the lead-in names " + std::to_string(warm.releases) + " releases, and the schedule holds " +
+                      std::to_string(plan.release_ns.size()) + ": a lead-in repeats the first releases of its schedule");
+  }
+  if (warm.lead_ns <= 0) {
+    throw input_error("the lead of a lead-in is positive: its decodes are issued ahead of the schedule");
+  }
+  // The last decode of the lead-in, done on its allowance, has ended when the first release is offered.
+  if (plan.release_ns[warm.releases - 1] - warm.lead_ns + plan.allowance_ns > plan.release_ns.front()) {
+    throw input_error("the lead-in does not end before the schedule: its last decode is issued " +
+                      std::to_string(warm.lead_ns - plan.release_ns[warm.releases - 1] + plan.release_ns.front()) +
+                      " ns ahead of the first release, and the processing allowance is " +
+                      std::to_string(plan.allowance_ns) + " ns");
+  }
+  // The first decode of the lead-in is not issued before the schedule was fixed.
+  if (warm.lead_ns - plan.release_ns.front() > start_delay_ns) {
+    throw input_error("the lead-in begins before the schedule is fixed: its lead is " + std::to_string(warm.lead_ns) +
+                      " ns, and the schedule starts " + std::to_string(start_delay_ns) + " ns after it was fixed");
+  }
+}
+
+std::int64_t lead_time(const schedule& plan, const lead_in& warm, std::int64_t start_ns, std::size_t k)
+{
+  if (k >= warm.releases || k >= plan.release_ns.size()) {
+    throw state_error("the lead-in holds no decode " + std::to_string(k));
+  }
+  return start_ns + plan.release_ns[k] - warm.lead_ns;
+}
+
 const char* to_string(release_outcome value)
 {
   switch (value) {
@@ -269,8 +304,12 @@ struct paced_book::entry {
   std::string           error;
 };
 
-paced_book::paced_book(o1_pool& pool_, clock_fn clock_) : pool(pool_), clock(clock_), holders(pool_.size())
+paced_book::paced_book(o1_pool& pool_, clock_fn clock_, std::uint64_t first_token) :
+  pool(pool_), clock(clock_), first(first_token), holders(pool_.size())
 {
+  if (first == 0) {
+    throw input_error("the tokens of a paced book count from one or from a later token: zero names no decode");
+  }
   for (std::vector<std::uint64_t>& held : holders) {
     held.reserve(16);
   }
@@ -280,10 +319,10 @@ paced_book::~paced_book() = default;
 
 paced_book::entry& paced_book::find(std::uint64_t token, const char* action)
 {
-  if (token == 0 || token > entries.size()) {
+  if (!known(token)) {
     throw state_error(std::string(action) + ": the paced book holds no job " + std::to_string(token));
   }
-  return *entries[token - 1];
+  return *entries[token - first];
 }
 
 const paced_book::entry& paced_book::find(std::uint64_t token, const char* action) const
@@ -318,7 +357,7 @@ std::uint64_t paced_book::prepare(const job_key&     key,
     }
   }
   std::unique_ptr<entry> item(new entry);
-  item->record.token               = entries.size() + 1;
+  item->record.token               = first + entries.size();
   item->record.sequence            = entries.size();
   item->record.key                 = key;
   item->record.grant_id            = grant_id;
@@ -336,8 +375,9 @@ std::uint64_t paced_book::prepare(const job_key&     key,
   item->handed.grant_record_sha256 = grant_record_sha256;
   item->handed.output              = item->buffer.data();
   item->handed.output_bytes        = original.bytes.size();
+  const std::uint64_t token = item->record.token;
   entries.push_back(std::move(item));
-  return entries.size();
+  return token;
 }
 
 admission paced_book::admit(std::uint64_t token, const ticket& grid, std::string* reason)
@@ -391,11 +431,11 @@ void paced_book::started(std::uint64_t token)
 void paced_book::complete(std::uint64_t token, bool crc_ok, const std::string& error)
 {
   const std::int64_t now = clock();
-  if (token == 0 || token > entries.size()) {
+  if (!known(token)) {
     unknown_completions.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  entry& item = *entries[token - 1];
+  entry& item = *entries[token - first];
   if (item.completions.fetch_add(1, std::memory_order_relaxed) != 0) {
     return; // a second completion: counted. The first one stands.
   }
@@ -506,7 +546,7 @@ bool paced_book::release_grid(const ticket& grid)
     std::vector<std::uint64_t>& held = holders[grid.grid];
     held.erase(std::remove_if(held.begin(), held.end(),
                               [&](std::uint64_t token) {
-                                return entries[token - 1]->record.grid.generation == grid.generation;
+                                return entries[token - first]->record.grid.generation == grid.generation;
                               }),
                held.end());
   }
@@ -521,7 +561,7 @@ std::size_t paced_book::holds(const ticket& grid) const
   }
   std::size_t total = 0;
   for (const std::uint64_t token : holders[grid.grid]) {
-    const entry& item = *entries[token - 1];
+    const entry& item = *entries[token - first];
     if (item.record.grid.generation == grid.generation && !item.completed.load(std::memory_order_acquire)) {
       ++total;
     }
@@ -535,7 +575,7 @@ std::size_t paced_book::held_grids() const
   for (std::size_t index = 0; index != holders.size(); ++index) {
     bool held = false;
     for (const std::uint64_t token : holders[index]) {
-      held = held || !entries[token - 1]->completed.load(std::memory_order_acquire);
+      held = held || !entries[token - first]->completed.load(std::memory_order_acquire);
     }
     total += held ? 1 : 0;
   }
@@ -578,8 +618,8 @@ std::vector<job> paced_book::jobs() const
 {
   std::vector<job> result;
   result.reserve(entries.size());
-  for (std::uint64_t token = 1; token <= entries.size(); ++token) {
-    result.push_back(snapshot(token));
+  for (std::size_t index = 0; index != entries.size(); ++index) {
+    result.push_back(snapshot(first + index));
   }
   return result;
 }

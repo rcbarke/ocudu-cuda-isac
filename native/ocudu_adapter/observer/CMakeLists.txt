@@ -100,10 +100,12 @@ if(TARGET ocudu_pin_fixture)
   # Which receiver the tool is linked against. With the route it calls the accessor of the
   # receiver patch, so the test also shows that the patched objects are the linked ones. It starts
   # no work on a device.
-  # The plan version with an offered schedule that this build reads. It starts no work on a device.
+  # The plan version with an offered schedule that this build reads, and that it reads a lead-in
+  # ahead of that schedule. It starts no work on a device.
   add_test(NAME pilot_ls_pacing COMMAND pilot_ls --pacing)
   set_tests_properties(pilot_ls_pacing PROPERTIES
-    PASS_REGULAR_EXPRESSION "pilot_ls pacing: pilot-ls-plan/v4, absolute releases on the host monotonic clock")
+    PASS_REGULAR_EXPRESSION
+    "pilot_ls pacing: pilot-ls-plan/v4, absolute releases on the host monotonic clock.*lead-in ahead of the schedule")
   add_test(NAME pilot_ls_o3_route COMMAND pilot_ls --route)
   if(ISAC_O3_ROUTE)
     set_tests_properties(pilot_ls_o3_route PROPERTIES

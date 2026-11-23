@@ -7,7 +7,10 @@
 # daemon of its own under build/mps, runs the integration driver, which launches every arm with
 # scripts/run_m1.py on validation entries of the episode set of the accepted Sprint 3.5 run with
 # the engine of the accepted Sprint 3.6 run, and writes mps_pacing.json. Service times, tails and
-# latencies are recorded and not graded: Sprint 4.6 calibrates on these arms. The gate never
+# latencies are recorded and not graded: Sprint 4.6 calibrates on these arms. Every paced run
+# decodes a lead-in ahead of its schedule, so that the first use of the receiver is no release:
+# the cold start is recorded apart, in pacing/lead_in.jsonl, and the gate requires that no
+# release of a schedule is the first use of its processor. The gate never
 # rebuilds OCUDU, never traces an episode, never reads a held-out episode and never edits the
 # sources, a build of the receiver, an episode set or an earlier run. It ends the MPS daemon when
 # it started it.
@@ -152,13 +155,13 @@ print("pilot_ls %s with the route and the pacing core (%d source files of native
       % (names["pilot_ls"]["sha256"][:12], len(pacing), names["obs_tail"]["sha256"][:12], patch["series_sha256"][:16],
          receipt["tests_run"], receipt["compiler_warnings"]))' "$run_dir/adapter-receipt.json" 2>> "$run_dir/adapter-verify.log")
         said=$(build/ocudu-adapter-o3/observer/pilot_ls --pacing 2>> "$run_dir/adapter-verify.log" | head -n 1)
-        if [[ -n "$facts" && "$said" == "pilot_ls pacing: pilot-ls-plan/v4"* ]]; then
+        if [[ -n "$facts" && "$said" == "pilot_ls pacing: pilot-ls-plan/v4"*"lead-in ahead of the schedule"* ]]; then
             adapter_ok=1
             pass "S4.1 adapter: built against the patched receiver of Sprint 5.2 and verified, $facts; its unit cases" \
                 "ran the pacing core in CTest; $said (adapter-receipt.json)"
         else
             fail "S4.1 adapter: the receipt names no route, no patch, no CUDA or no pacing core, or pilot_ls does not" \
-                "read a plan of version 4 (see adapter-verify.log)"
+                "read a plan of version 4 with a lead-in (see adapter-verify.log)"
             detail "$run_dir/adapter-verify.log"
         fi
     else
@@ -294,19 +297,29 @@ for name in ("dsp_only", "capture_only", "ai_only", "concurrent"):
         sys.exit("the arm %s holds no repetition, or one without a proven label MPS" % name)
 service = record["contention"]["service"]
 shift = record["contention"]["shifts"]["mps_default"]
+cold = record["cold_start"]
+if cold["lead_in"] is None:
+    apart = "no lead-in: the first release of a run is the first use of its receiver"
+else:
+    if cold["first_use_in_schedule"] != 0 or cold["skipped_first_releases"] != 0 or cold["runs"] < 1:
+        sys.exit("a release of a schedule is the first use of its receiver, or the cold start cost a release")
+    apart = ("the cold start apart, in a lead-in of %d decodes and in no statistic: the first decode of a receiver "
+             "%.1f us in the median of %d runs, the first release of a schedule %.1f us"
+             % (cold["lead_in"]["releases"], cold["by_decode_us"][0]["p50_us"], cold["runs"],
+                cold["first_release_us"]["p50_us"]))
 print("mps_pacing.json holds %d launches; PUSCH service time, median / 99th percentile in us: tap off %.1f / %.1f, "
       "capture only %.1f / %.1f, concurrent %.1f / %.1f; the %s moved by %.1f us against %.1f us allowed by the %s "
-      "rule; control in effect %s; load scripted, no core network attached; \"graded\": false"
+      "rule; control in effect %s; %s; load scripted, no core network attached; \"graded\": false"
       % (sum(len(items) for items in arms.values()), service["dsp_only"]["p50_us"], service["dsp_only"]["p99_us"],
          service["capture_only"]["p50_us"], service["capture_only"]["p99_us"], service["concurrent"]["p50_us"],
          service["concurrent"]["p99_us"], shift["quantile"], shift["shift_us"], shift["allowed_us"],
-         record["contention"]["rule"]["status"], record["contention"]["control_in_effect"]))' "$out" \
+         record["contention"]["rule"]["status"], record["contention"]["control_in_effect"], apart))' "$out" \
         2> "$run_dir/records-read.log")
     if [[ -n "$record" ]]; then
         pass "S4.1 record, written and not graded: $record"
     else
-        fail "S4.1 record: mps_pacing.json is missing, graded, incomplete or holds a timed arm without a proven label" \
-            "(see records-read.log)"
+        fail "S4.1 record: mps_pacing.json is missing, graded, incomplete, holds a timed arm without a proven label, or" \
+            "names a release as the first use of its receiver (see records-read.log)"
         detail "$run_dir/records-read.log"
     fi
 
@@ -318,6 +331,12 @@ print("mps_pacing.json holds %d launches; PUSCH service time, median / 99th perc
         releases=$(grep -cE '"schema": ?"pace-release/v1"' "$arm/native/pacing/releases.jsonl" 2>> "$run_dir/recovered.log")
         radio=$(grep -cE '"outcome": ?"decoded"' "$arm/native/radio/radio.jsonl" 2>> "$run_dir/recovered.log")
         skipped=$(grep -cE '"outcome": ?"skipped"' "$arm/native/pacing/releases.jsonl" 2>> "$run_dir/recovered.log")
+        # The lead-in of that arm, when its plan names one: its decodes are in a file of their own, and
+        # with it no radio record is the first use of its processor.
+        ahead=$(grep -cE '"schema": ?"pace-lead-in/v1"' "$arm/native/pacing/lead_in.jsonl" 2>/dev/null)
+        ahead=${ahead:-0}
+        cold=$(grep -cE '"first_use": ?true' "$arm/native/radio/radio.jsonl" 2>> "$run_dir/recovered.log")
+        cold=${cold:-0}
         shown=$("$python" -c 'import json, sys
 shown = json.load(open(sys.argv[1], encoding="utf-8"))
 window = shown["window"]
@@ -325,13 +344,15 @@ print("the reader of the reference verifies the output of sense_host beside the 
       "%s on %s scored %d windows; window %s has the logit %.4f, %s the threshold"
       % (shown["model_id"], shown["runtime"], shown["device"], shown["scored_windows"], window["id"], window["logit"],
          "above" if window["present"] else "at or below"))' "$run_dir/recovered.json" 2>> "$run_dir/recovered.log")
-        if [[ -n "$shown" ]] && (( releases > 0 && radio + skipped == releases )); then
+        if [[ -n "$shown" ]] && (( releases > 0 && radio + skipped == releases && (ahead == 0 || cold == 0) )); then
             pass "S4.1 a second reader recovers a decision and the releases of one concurrent arm: $shown; grep counts" \
-                "$releases releases in pacing/releases.jsonl, $skipped skipped, and $radio decoded radio records" \
-                "(recovered.json)"
+                "$releases releases in pacing/releases.jsonl, $skipped skipped, and $radio decoded radio records;" \
+                "$ahead decodes of a lead-in in pacing/lead_in.jsonl, none of them a release or a radio record, and" \
+                "$cold radio records that are the first use of their processor (recovered.json)"
         else
             fail "S4.1 a second reader: $releases releases, $skipped skipped and $radio decoded radio records in" \
-                "$(basename -- "$arm"), or no decision (see recovered.log)"
+                "$(basename -- "$arm"), $cold of them the first use of their processor beside $ahead decodes of a" \
+                "lead-in, or no decision (see recovered.log)"
         fi
     else
         fail "S4.1 a second reader recovers a decision of a concurrent arm (see recovered.log)"
@@ -362,5 +383,7 @@ note "Sprint 4.1: ACCEPTED on this DGX Spark. The receiver and the sensor run as
     "per decode, and every arm decodes the same realization on the same offered schedule: tap off, capture only," \
     "buffered records to the sensor alone, and both together. Both process identifiers were read from the client list" \
     "in one reading, the sensor's context existed before the receiver, and a sensor that was killed did not reach the" \
-    "receiver. Service times, tails and latencies are recorded in mps_pacing.json and are not graded. These arms are" \
-    "the timed half of the Sprint 3.6 Integrate step. Next: S4.6, which calibrates on them."
+    "receiver. The first use of the receiver is a decode of the lead-in ahead of each schedule: the cold start is" \
+    "recorded apart and is a sample of no statistic. Service times, tails and latencies are recorded in" \
+    "mps_pacing.json and are not graded. These arms are the timed half of the Sprint 3.6 Integrate step. Next: S4.6," \
+    "which calibrates on them."

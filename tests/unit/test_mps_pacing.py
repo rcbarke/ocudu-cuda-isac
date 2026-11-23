@@ -40,7 +40,7 @@ import run_m1  # noqa: E402
 ADAPTER = ROOT / "native/ocudu_adapter"
 PACING = ADAPTER / "pacing"
 CASES = ("schedule_rules", "releases_never_shift", "late_start", "book_decoded", "book_outcomes", "book_refusals",
-         "book_no_allocation", "spin_until")
+         "book_no_allocation", "lead_in_rules", "book_lead_in", "lead_in_takes_the_cold_start", "spin_until")
 MS, US = 1_000_000, 1_000
 PIPE = "/run/unit/mps/pipe"
 
@@ -106,6 +106,47 @@ class ScheduleTests(unittest.TestCase):
                 mp.check_pacing(broken)
         with self.assertRaisesRegex(MpsPacingError, "names 3 releases, and the replay holds 4"):
             mp.check_pacing(pacing, 4)
+
+    def test_a_lead_in_repeats_the_first_releases_ahead_of_the_schedule_and_ends_before_it(self):
+        # The schedule of the demonstration: three uplink slots of 0.5 ms in every 5 ms. The lead-in is its first
+        # two bursts, two periods early. The unit case lead_in_rules of the native core holds the same six times.
+        offsets = mp.release_offsets(burst("a", 4))
+        lead = {"releases": 6, "lead_us": 10000}
+        pacing = mp.pacing_spec(offsets, 500, 250, 50000, lead)
+        self.assertEqual(set(pacing) - set(mp.PACING_FIELDS), {"lead_in"})
+        self.assertEqual(mp.lead_offsets(pacing), [-10000, -9500, -9000, -5000, -4500, -4000])
+        self.assertEqual((mp.lead_in_of(pacing), mp.lead_in_of(None)), (lead, None))
+        plan = plan_of(pacing)
+        self.assertIs(mp.check_plan(plan), plan)
+        # Without the member the object is the one of the accepted run, and it names no lead-in. Null is the same.
+        plain = mp.pacing_spec(offsets, 500, 250, 50000)
+        self.assertEqual((set(plain), mp.lead_in_of(plain), mp.lead_offsets(plain)), (set(mp.PACING_FIELDS), None, []))
+        null = dict(plain, lead_in=None)
+        self.assertEqual((mp.check_pacing(null, 12), mp.lead_offsets(null)), (null, []))
+        for wrong, message in (
+                ({"releases": 13, "lead_us": 10000}, "names 13 releases, and the schedule holds 12"),
+                ({"releases": 0, "lead_us": 10000}, "integer from 1 to 64"),
+                ({"releases": 6.0, "lead_us": 10000}, "integer from 1 to 64"),
+                ({"releases": 65, "lead_us": 10000}, "integer from 1 to 64"),
+                ({"releases": 6, "lead_us": 0}, "the lead of a lead-in is positive"),
+                # The sixth release lies 6 ms into the schedule: its decode would be issued 0.4 ms ahead of the first.
+                ({"releases": 6, "lead_us": 6400}, "its last decode is issued 400 us ahead of the first release, and the "
+                                                   "processing allowance is 500 us"),
+                ({"releases": 6, "lead_us": 50001}, "begins before the schedule is fixed"),
+                ({"releases": 6}, "pacing.lead_in requires exactly releases, lead_us"),
+                ({"releases": 6, "lead_us": 10000, "pace": 1}, "pacing.lead_in requires exactly"),
+                ([6, 10000], "pacing.lead_in requires exactly")):
+            with self.assertRaisesRegex(MpsPacingError, message):
+                mp.pacing_spec(offsets, 500, 250, 50000, wrong)
+        # The boundaries are inside: a last decode that ends, on its allowance, at the first release, and a
+        # lead-in that begins when the schedule is fixed.
+        mp.pacing_spec(offsets, 500, 250, 50000, {"releases": 6, "lead_us": 6500})
+        mp.pacing_spec(offsets, 500, 250, 10000, lead)
+        with self.assertRaisesRegex(MpsPacingError, "begins before the schedule is fixed"):
+            mp.pacing_spec(offsets, 500, 250, 9999, lead)
+        # A member that the pacing object does not know is still refused.
+        with self.assertRaisesRegex(MpsPacingError, "requires exactly"):
+            mp.check_pacing(dict(pacing, warm_up=1))
 
     def test_a_plan_of_version_4_names_a_schedule_or_null_and_a_paced_run_is_timed(self):
         pacing = mp.pacing_spec([0, 500, 1000], 500, 250)
@@ -637,6 +678,61 @@ class ReleaseLineTests(unittest.TestCase):
                 ({key: value for key, value in self.line().items() if key != "fill_us"}, "exactly the fields")):
             self.assertIn(message, " ".join(mp.release_violations(broken, self.PACING)))
 
+    def lead_fixture(self):
+        """A report with a lead-in of two decodes ahead of a schedule that starts at 1 s, and its two first releases."""
+        path = {"requested": "cuda", "executed": "resident", "fallback": None,
+                "resident_us": {"setup": 5.0, "demodulation": 340.0, "decode": 960.0}}
+        report = {"run_id": "unit", "backends": [{"name": "cuda"}],
+                  "opportunities": [{"sequence": n, "opportunity_id": f"op-{n}", "sfn": 0, "slot": 7 + n, "grant_id": "g"}
+                                    for n in range(3)],
+                  "pacing": {"t_start_ns": 1_000_000_000, "allowance_us": 500, "latest_start_us": 250,
+                             "lead_in": {"releases": 2, "lead_us": 5000}}}
+        releases = [{"offset_us": 500 * n, "t_release_ns": 1_000_000_000 + 500_000 * n} for n in range(3)]
+        lines = []
+        for k, (start, took) in enumerate(((995_000_000, 1310.0), (996_400_000, 236.0))):
+            lines.append({"schema": mp.LEAD_IN_SCHEMA, "run_id": "unit", "sequence": k, "opportunity_sequence": k,
+                          "opportunity_id": f"op-{k}", "sfn": 0, "slot": 7 + k, "grant_id": "g", "offset_us": 500 * k,
+                          "lead_us": 5000, "issued": True, "t_issue_ns": 995_000_000 + 500_000 * k,
+                          "t_ready_ns": start - 1000, "t_start_ns": start, "t_done_ns": start + int(took * 1000) + 6000,
+                          "fill_us": 76.5, "released": True,
+                          "decodes": [{"backend": "cuda", "key": f"op-{k}/cuda", "outcome": "decoded", "crc_ok": True,
+                                       "payload_match": True, "t_start_ns": start + 10,
+                                       "t_callback_ns": start + 10 + int(took * 1000), "service_us": took, "path": path}]})
+        return report, releases, lines
+
+    def test_a_decode_of_the_lead_in_is_issued_ahead_of_the_schedule_and_is_no_release(self):
+        report, releases, lines = self.lead_fixture()
+        for position, line in enumerate(lines):
+            self.assertEqual(mp.lead_in_violations(line, position, report, releases), [])
+        # The second decode was issued at its time or as soon as the first was done: 1.4 ms after it, 0.9 ms late.
+        self.assertGreater(lines[1]["t_start_ns"], lines[1]["t_issue_ns"])
+        # A line of the lead-in is no line of a release, and a release is no line of the lead-in.
+        self.assertEqual(set(mp.LEAD_LINE_FIELDS) & {"outcome", "overrun", "t_release_ns", "t_free_ns"}, set())
+        self.assertIn("exactly the fields", " ".join(mp.release_violations(lines[0], report["pacing"])))
+        first, decode = lines[0], lines[0]["decodes"][0]
+        idle = dict(first, issued=False, t_ready_ns=None, t_start_ns=None, t_done_ns=None, fill_us=None, released=False,
+                    decodes=[dict(decode, outcome="not_dispatched", crc_ok=False, payload_match=False, t_start_ns=None,
+                                  t_callback_ns=None, service_us=None, path=None)])
+        self.assertEqual(mp.lead_in_violations(idle, 0, report, releases), [])
+        for broken, message in (
+                (dict(first, t_issue_ns=995_000_001), "start of the schedule plus its offset minus the lead"),
+                (dict(first, lead_us=4000), "start of the schedule plus its offset minus the lead"),
+                (dict(first, t_start_ns=994_999_999, t_ready_ns=994_999_000), "started before the time it is issued at"),
+                (dict(first, opportunity_id="op-1"), "does not repeat opportunity 0 of the schedule"),
+                (dict(first, sequence=1), "another place in the lead-in"),
+                (dict(first, schema=mp.RELEASE_SCHEMA), "another schema"),
+                (dict(first, decodes=[dict(decode, service_us=1311.0)]), "its service time is the distance"),
+                (dict(first, decodes=[dict(decode, key="op-9/cuda")]), "carries the key of the opportunity it repeats"),
+                (dict(first, decodes=[dict(decode, crc_ok=False)]), "that is decoded passed its CRC"),
+                (dict(first, decodes=[dict(decode, payload_match=False)]), "gave the bytes of the original block"),
+                (dict(first, decodes=[dict(decode, t_start_ns=first["t_done_ns"] + 1)]), "starts inside its own job"),
+                (dict(first, decodes=[dict(decode, backend="cpu")]), "one decode per backend"),
+                (dict(first, decodes=[]), "one decode per backend"),
+                (dict(idle, t_done_ns=5), "was not issued names no time"),
+                (dict(first, outcome="on_time"), "exactly the fields"),
+                ({key: value for key, value in first.items() if key != "released"}, "exactly the fields")):
+            self.assertIn(message, " ".join(mp.lead_in_violations(broken, 0, report, releases)), message)
+
     def test_both_clients_worked_on_the_device_over_a_common_interval(self):
         class Output:
             releases = [{"decodes": [{"backend": "cuda", "t_start_ns": 1000 + 500 * n, "t_callback_ns": 1200 + 500 * n}]}
@@ -746,7 +842,12 @@ class TreeTests(unittest.TestCase):
     def test_the_paced_loop_releases_on_the_offered_time_and_keeps_the_harness_out_of_the_job(self):
         tool = (ADAPTER / "observer/pilot_ls.cpp").read_text()
         paced = tool[tool.index("  // ---- The paced run (Sprint 4.1)."):tool.index("  // ---- The drain:")]
-        loop = paced[paced.index("    pace->begin("):]
+        # After the schedule is fixed: the lead-in, when the plan names one, and then the releases of the schedule.
+        fixed = paced[paced.index("    pace->begin("):]
+        head = "    for (std::size_t n = 0; n != chosen.size(); ++n) {\n      const std::size_t  sequence = chosen[n];"
+        self.assertEqual(fixed.count(head), 1)
+        ahead, loop = fixed[:fixed.index(head)], fixed[fixed.index(head):]
+        self.assertTrue(ahead.lstrip().startswith("pace->begin(schedule_start);\n    // ---- The lead-in."), ahead[:80])
         # Admission against the schedule, the fill ahead of the slot, the release, the tap, the decodes.
         order = ["pace->take(n, free_ns)", "replay.fill(sequence, sink);", "pace->ready(n, isac_pacing::monotonic_ns());",
                  "pace->start(n, isac_pacing::spin_until(pace->release_time(n)));", "out->publish(handle_of[sequence], ready);",
@@ -764,6 +865,41 @@ class TreeTests(unittest.TestCase):
         before = paced[:paced.index("    pace->begin(")]
         self.assertLess(before.index("paced_jobs->prepare(name, bound.grant_id, bound.record_sha256"),
                         before.index("backends[b]->arrange(t, *paced_jobs);"))
+        # ---- The lead-in. Its decodes are named in a book of their own, behind every token of the schedule, and
+        # their notifiers exist before the schedule is fixed too.
+        made = "lead_jobs = std::make_unique<isac_pacing::paced_book>(pool, &isac_pacing::monotonic_ns, " \
+               "paced_jobs->next_token());"
+        self.assertLess(before.index("backends[b]->arrange(t, *paced_jobs);"), before.index(made))
+        self.assertLess(before.index(made), before.index("lead_jobs->prepare(name, bound.grant_id, bound.record_sha256"))
+        self.assertLess(before.index("lead_jobs->prepare("), before.index("backends[b]->arrange(t, *lead_jobs);"))
+        # It is issued ahead of the schedule, each decode at its own time or as soon as the one before is done,
+        # with the fill, the dispatch and the grid rule of a release, and the receiver has no observer meanwhile.
+        order = ["route->close();", "isac_pacing::lead_time(offered, warm, schedule_start, k);",
+                 "replay.fill(sequence, sink);", "isac_pacing::spin_until(now.issue_ns);",
+                 "isac_pacing::paced_dispatch(*lead_jobs, backend, now.tokens[b], key, limit_ns, &refusal);",
+                 "started[b] = 1;", "lead_jobs->release_grid(led[retained].key);", "route->open();"]
+        positions = [ahead.index(text) for text in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual((ahead.count("#ifdef ISAC_O3_ROUTE"), ahead.count("route->close();"), ahead.count("route->open();")),
+                         (2, 1, 1))
+        # It is no part of the schedule: no release is taken, started or done, nothing is tapped, expected or
+        # published, the book of the schedule is not touched, and it follows the rule of the loop below.
+        for word in ("pace->take", "pace->start", "pace->done", "pace->ready", "pace->give_up", "paced_jobs", "kept[",
+                     "out->publish", "taker->", "ring->service", "sha256_hex", "sha256(", "sha256_count", "write_bytes",
+                     "json", "estimate_entry", "std::cout", "book.", "dispatch(book", "std::mutex", "sleep", "new ",
+                     "make_unique", "push_back", "settle"):
+            self.assertNotIn(word, ahead, word)
+        # The first use of a processor is then a decode of the lead-in, and the loop below reads that.
+        self.assertIn("now.decodes[b].first_use = started[b] == 0;", loop)
+        # What the lead-in took is written after the drain, in a file of its own, and its timeouts end the run.
+        after = tool[tool.index("  // ---- The offered schedule of a paced run and what became of every release."):]
+        self.assertLess(after.index("write_bytes(pacing_path + \"/\" + RELEASES_FILE"),
+                        after.index("write_bytes(pacing_path + \"/\" + LEAD_IN_FILE"))
+        self.assertIn("(lead_jobs && lead_jobs->count(outcome::timeout, backend->name()) != 0)", tool)
+        self.assertIn('lead_jobs ? "nothing: the first use of the backend is a decode of the lead-in', tool)
+        # A lead-in is checked with its schedule before a processor exists.
+        self.assertLess(tool.index("isac_pacing::check(offered, warm, static_cast<std::int64_t>(tap.pacing.start_delay_us)"),
+                        tool.index("std::make_unique<processor_backend>"))
         # The paced run says one thing, once: the start of its schedule, after the preparation and before the
         # schedule exists. The launcher reads that line, so both sides share its words.
         said = 'std::cout << "pilot_ls: schedule start " << schedule_start << " ns on the host monotonic clock, "'
@@ -804,6 +940,7 @@ class TreeTests(unittest.TestCase):
         observer = (ADAPTER / "observer/CMakeLists.txt").read_text()
         self.assertIn("target_link_libraries(pilot_ls PRIVATE pacing_core)", observer)
         self.assertIn("add_test(NAME pilot_ls_pacing COMMAND pilot_ls --pacing)", observer)
+        self.assertIn("absolute releases on the host monotonic clock.*lead-in ahead of the schedule", observer)
         cmake = (PACING / "CMakeLists.txt").read_text()
         self.assertEqual(tuple(re.search(r"set\(PACING_CORE_CASES ([^)]*)\)", cmake)[1].split()), CASES)
         # The pacing core leaves the accepted cores as they are: it adds a directory and edits neither.
@@ -818,6 +955,15 @@ class TreeTests(unittest.TestCase):
             self.assertIn(f'{{"{name}",', tool, name)
         for name in mp.PACING_FIELDS:
             self.assertIn(f'"{name}"', tool, name)
+        # The lead-in: its member of the plan, its file, its line and what the report says of it.
+        for text in (mp.LEAD_IN_SCHEMA, mp.LEAD_IN_FILE, "lead_in"):
+            self.assertIn(f'"{text}"', tool, text)
+        for name in mp.LEAD_IN_FIELDS:
+            self.assertIn(f'"{name}"', tool, name)
+        for name in mp.LEAD_LINE_FIELDS + mp.LEAD_DECODE_FIELDS + mp.LEAD_REPORT_FIELDS:
+            self.assertIn(f'{{"{name}",', tool, name)
+        self.assertIn(f"count(lead, \"releases\", \"pacing.lead_in\", {mp.MAX_LEAD_RELEASES});", tool)
+        self.assertIn('<< ", lead-in ahead of the schedule" << std::endl;', tool)
         core = (PACING / "pacing_core.cpp").read_text()
         for name in mp.RELEASE_OUTCOMES + mp.SKIPS:
             self.assertIn(f'return "{name}";', core, name)

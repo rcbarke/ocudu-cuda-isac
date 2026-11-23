@@ -2,14 +2,16 @@
 
 The contract of Sprint 4.1 (`mps_pacing`): the paced plan of the staged harness, the release rule, the files a paced run writes, the launcher `scripts/run_m1.py` with its arms, the proof of the label MPS, the contention controls and the record `mps_pacing.json`. [Process layout and contention](../architecture/RUNTIME.md#process-layout) | [observation contract](OBSERVATION.md) | [ring](SNAPSHOT_RING.md) | [native sensing core](SENSE_CORE.md) | [sprint card](../dev/DEVELOPMENT.md#phase-s4)
 
-**Status.** Built, and not yet accepted. The second run on the Spark passed the driver whole, 12 of 12 cases and 42 of 42 checks with its hardware gate closed, and the gate failed on two tree checks of earlier sprints, which are corrected. [What the first Spark run showed](#what-the-first-spark-run-showed) | [What the second Spark run showed](#what-the-second-spark-run-showed) The portable half is graded here: the release rule in two languages, the paced book against the ledger of Sprint 2.4, the launcher on a fake host, and the driver as a rehearsal on a stand-in control (12 of 12 cases, 39 of 39 checks, hardware gate open). `make accept-s4.1` on the DGX Spark is the gate. [What only the Spark can show](#what-only-the-spark-can-show)
+**Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-23 (UTC): `make accept-s4.1` passed at commit `3302329`, run `s41-spark-ecf8-20261123T140213Z`, on its third run. [What the accepted run measured](#what-the-accepted-run-measured) | [what the first Spark run showed](#what-the-first-spark-run-showed) | [what the second Spark run showed](#what-the-second-spark-run-showed)
+
+**After acceptance.** The accepted run measured what the first decode of a receiver process costs a schedule. A lead-in ahead of the schedule now takes that cost out of every release and every statistic and records it apart. It is built and unit tested, and it has not yet run on the Spark: `make accept-s4.1` runs it. [The cold start](#the-cold-start) | [the lead-in](#the-lead-in)
 
 ## What the sprint adds
 
 | Path | Holds |
 |---|---|
-| `native/ocudu_adapter/pacing/` | `pacing_core.h`, `pacing_core.cpp`: the pacer and the paced book. Host-free: it includes the dispatch core and the channel application core and nothing of OCUDU. `tests/pacing_core_test.cpp`: eight cases in CTest |
-| `native/ocudu_adapter/observer/pilot_ls.cpp`, `observer_plan.h` | The plan version 4 and the paced loop of the staged harness. The loops of the plan versions 1 to 3 are unchanged |
+| `native/ocudu_adapter/pacing/` | `pacing_core.h`, `pacing_core.cpp`: the pacer, the paced book and the rules of a lead-in. Host-free: it includes the dispatch core and the channel application core and nothing of OCUDU. `tests/pacing_core_test.cpp`: eleven cases in CTest |
+| `native/ocudu_adapter/observer/pilot_ls.cpp`, `observer_plan.h` | The plan version 4, the paced loop of the staged harness and the lead-in ahead of it. The loops of the plan versions 1 to 3 are unchanged |
 | `src/ocudu_cuda_isac/episodes/mps_pacing.py` | The plan, the reference of the release rule, the reader of a paced output, the inventory rules, the reducers. Standard library only |
 | `scripts/run_m1.py` | The launcher: the MPS control daemon of this checkout and one arm from its specification |
 | `tests/unit/test_mps_pacing.py` | The unit gate of the card |
@@ -41,7 +43,20 @@ No source of `native/obs_ring`, of `native/sense_core`, of the receiver patch or
 | `latest_start_us` | How long after its release a job may still start. Later, it is a skipped release |
 | `release_us` | One offset per opportunity of the replay, in its order, strictly increasing, from the start of the schedule |
 
-`mps_pacing.release_offsets` derives the offsets from the frame and the slot of each opportunity: a slot lasts `slot_us`, consecutive entries are separated by `gap_slots` idle slots. A paced plan is refused unless its evidence mode is `timed` and it names as many releases as the replay has opportunities. The driver refuses a configuration whose rings do not wait in `spin` mode, whose receiver decodes on another processor than CUDA, or that enlarges a ring for an arm. `pilot_ls --pacing` prints the plan version the build reads.
+The object may name one more member, `lead_in`, which is null or the [lead-in](#the-lead-in) of the run:
+
+```json
+"lead_in": {"releases": 6, "lead_us": 10000}
+```
+
+| Field | Meaning |
+|---|---|
+| `releases` | How many of the first releases are decoded once more ahead of the schedule, 1 to 64 and no more than the schedule holds |
+| `lead_us` | How long before its own release each of them is issued |
+
+The member was added after the sprint was accepted. A plan without it is the plan of the accepted run, hash for hash, and runs without a lead-in. A lead-in is refused unless its last decode, done on its allowance, has ended when the first release is offered, `offset(releases - 1) - lead_us + allowance_us <= offset(0)`, and unless its first decode is issued after the schedule was fixed, `lead_us - offset(0) <= start_delay_us`.
+
+`mps_pacing.release_offsets` derives the offsets from the frame and the slot of each opportunity: a slot lasts `slot_us`, consecutive entries are separated by `gap_slots` idle slots. A paced plan is refused unless its evidence mode is `timed` and it names as many releases as the replay has opportunities. The driver refuses a configuration whose rings do not wait in `spin` mode, whose receiver decodes on another processor than CUDA, or that enlarges a ring for an arm. `pilot_ls --pacing` prints the plan version the build reads and that it reads a lead-in.
 
 ## The release rule
 
@@ -68,9 +83,10 @@ Everything a plan of version 3 writes, with the report schema `pilot-ls-native/v
 | File | Holds |
 |---|---|
 | `pacing/releases.jsonl` | One `pace-release/v1` line per opportunity: `sequence`, `opportunity_id`, `sfn`, `slot`, `offset_us`, `outcome` (`on_time`, `late`, `skipped`), `overrun`, the times `t_release_ns`, `t_free_ns`, `t_ready_ns`, `t_start_ns`, `t_done_ns`, `fill_us`, and per decode `backend`, `key`, `outcome`, `skip`, `t_start_ns`, `t_callback_ns`, `service_us` |
-| `native.json`, `pacing` | A `pace-report/v1` object: the offered schedule, the start of the schedule on the host clock, and the counts `offered`, `taken`, `on_time`, `late`, `skipped`, `overruns`, `max_lateness_ns`, `max_excess_ns` |
+| `native.json`, `pacing` | A `pace-report/v1` object: the offered schedule, the start of the schedule on the host clock, and the counts `offered`, `taken`, `on_time`, `late`, `skipped`, `overruns`, `max_lateness_ns`, `max_excess_ns`. With a lead-in, its member `lead_in`: the releases and the lead, how many decodes were issued and decoded, when the first started and the last was done, how long before the first release that was, and the service times by backend |
+| `pacing/lead_in.jsonl` | Only with a lead-in. One `pace-lead-in/v1` line per decode that was issued ahead of the schedule: `sequence`, the opportunity it repeats with `opportunity_sequence`, `opportunity_id`, `sfn`, `slot`, `grant_id` and `offset_us`, `lead_us`, `issued`, the times `t_issue_ns`, `t_ready_ns`, `t_start_ns`, `t_done_ns`, `fill_us`, `released`, and per decode `backend`, `key`, `outcome`, `crc_ok`, `payload_match`, `t_start_ns`, `t_callback_ns`, `service_us` and `path` with the stage times of the receiver |
 
-`mps_pacing.open_output` reads such a directory with the readers of the earlier sprints and then checks every release line against the rule, against the offered schedule of the plan (`offered_matches`) and against the radio records. A job that started before its release time, an offset that is not the plan's, a count that the lines do not give and a decode without its radio record are each refused by name.
+`mps_pacing.open_output` reads such a directory with the readers of the earlier sprints and then checks every release line against the rule, against the offered schedule of the plan (`offered_matches`) and against the radio records. A job that started before its release time, an offset that is not the plan's, a count that the lines do not give and a decode without its radio record are each refused by name. With a lead-in it reads `pacing/lead_in.jsonl` as well: every line against the opportunity it repeats and against its own times, the member of the report against the lines, and the radio records against both, so that a release that names the first use of a processor on which the lead-in decoded is refused. `pacing/` holds nothing else.
 
 ## The launcher
 
@@ -110,7 +126,7 @@ The rule compares the PUSCH service-time tail of the capture-only arm with that 
 
 ## The record
 
-`mps_pacing.json` (`mps-pacing/v1`, `"graded": false`) holds, per launch of every arm: the label with its proof, the processes with their commands, CPUs, environments and whether they map a Python library, the counts of the pacer, the service times (median, 99th percentile, maximum), the account of each ring, the decisions and latencies of the sensor; and once: the frozen conditions (CPU sets, ring depths, wait modes, order of the arms, package and tool hashes, thermal readings), the contention result, the faults, the time-slicing control and the load: `scripted: true`, and no UE, no 5GC and no PRACH procedure attached.
+`mps_pacing.json` (`mps-pacing/v1`, `"graded": false`) holds, per launch of every arm: the label with its proof, the processes with their commands, CPUs, environments and whether they map a Python library, the counts of the pacer, the service times (median, 99th percentile, maximum), the account of each ring, the decisions and latencies of the sensor; and once: the cold start of the receiver, apart (`cold_start`, [the lead-in](#the-lead-in)); the frozen conditions (CPU sets, ring depths, wait modes, order of the arms, package and tool hashes, thermal readings), the contention result, the faults, the time-slicing control and the load: `scripted: true`, and no UE, no 5GC and no PRACH procedure attached.
 
 The paced receiver fixes the map between the radio clock and the host clock: the slot of an opportunity begins at its release time. Three latencies per window follow from it: from the release of its first slot to its decision, from the release of its last slot, and from the moment the receiver was done with its last slot. They are recorded beside the latency of the cuSense boundary (Sprint 3.6) and are not graded.
 
@@ -118,7 +134,111 @@ The paced receiver fixes the map between the radio clock and the host clock: the
 
 ## Gate
 
-`make accept-s4.1` (`scripts/accept_s4_1.sh`) on the DGX Spark that passed `make accept-s3.6`. It needs the accepted Sprint 3.6 run and the Sprint 3.5 run it names with its episode set, the patched receiver in `build/ocudu-spark-o3`, the environment of `make env-full` and `make core-env`, TensorRT and `nvidia-cuda-mps-control`. It rebuilds the adapter (not OCUDU), verifies the sensing core, and runs the driver in twelve cases: `build`, `control`, `mps`, `schedule`, `dsp_only`, `capture_only`, `ai_only`, `concurrent`, `contention`, `runtime`, `faults`, `records`. It reads validation entries only. No held-out episode is read before S4.6 has frozen the profile.
+`make accept-s4.1` (`scripts/accept_s4_1.sh`) on the DGX Spark that passed `make accept-s3.6`. It needs the accepted Sprint 3.6 run and the Sprint 3.5 run it names with its episode set, the patched receiver in `build/ocudu-spark-o3`, the environment of `make env-full` and `make core-env`, TensorRT and `nvidia-cuda-mps-control`. It rebuilds the adapter (not OCUDU), verifies the sensing core, and runs the driver in twelve cases: `build`, `control`, `mps`, `schedule`, `dsp_only`, `capture_only`, `ai_only`, `concurrent`, `contention`, `runtime`, `faults`, `records`. With the lead-in of its configuration it grades 45 checks, three more than the accepted run: one `lead-in` per arm with a receiver. It reads validation entries only. No held-out episode is read before S4.6 has frozen the profile.
+
+## What the accepted run measured
+
+`make accept-s4.1` passed on `spark-ecf8` on 2026-11-23 (UTC) at commit `3302329`, run `s41-spark-ecf8-20261123T140213Z`: 61 gate lines, 55 PASS and 6 NOTE, and no failure; 12 of 12 cases and 42 of 42 checks of the driver with its hardware gate closed; 735 unit tests with none skipped; 96 adapter tests without a compiler warning. `pilot_ls` has the bytes `4eb0b20881de` of the second run, and five other tools of the adapter have the bytes of the adapter that the Sprint 3.5 run verified. The controls are the accepted runs `s36-spark-ecf8-20261122T194723Z` and `s35-spark-ecf8-20261122T155753Z`: 20 validation pairs of `demo-set-v1`, 960 opportunities and 320 windows. No held-out episode was read.
+
+**Graded.**
+
+| What | Result |
+|---|---|
+| Sharing | Every timed arm carries the label MPS on one reading of the client list of the server on the GB10: the receiver in `dsp_only` and `capture_only`, the sensor in `ai_only`, both process identifiers in `concurrent`. The driver itself is refused the label with the empty client list. Read back: default active thread percentage 100.0, default client priority 0 |
+| Start order and placement | In every repetition `sense_host` had loaded its artifact, created its context and warmed its engine, and was a client of the server, before the receiver was started. It maps no Python library. It ran on CPU 4, the O2 reader on CPU 3, the receiver on 5-9 and 15-19, each read back from the kernel |
+| One realization | Both plans bind one replay plan and one offered schedule: 960 releases over 1,635 ms at distances of 500, 4,000 and 5,000 us. Every arm with a receiver was offered the 960 releases in each of three repetitions |
+| Decodes | In each of `dsp_only`, `capture_only` and `concurrent`: 2,874 of 2,874 released grids gave the original bytes with a CRC pass on the resident CUDA path, without an anomaly. 6 of 2,880 releases were skipped and stay in the denominator |
+| Schedule | No job started before its release and no offset moved. A start lies 0.01 us after its release in the median and 0.03 us at the 99th percentile |
+| Export | `capture_only`: 2,874 records of each stage published, read and released, none dropped. `concurrent`: 2,874 estimates to `sense_host` and 2,874 O2 records to the delay-Doppler branch on the CPU, none dropped |
+| Decisions | 957 windows scored beside the receiver and, from the buffered records, by the sensor alone: 957 decide alike, and the largest logit difference is 2.26e-03 |
+| Faults | `sense_host` killed 700 ms into the schedule: the receiver was never signalled, ended by itself and decoded 956 of 956 released grids; 416 estimates published, 540 without a credit dropped and counted, 8 pending at the cutoff. With `obs_tail` taking over: 951 of 951 decoded; 850 published, 101 dropped, 8 reclaimed with the closed epoch, and the new consumer kept 434 records of a new epoch |
+| Records | 43 processes of 17 launches with their command, CPUs, environment, times and status; `mps_pacing.json` with `"graded": false` |
+
+**Recorded, not graded.** The host ran the performance governor at a load average near 1.9, the GPU at 39 to 43 C. Every figure is valid for that state.
+
+| Quantity | Median | 99th percentile | Most | Samples |
+|---|---|---|---|---|
+| PUSCH service time, tap off | 179.2 us | 229.5 us | 446.2 us | 2,871 |
+| PUSCH service time, capture only | 179.6 us | 247.4 us | 471.3 us | 2,871 |
+| PUSCH service time, concurrent | 179.0 us | 235.8 us | 435.0 us | 2,871 |
+| PUSCH service time beside the Python reference sensor | 182.8 us | 491.4 us | 802.2 us | 956 |
+| PUSCH service time, time slicing | 177.0 us | 262.3 us | 374.0 us | 957 |
+| cuSense boundary, `sense_host` beside the receiver under MPS | 142.9 us | 204.6 us | | 957 |
+| cuSense boundary, `sense_host` alone under MPS | 139.8 us | 204.0 us | | 957 |
+| cuSense boundary, `sense_host` beside the receiver, time slicing | 215.6 us | 236.4 us | | 319 |
+| cuSense boundary, Python reference beside the receiver under MPS | 2,230.2 us | 4,689.8 us | 56,059 us | 311 |
+| Release of the first slot of a window to its decision | 1,336.8 us | 1,446.6 us | | 957 |
+| End of the radio job of the last slot to the decision | 143.0 us | | | 957 |
+
+The sensor figures of the three repetitions are those of the slowest repetition. The contention rule compares the two 99th percentiles of capture only and concurrent: -11.6 us against 25.0 us allowed, so the control in effect is `mps_default` and no control was applied.
+
+**What the figures say.**
+
+- **The native sensor beside the receiver costs the receiver nothing that this run resolves.** The three arms with a receiver agree within 0.6 us in the median. Their 99th percentiles lie 18 us apart, with the concurrent arm between the two others.
+- **MPS costs the sensor about 10 us and the receiver beside it about 3 us.** Sprint 3.6 measured 130.0 us in the median without MPS and without a receiver, this run 139.8 us alone under MPS and 142.9 us beside the receiver. The published 241 us remain no like-for-like figure: [the differences](SENSE_CORE.md#what-the-spark-run-closed).
+- **Time slicing costs the sensor 73 us in the median**, 215.6 us against 142.9 us, on the same arm outside the daemon.
+- **The Python reference sensor is no second client for a paced receiver.** Beside it the receiver's 99th percentile is 491.4 us against 235.8 us, 13 jobs overran the allowance of 500 us against one in a run of the concurrent arm, and 18 started late against two at most. Its own latency is 15.6 times that of the native sensor in the median.
+- **A kill of the sensor reaches the receiver's timing and not its decodes.** The signal was sent 700 ms into the schedule and the process was gone at 814 ms. In that time the receiver's service time rose to 2.3 ms at most and one release was skipped, six in the arm with the takeover. Every released grid decoded. Both fault arms of this run also hold service times of 0.5 to 1.0 ms in the first 140 ms of their schedule, which the second run did not show; their cause is not known.
+- **The first decode of a receiver process is cold, and on a schedule it costs the first window.** [The cold start](#the-cold-start)
+- **The proposed tail rule decides inside the scatter between runs.** Its shift was -13.2 us, +27.1 us and -11.6 us in three runs of the same arms, and the tap-off arm lay above the capture-only arm in one of them. S4.6 declares the rule with the sample count that separates a sensor from that scatter.
+- **No submission of the sensor overlapped a decode**, in 957 windows of each run: a window closes with the last uplink slot of its period. These arms show two clients on one device over a common interval of 4.9 s and never at one instant.
+
+## The cold start
+
+The first decode of a receiver process pays for what the processor sets up on its first use. The accepted run measured it in every one of its twelve launches with a receiver and no fault.
+
+| Decode of the process | Above the median of its run, mean | Least | Most |
+|---|---|---|---|
+| First | 1,185.1 us | 1,085.1 us | 1,330.1 us |
+| Second | 56.2 us | 48.4 us | 60.0 us |
+| Third | 20.6 us | 11.2 us | 32.0 us |
+| Fourth | 5.5 us | -0.3 us | 14.2 us |
+
+In the nine graded runs the first decode took 1,262.7 to 1,507.2 us, 1,345.8 us in the median, against 179 us for a decode of the same run. The receiver's own stage times name where: the decode stage 930 to 1,123 us against 139 us, the demodulation 313 to 418 us against 38 us. The first submission of the estimate tap costs 5 to 7 us against 2.2 us.
+
+On an offered schedule that first decode is an overrun of the allowance, and the two releases behind it in the same burst, 500 and 1,000 us later, find the worker busy beyond their latest start and are skipped. The first window of the run then lacks two of its three slots and is a gap. **The loss is 2 of 960 releases, one overrun and 1 of 320 windows in every run of every arm**: all 6 skipped releases and all 3 overruns of each timed arm of the accepted run, and its 3 gaps. The service-time statistics leave the first use out, as since Sprint 2.4, and they keep the second decode, which lies at the 99th percentile of its arm, and the third.
+
+The counts are true and they are not about pacing: a receiver that serves a cell is warm. The remedy is [the lead-in](#the-lead-in), and the figures of this section stay the measurement of the loss without one: the configuration of the gate carries them as `pacing.cold_start_without_lead_in`, and the record of every later run repeats them beside its own cold start.
+
+## The lead-in
+
+**What it is.** A paced run may decode the first releases of its schedule once more, ahead of it:
+
+```text
+lead(k) = start + offset(k) - lead        for k below the number of lead-in releases
+```
+
+With the values of the gate, six releases and a lead of 10 ms, the lead-in is the first two bursts of the schedule two periods early: its decodes are issued 10.0, 9.5, 9.0, 5.0, 4.5 and 4.0 ms before the first release, with the grids, the PDUs and the transport blocks of the opportunities they repeat. A decode of the lead-in is issued at its time, or as soon as the one before it is done, and is never skipped: its first decode is the cold one and runs through the times of the two behind it.
+
+**What it is not.** A decode of the lead-in is no release. It has no line in `pacing/releases.jsonl` and no radio record. Nothing of it is tapped: the stage O2 is not read, and the receiver has no observer registered while the lead-in runs, so that no estimate is captured, no credit of a ring is taken and no record reaches a consumer. It is kept in a paced book of its own whose tokens lie behind every token of the schedule (`isac_pacing::paced_book` with a first token), so that no count, no anomaly and no sample of the schedule's book can be one of its decodes. The offered schedule is fixed before the lead-in and is not moved by it: the start of the schedule is announced first, and the lead-in runs inside the start delay.
+
+**Where the cold start goes.** With a lead-in the first use of every processor is one of its decodes. No release of the schedule carries `first_use`, the service statistics of the report leave nothing out, and the reader refuses an output in which a release names the first use of a processor that the lead-in decoded on. `pacing/lead_in.jsonl` holds what each decode of the lead-in took, with the stage times of the receiver, and the member `lead_in` of the report holds when the lead-in was done and how long before the first release. `mps_pacing.cold_start` reduces one run, and the record of the gate holds, under `cold_start`: the lead-in, the service time by decode of the lead-in over all runs with a receiver, the stage times of the first decode, the time between the lead-in and the first release, what the first release of the schedule took, and the loss that the accepted run measured without a lead-in. **A figure of the schedule is read from `radio/radio.jsonl` and `pacing/releases.jsonl` alone, and the cold start from `pacing/lead_in.jsonl` alone**: the two never share a sample.
+
+**Why this and not something smaller.**
+
+| Alternative | Why it was not taken |
+|---|---|
+| One decode before the schedule | It removes the 1.2 ms of the first use, the two skipped releases and the lost window. It leaves the second and the third decode of the process in the schedule, 56 and 21 us above the median, and the second lies at the 99th percentile of its arm in every run |
+| Several decodes, one behind the other, before the start delay | The receiver would then idle for the 50 ms of the start delay before its first release, which no burst of the schedule follows. Issued at the offsets of the schedule, a whole number of periods ahead, the lead-in ends about 3.8 ms before the first release, as every burst ends about 3.8 ms before the next: the first burst of the schedule is preceded by what precedes every other |
+| Leaving the first releases out of the statistics afterwards | The skipped releases and the lost window would stay in the counts, and samples would be removed by a rule that was chosen after they were seen |
+| The warm-up launch of the gate | It warms the host and not the next process: after the warm-up launch of the accepted run the first decode of every later process still took 1.26 to 1.51 ms |
+
+Six decodes and 10 ms are proposed values, as the allowance is. The transient lasts four decodes, and six are two whole bursts. S4.6 declares them with the profile.
+
+**What it does not change.** The first submission of the estimate tap, 5 to 7 us against 2.2 us, is still in the first release that is tapped, and the report already leaves the first copy out of its tap statistics. The first slot of a burst takes 3 to 11 us more in the median than the two behind it, after 4 ms of idle time: that is a property of the schedule and stays in every statistic. A plan without `lead_in`, or a configuration with `pacing.lead_in: null`, runs cold as the accepted run did, and the gate then says so and grades no lead-in.
+
+**How it is checked.**
+
+| Where | What |
+|---|---|
+| `lead_in_rules` (CTest) and `test_mps_pacing.py` | The rules of a lead-in in both languages, with the same six times |
+| `book_lead_in` (CTest) | Two books on one pool and one decoder: no decoder sees a token twice, a token of one book is no job of the other, counts, records and anomalies are apart, both grids are free for the schedule, and a lead-in decode that never calls back keeps its grid |
+| `lead_in_takes_the_cold_start` (CTest) | On the real clock, a decoder whose first use takes 1.3 ms on the schedule of the demonstration. Without a lead-in the first release overruns and the two behind it are skipped. With one, the first use is a decode of the lead-in and no release pays for it |
+| `test_mps_pacing.py`, tree and line cases | A line of the lead-in against the opportunity it repeats and its own times, sixteen refusals; the lead-in of `pilot_ls` in its order, without a tap, a publication, a release or a use of the schedule's book |
+| `test_mps_pacing_driver.py` | The driver on a double whose lead-in has a first decode of 1.3 ms: the cold start in the record and in no statistic. Three faults fail their checks: a tool that runs no lead-in, a release that is still the first use, a lead-in that ends inside its schedule. The same configuration without a lead-in grades none |
+| `make accept-s4.1` | Per arm with a receiver, the check `lead-in`: every decode of the lead-in gave the original bytes and was done before the first release, no release is the first use of its processor, and none of the first six releases of a schedule was skipped. The gate script requires the same of the record and counts the lines of `pacing/lead_in.jsonl` with `grep` |
+
+`pilot_ls.cpp` compiles against the pinned headers with and without the route to the estimate, and its lead-in has not run: the development host has no OCUDU build and no GPU. What the Spark has to show is that a receiver that decoded six grids 4 to 10 ms ago decodes its first release in its steady time, that closing and opening the observer of the receiver around the lead-in leaves the capture as it was, and the figures themselves.
 
 ## What the first Spark run showed
 
@@ -137,16 +257,17 @@ The paced receiver fixes the map between the radio clock and the host clock: the
 
 Three things of that run are findings and no defects of the gate. They are recorded here for S4.6, which calibrates on these arms.
 
-- **The first decode of a receiver process is cold, and on a schedule it costs the first window.** In every run of every arm the first decode took 1.25 to 1.49 ms (2.54 ms in the warm-up arm) against 0.19 ms in the median. It is an overrun, and the two releases behind it in the same burst, 500 and 1,000 us later, are skipped: that is every one of the 6 skipped releases and 3 of the overruns of each timed arm, and the first window of every run is a gap for it, 319 windows scored of 320. The service-time statistics already leave the first use out, as since Sprint 2.4. The counts are true and they are not about pacing. A decode before the schedule is fixed would remove them. It is not part of this sprint: it would change `pilot_ls` after the run that passed.
+- **The first decode of a receiver process is cold, and on a schedule it costs the first window.** In every run of every arm the first decode took 1.25 to 1.49 ms (2.54 ms in the warm-up arm) against 0.19 ms in the median. It is an overrun, and the two releases behind it in the same burst, 500 and 1,000 us later, are skipped: that is every one of the 6 skipped releases and 3 of the overruns of each timed arm, and the first window of every run is a gap for it, 319 windows scored of 320. The accepted run measured the same. [The cold start](#the-cold-start)
 - **The proposed tail rule decides inside its own noise.** The 99th percentile of the arm with the tap off, 246.1 us, lies 9.2 us above that of the capture-only arm, 236.9 us, which does more. The concurrent arm lies 27.1 us above capture only, against 25.0 us allowed, so `mps_priority` was applied and gave +11.3 us. The first run, on other cores, gave -13.2 us without a control. With 2,871 decodes per arm the rule of 25 us or 10 percent does not separate the sensor from the scatter between runs.
 - **No submission of the sensor overlapped a decode**, in 957 windows, as the section on the record explains. The 27.1 us are therefore no evidence of two clients on the device at one time.
 
-## What only the Spark can show
+## What the Spark has shown, and what it has not
 
-Nothing below ran where this sprint was written, which has no GPU, no MPS and no OCUDU build. The two runs above have since shown each of them.
+Nothing of this sprint could run where it was written, which has no GPU, no MPS and no OCUDU build. The three runs above showed each of these on the GB10.
 
-- **The paced loop of `pilot_ls`.** It compiles against the pinned headers with and without the route to the estimate, and its two cores are tested without OCUDU. Its first execution is the gate's.
-- **MPS on the GB10.** The commands `get_server_list`, `get_client_list`, `get_active_thread_percentage`, `get_default_active_thread_percentage` and `get_default_client_priority` follow the NVIDIA documentation. Whether the release on the Spark answers each of them, and whether it honours a client priority, is read on the Spark. A command that is refused makes its control a planned cell.
-- **A consumer that takes over.** Shown in the second run: `sense_host` was killed 700 ms into the schedule, the receiver decoded every released grid, 100 estimates found no credit and were dropped and counted, 8 were reclaimed with the closed epoch, and `obs_tail` kept 431 records of a new epoch.
-- **Time slicing beside the daemon.** A client outside the daemon while the daemon holds the device may be refused by the driver. The cell is then recorded as planned with the reason.
-- **The proposed values.** 500 us of allowance, 250 us of latest start, core 4 for the sensor and core 3 for the O2 reader are first values. A run that skips more than ten releases per repetition fails `schedule kept` and names the count.
+- **The paced loop of `pilot_ls`**, in 17 launches of the accepted run.
+- **MPS on the GB10.** The release on the Spark answers `get_server_list`, `get_client_list`, `get_default_active_thread_percentage` and `get_default_client_priority`. The second run applied `mps_priority` to the sensor, with the variable in the environment of the sensor process; whether the server honours it was not separated from the scatter between runs.
+- **A consumer that takes over**, and a sensor that is killed, 700 ms into the schedule.
+- **Time slicing beside the daemon**: a labeled control, never labeled MPS.
+
+Not shown: `mps_thread_pct` and `release_after_radio` were never applied, because an earlier control or none was in effect. The proposed values, 500 us of allowance, 250 us of latest start, core 4 for the sensor and core 3 for the O2 reader, held in three runs and are still proposed. S4.6 declares them.

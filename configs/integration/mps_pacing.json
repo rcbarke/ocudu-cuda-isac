@@ -20,7 +20,32 @@
     "gap_slots": 10,
     "allowance_us": 500,
     "latest_start_us": 250,
-    "start_delay_us": 50000
+    "start_delay_us": 50000,
+    "lead_in": {
+      "releases": 6,
+      "lead_us": 10000
+    },
+    "cold_start_without_lead_in": {
+      "run": "s41-spark-ecf8-20261123T140213Z",
+      "commit": "3302329",
+      "launches": 12,
+      "first_decode_us": {
+        "least": 1262.7,
+        "median": 1345.8,
+        "most": 1507.2
+      },
+      "above_the_median_of_the_run_us": [
+        1185.1,
+        56.2,
+        20.6,
+        5.5
+      ],
+      "releases_per_run": 960,
+      "skipped_releases_per_run": 2,
+      "overruns_per_run": 1,
+      "windows_per_run": 320,
+      "windows_lost_per_run": 1
+    }
   },
   "rings": {
     "o2": {

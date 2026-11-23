@@ -18,6 +18,10 @@
 // allowance of one job, the latest start of a job after its release, and the release offset of
 // every opportunity of the replay, in its order, in microseconds from the start of the schedule.
 // With pacing null a plan of version 4 runs what the same plan of version 3 runs.
+// The pacing object may name one more member, lead_in, which is null or the lead-in of the run:
+// how many of the first releases are decoded once more ahead of the schedule, and how long ahead
+// of its own release each of them is issued. It was added after Sprint 4.1 was accepted, so a
+// plan without it is read as before and runs without a lead-in, as the accepted run did.
 //
 // The plan is written offline by src/ocudu_cuda_isac/episodes/pilot_ls.py. It names the receiver
 // replay plan of Sprint 2.4 that the run decodes, by the hash that binds it, and what the
@@ -102,6 +106,8 @@ struct plan_pacing {
   std::uint64_t              allowance_us    = 0; ///< The processing allowance of one job.
   std::uint64_t              latest_start_us = 0; ///< A job that cannot start within this of its release is skipped.
   std::vector<std::uint64_t> release_us;          ///< One offset per opportunity of the replay, in its order.
+  std::uint64_t              lead_releases   = 0; ///< The lead-in: how many of the first releases. Zero: none.
+  std::uint64_t              lead_us         = 0; ///< The lead-in: how long ahead of its own release each is issued.
 };
 
 struct tap_plan {
@@ -209,7 +215,16 @@ inline tap_plan load_tap_plan(const std::string& path, std::string* plan_sha256 
   }
   if (fourth && !plan.at("pacing").is_null()) {
     const json& pacing = plan.at("pacing");
-    keys(pacing, "pacing", {"clock", "start_delay_us", "allowance_us", "latest_start_us", "release_us"});
+    keys(pacing, "pacing", {"clock", "start_delay_us", "allowance_us", "latest_start_us", "release_us"}, {"lead_in"});
+    if (pacing.contains("lead_in") && !pacing.at("lead_in").is_null()) {
+      const json& lead = pacing.at("lead_in");
+      keys(lead, "pacing.lead_in", {"releases", "lead_us"});
+      spec.pacing.lead_releases = count(lead, "releases", "pacing.lead_in", 64);
+      spec.pacing.lead_us       = count(lead, "lead_us", "pacing.lead_in", 60000000);
+      if (spec.pacing.lead_releases == 0) {
+        throw input_error("pacing.lead_in names at least one release, or is null");
+      }
+    }
     spec.pacing.present         = true;
     spec.pacing.clock           = text(pacing, "clock", "pacing");
     spec.pacing.start_delay_us  = count(pacing, "start_delay_us", "pacing", 60000000);

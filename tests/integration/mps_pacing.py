@@ -146,6 +146,11 @@ def load_config(path):
         if pacing["status"] != "proposed" or pacing["latest_start_us"] > pacing["allowance_us"]:
             raise ConfigError('pacing.status is "proposed" until Sprint 4.6 calibrates it, and the latest start lies '
                               "inside the allowance")
+        lead = pacing.get("lead_in")
+        if lead is not None and (not isinstance(lead, dict) or set(lead) != set(mp.LEAD_IN_FIELDS)
+                                 or any(type(lead[key]) is not int or lead[key] < 1 for key in mp.LEAD_IN_FIELDS)):
+            raise ConfigError("pacing.lead_in is null, or names how many of the first releases are decoded ahead of the "
+                              "schedule and by what lead: " + ", ".join(mp.LEAD_IN_FIELDS))
         mp.check_rule(config["contention"]["rule"])
         if tuple(config["contention"]["order"]) != mp.CONTROLS:
             raise ConfigError("contention.order is the order of the controls: " + ", ".join(mp.CONTROLS))
@@ -350,11 +355,14 @@ def run_build(setup, grader):
                              "than patches/ocudu holds. Build it: make adapter-build-o3"))
     sources = [path for path in adapter.get("sources", {}) if "/pacing/" in path]
     status, said = setup.host.run([setup.tools["pilot_ls"], "--pacing"], timeout=120)
-    reads = status == 0 and mp.PLAN_SCHEMA in said
+    # A plan with a lead-in is read only by a tool that says it knows one.
+    reads = status == 0 and mp.PLAN_SCHEMA in said \
+        and (setup.config["pacing"].get("lead_in") is None or "lead-in" in said)
     grader.check(name, "pacing core", len(sources) >= 4 and reads,
                  f"the receipt binds {len(sources)} files of native/ocudu_adapter/pacing, and pilot_ls --pacing answers: "
-                 f"{said.strip()[:160]}" if reads else
-                 f"pilot_ls --pacing ended with status {status}: {said.strip()[:200]}. Rebuild: make adapter-build-o3")
+                 f"{said.strip()[:200]}" if reads else
+                 f"pilot_ls --pacing ended with status {status} and names no plan of version 4, or no lead-in although "
+                 f"the configuration asks for one: {said.strip()[:200]}. Rebuild: make adapter-build-o3")
     if setup.rehearsal:
         grader.note(name, f"rehearsal: the core is built for the device {core['device']}; no kernel runs on a GPU")
     else:
@@ -529,7 +537,8 @@ def run_schedule(setup, grader):
     opportunities = mp.opportunities_of(out / REPLAY_PLAN)
     frame = 10 * setup.artifact.manifest["input"]["spec"]["radio"]["scs_khz"] // 15
     offsets = mp.release_offsets(opportunities, pacing["slot_us"], frame, pacing["gap_slots"])
-    schedule = mp.pacing_spec(offsets, pacing["allowance_us"], pacing["latest_start_us"], pacing["start_delay_us"])
+    lead = pacing.get("lead_in")
+    schedule = mp.pacing_spec(offsets, pacing["allowance_us"], pacing["latest_start_us"], pacing["start_delay_us"], lead)
     rings = {stream: sr.ring_spec(ring["window_records"], ring["burst_records"], ring["wait"], "required",
                                   ring["attach_timeout_ms"], ring["drain_ms"], stream)
              for stream, ring in config["rings"].items()}
@@ -550,7 +559,11 @@ def run_schedule(setup, grader):
                  f"{rings['o3']['slots']} slots in the wait mode spin; {len(opportunities)} opportunities, one release "
                  f"each, over {offsets[-1] / 1000.0:.1f} ms of offered schedule with distances of "
                  f"{', '.join(str(gap) for gap in gaps)} us; processing allowance {pacing['allowance_us']} us and latest "
-                 f"start {pacing['latest_start_us']} us, both {pacing['status']}")
+                 f"start {pacing['latest_start_us']} us, both {pacing['status']}; "
+                 + (f"a lead-in of {lead['releases']} decodes, the first releases once more, {lead['lead_us']} us ahead "
+                    f"of their own release times, from {text(-mp.lead_offsets(schedule)[0] / 1000.0)} to "
+                    f"{text(-mp.lead_offsets(schedule)[-1] / 1000.0)} ms before the schedule starts, {pacing['status']}"
+                    if lead else "no lead-in: the first decode of a run is the first use of its processor"))
     same = made["tap"]["replay_plan"] == made["dsp"]["replay_plan"] and made["tap"]["pacing"] == made["dsp"]["pacing"]
     offered = hashlib.sha256(json.dumps(schedule, sort_keys=True).encode()).hexdigest()
     grader.check(name, "one realization", same,
@@ -630,7 +643,51 @@ def radio_check(setup, grader, name, arms):
                  f"(at most {expect['max_skipped_releases']} per repetition), {total['overruns']} overruns of the "
                  f"proposed allowance; a start lies {text(lateness['p50_us'], 2)} us after its release in the median, "
                  f"{text(lateness['p99_us'], 2)} us at the 99th percentile and {text(lateness['max_us'], 2)} us at most")
+    total["cold_start"] = lead_in_check(setup, grader, name, arms)
     return total
+
+
+def lead_in_check(setup, grader, name, arms):
+    """The cold start of the receiver is a decode of the lead-in, apart from the schedule, and costs it no release."""
+    lead = setup.config["pacing"].get("lead_in")
+    found = [dict(mp.cold_start(item.output), label=item.label) for item in arms]
+    median = mp.statistics(pooled(arms))["p50_us"]
+    if lead is None:
+        cold = [item["service_us"][0] for item in found if item["service_us"]]
+        grader.note(name, f"no lead-in: in each of {len(found)} repetition(s) the first release is the first use of the "
+                          f"processor, {text(min(cold, default=None))} to {text(max(cold, default=None))} us against "
+                          f"{text(median)} us in the median, and {sum(item['skipped_first_releases'] for item in found)} "
+                          "of the releases behind it were skipped. The service statistics leave that decode out")
+        return found
+    count = lead["releases"]
+    whole = all(item["lead_in"] == lead and item["decoded"] == count and len(item["service_us"]) == count
+                for item in found)
+    margins = [item["before_first_release_us"] for item in found]
+    ahead = whole and all(margin is not None and margin > 0 for margin in margins)
+    apart = all(not item["first_use_in_schedule"] for item in found)
+    skipped = sum(item["skipped_first_releases"] for item in found)
+    by_decode = [[item["service_us"][k] for item in found if len(item["service_us"]) > k] for k in range(count)]
+    first = [item["first_releases"][0]["service_us"] for item in found
+             if item["first_releases"] and item["first_releases"][0]["service_us"] is not None]
+    overran = sum(bool(item["first_releases"]) and item["first_releases"][0]["overrun"] for item in found)
+    good = whole and ahead and apart and skipped == 0
+    spread = "; ".join(f"decode {k + 1} {text(min(values))} to {text(max(values))} us"
+                       for k, values in enumerate(by_decode[:4]) if values)
+    grader.check(name, "lead-in", good,
+                 f"in every repetition the {count} decodes of the lead-in gave the original bytes of their block and "
+                 f"were done {text(min(margins))} us or more before the first release; no release is the first use of "
+                 f"the processor, and none of the first {count} releases of a schedule was skipped. The cold start, "
+                 f"recorded apart in pacing/lead_in.jsonl and a sample of no statistic: {spread}. Behind it the first "
+                 f"release of the schedule took {text(min(first, default=None))} to {text(max(first, default=None))} us "
+                 f"against {text(median)} us in the median, {overran} of them an overrun" if good else
+                 "; ".join(reason for reason, wrong in (
+                     (f"a repetition did not decode its {count} lead-in decodes to the original bytes", not whole),
+                     ("a lead-in was not done before the first release of its schedule: it ended "
+                      f"{text(-min((m for m in margins if m is not None), default=0.0))} us after it", whole and not ahead),
+                     ("a release of a schedule is the first use of its processor although the lead-in ran", not apart),
+                     (f"{skipped} of the first {count} releases of a schedule were skipped: the cold start still costs "
+                      "the schedule", skipped != 0)) if wrong))
+    return found
 
 
 def pooled(arms):
@@ -961,6 +1018,37 @@ def run_faults(setup, grader, readers):
     return measured
 
 
+def cold_record(config, measured):
+    """The cold start of the receiver, kept apart from every figure of the schedule."""
+    lead = config["pacing"].get("lead_in")
+    runs = {arm: (measured.get(arm) or {}).get("cold_start") or [] for arm in ("dsp_only", "capture_only", "concurrent")}
+    every = [item for items in runs.values() for item in items]
+    depth = max((len(item["service_us"]) for item in every), default=0)
+    stages = sorted({name for item in every for name in (item["stages_us"] or {})})
+    first = [item["first_releases"][0]["service_us"] for item in every
+             if item["first_releases"] and item["first_releases"][0]["service_us"] is not None]
+    return {
+        "isolated": ("the first use of the receiver is a decode of the lead-in: it is no release, no radio record, no "
+                     "observation and no sample of a service-time statistic, and it is recorded in pacing/lead_in.jsonl "
+                     "of every run") if lead else
+                    ("no lead-in: the first release of every run is the first use of the receiver. Its service time is "
+                     "left out of the service statistics, and the releases it costs are counted in the schedule"),
+        "lead_in": None if lead is None else dict(lead, status=config["pacing"]["status"]),
+        "runs": len(every),
+        "by_decode_us": [mp.statistics([item["service_us"][k] for item in every if len(item["service_us"]) > k])
+                         for k in range(depth)],
+        "first_decode_stages_us": {name: mp.statistics([item["stages_us"][name] for item in every
+                                                        if item["stages_us"] and name in item["stages_us"]])
+                                   for name in stages},
+        "before_first_release_us": mp.statistics([item["before_first_release_us"] for item in every
+                                                  if item["before_first_release_us"] is not None]),
+        "first_release_us": mp.statistics(first),
+        "skipped_first_releases": sum(item["skipped_first_releases"] for item in every),
+        "first_use_in_schedule": sum(len(item["first_use_in_schedule"]) for item in every),
+        "arms": runs,
+        "measured_without_lead_in": config["pacing"].get("cold_start_without_lead_in")}
+
+
 def run_records(setup, grader, measured, readers, evaluator, obs):
     name, config = "records", setup.config
     sliced = None
@@ -1016,6 +1104,7 @@ def run_records(setup, grader, measured, readers, evaluator, obs):
                    "tools": {name: digest(path) for name, path in setup.tools.items()},
                    "plans": {key: setup.plans[key]["sha256"] for key in ("tap", "dsp") if key in setup.plans}},
         "mps": measured.get("mps"), "schedule": measured.get("schedule"), "arms": arms,
+        "cold_start": cold_record(config, measured),
         "contention": measured.get("contention"), "runtime": measured.get("runtime"), "faults": measured.get("faults"),
         "time_slicing": sliced, "rehearsal": setup.rehearsal}
     write_json(setup.out / RECORD_FILE, record)

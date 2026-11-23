@@ -54,7 +54,7 @@ target_link_libraries(pacing_core_test PRIVATE pacing_core)
 set_target_properties(pacing_core_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_compile_options(pacing_core_test PRIVATE -O1 -Wall -Wextra -Wshadow)
 set(PACING_CORE_CASES schedule_rules releases_never_shift late_start book_decoded book_outcomes book_refusals
-    book_no_allocation spin_until)
+    book_no_allocation lead_in_rules book_lead_in lead_in_takes_the_cold_start spin_until)
 foreach(case IN LISTS PACING_CORE_CASES)
   add_test(NAME pacing_core_${case} COMMAND pacing_core_test ${case})
 endforeach()

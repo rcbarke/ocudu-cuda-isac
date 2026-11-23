@@ -10,7 +10,8 @@ schedule of a paced run added by the release rule of the reference, and the sens
 sense_host of the host twin of the core, on the records the double kept. The readers, the
 reducers and every check of the driver are the real ones. The rehearsal grades every case,
 writes mps_pacing.json and leaves its hardware gate open, and each injected fault must fail
-the check that names it.
+the check that names it. The double of the receiver runs the lead-in of a plan on its own clock,
+with a first decode of 1.3 ms, so that the checks of the cold start are graded here as well.
 
 It needs cmake, a C++17 compiler, NumPy, PyTorch and pybind11, and no CUDA and no MPS.
 """
@@ -40,7 +41,7 @@ import sense_core_build  # noqa: E402
 
 CASES = ("build", "control", "mps", "schedule", "dsp_only", "capture_only", "ai_only", "concurrent", "contention",
          "runtime", "faults", "records")
-CHECKS = 39
+CHECKS = 42
 BLOCKED = ["contention control", "runtime control", "faults control", "records control"]
 BUILD = PROBLEM = STAGE = DRIVER = DOUBLE = ROOT_DIR = None
 
@@ -85,7 +86,8 @@ class DriverTests(unittest.TestCase):
         self.scratch = Path(scratch.name)
         self.tool = self.scratch / "pilot_ls"
         self.tool.write_text('#!/bin/sh\necho "pilot_ls pacing: pilot-ls-plan/v4, absolute releases on the host '
-                             'monotonic clock, paced book without an allocation per decode"\n')
+                             'monotonic clock, paced book without an allocation per decode, lead-in ahead of the '
+                             'schedule"\n')
         self.tool.chmod(0o755)
         settings = json.loads((ROOT / "configs/integration/mps_pacing.json").read_text())
         # The small set: one validation pair of two periods, so twelve releases and four windows per arm.
@@ -162,8 +164,16 @@ class DriverTests(unittest.TestCase):
                      "8 decide alike, 0 flip(s)", "the control in effect is mps_default",
                      "sense_host is killed 700 ms after the start of the offered schedule: the receiver was never signalled",
                      "carries the label time_slicing and never MPS", "is no client of the server, and the label is refused",
-                     "1 held-out pairs of the set are not read by this gate"):
+                     "1 held-out pairs of the set are not read by this gate",
+                     "a lead-in of 6 decodes, the first releases once more, 10000 us ahead of their own release times, "
+                     "from 10.0 to 4.0 ms before the schedule starts, proposed",
+                     "lead-in ahead of the schedule",
+                     "in every repetition the 6 decodes of the lead-in gave the original bytes of their block and were "
+                     "done 3813.5 us or more before the first release; no release is the first use of the processor, "
+                     "and none of the first 6 releases of a schedule was skipped",
+                     "decode 1 1310.0 to 1310.0 us; decode 2 236.0 to 236.0 us"):
             self.assertIn(text, lines, text)
+        self.assertEqual([item["check"] for item in grade["results"]].count("lead-in"), 3)
         # ---- The record of the card: every arm with its label, its counts and its tails, and nothing graded.
         record = json.loads((out / "mps_pacing.json").read_text())
         self.assertEqual((record["schema"], record["graded"], record["rehearsal"]), ("mps-pacing/v1", False, True))
@@ -190,6 +200,29 @@ class DriverTests(unittest.TestCase):
         self.assertEqual({arm: counts for arm, counts in contention["offered"].items()},
                          {"dsp_only": [12, 12], "capture_only": [12, 12], "concurrent": [12, 12]})
         self.assertEqual(set(record["faults"]), {"consumer_exit", "consumer_restart"})
+        # ---- The cold start is apart: the decodes of the lead-in of every run with a receiver, and no release.
+        cold = record["cold_start"]
+        self.assertEqual((cold["lead_in"], cold["runs"], cold["first_use_in_schedule"], cold["skipped_first_releases"]),
+                         ({"releases": 6, "lead_us": 10000, "status": "proposed"}, 6, 0, 0))
+        self.assertIn("no sample of a service-time statistic", cold["isolated"])
+        self.assertEqual([entry["p50_us"] for entry in cold["by_decode_us"]], [1310.0, 236.0, 200.5, 185.25, 181.0, 180.5])
+        self.assertEqual({arm: len(runs) for arm, runs in cold["arms"].items()},
+                         {"dsp_only": 2, "capture_only": 2, "concurrent": 2})
+        self.assertEqual((cold["measured_without_lead_in"]["run"], cold["measured_without_lead_in"]["skipped_releases_per_run"]),
+                         ("s41-spark-ecf8-20261123T140213Z", 2))
+        # No sample of a service statistic is cold: every release that ran is counted, and none took the 1.3 ms.
+        for arm in ("dsp_only", "capture_only", "concurrent"):
+            self.assertEqual(contention["service"][arm]["count"], 24)
+            self.assertLess(contention["service"][arm]["max_us"], 1000.0)
+        for launch in ("r0-dsp_only", "r0-concurrent"):
+            folder = out / "arms" / launch / "native"
+            ahead = [json.loads(line) for line in (folder / "pacing/lead_in.jsonl").read_text().splitlines()]
+            radio = [json.loads(line) for line in (folder / "radio/radio.jsonl").read_text().splitlines()]
+            releases = [json.loads(line) for line in (folder / "pacing/releases.jsonl").read_text().splitlines()]
+            self.assertEqual((len(ahead), len(radio), len(releases)), (6, 12, 12))
+            self.assertFalse(any(record_["timing"]["first_use"] for record_ in radio))
+            self.assertLess(max(line["t_done_ns"] for line in ahead), releases[0]["t_release_ns"])
+            self.assertEqual([line["opportunity_id"] for line in ahead], [line["opportunity_id"] for line in releases[:6]])
         self.assertGreater(record["faults"]["consumer_exit"]["account"]["dropped"], 0)
         self.assertEqual(record["time_slicing"]["label"], "time_slicing")
         # ---- What the launches left: one directory each, with its specification and its record.
@@ -207,8 +240,8 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(spec["producer"]["env"], {})
         plan = json.loads((out / "plans/plan-tap.json").read_text())
         self.assertEqual((plan["schema"], plan["evidence"]["mode"], plan["ring"]["slots"], plan["estimate"]["ring"]["slots"],
-                          plan["ring"]["wait"], len(plan["pacing"]["release_us"])),
-                         ("pilot-ls-plan/v4", "timed", 8, 8, "spin", 12))
+                          plan["ring"]["wait"], len(plan["pacing"]["release_us"]), plan["pacing"]["lead_in"]),
+                         ("pilot-ls-plan/v4", "timed", 8, 8, "spin", 12, {"releases": 6, "lead_us": 10000}))
         replay_plan = json.loads(Path(plan["replay_plan"]["path"]).read_text())
         self.assertEqual(replay_plan["receiver"]["backends"], ["cuda"])
         self.assertEqual(json.loads((out / "plans/plan-dsp.json").read_text())["pacing"], plan["pacing"])
@@ -224,7 +257,11 @@ class DriverTests(unittest.TestCase):
                 ("late-context", ["concurrent start order"]),
                 ("drop", ["capture_only account", "concurrent account"]),
                 ("sensor-exit", ["ai_only launch", "concurrent launch"]),
-                ("receiver-exit", ["dsp_only launch", "capture_only launch", "concurrent launch"])):
+                ("receiver-exit", ["dsp_only launch", "capture_only launch", "concurrent launch"]),
+                # The lead-in: a tool that runs none, a release that is cold beside one, and one that ends too late.
+                ("no-lead-in", ["dsp_only launch", "capture_only launch", "concurrent launch"]),
+                ("cold-schedule", arms),
+                ("late-lead-in", ["dsp_only schedule kept", "dsp_only lead-in"])):
             with self.subTest(fault=fault):
                 run = self.drive(fault, fault, self.small())
                 self.assertEqual(run["status"], 1, fault)
@@ -238,6 +275,15 @@ class DriverTests(unittest.TestCase):
                       (self.scratch / "shifted-schedule" / "grade.txt").read_text())
         self.assertIn("a job started before its offered release time", (self.scratch / "early-start" / "grade.txt").read_text())
         self.assertIn("1 skipped (at most 0 per repetition)", (self.scratch / "skipped-release" / "grade.txt").read_text())
+        # A lead-in that the tool did not run, a release that is still the first use, and a lead-in that reaches
+        # into its schedule: each is named.
+        self.assertIn("the lead-in of the report is not the lead-in of the plan",
+                      (self.scratch / "no-lead-in" / "grade.txt").read_text())
+        self.assertIn("names the first use of its backend, and the lead-in decoded on that backend before the schedule",
+                      (self.scratch / "cold-schedule" / "grade.txt").read_text())
+        late = (self.scratch / "late-lead-in" / "grade.txt").read_text()
+        self.assertIn("a lead-in was not done before the first release of its schedule: it ended 1369.2 us after it; 3 "
+                      "of the first 6 releases of a schedule were skipped: the cold start still costs the schedule", late)
         # A client of the server before the first arm: no arm is launched beside it.
         run = self.drive("foreign", "foreign-client", self.small())
         self.assertEqual(run["failed"][0], "mps daemon")
@@ -249,8 +295,26 @@ class DriverTests(unittest.TestCase):
         settings["contention"]["rule"].update(quantile="p99", min_samples=1000)
         run = self.drive("few", settings=settings)
         self.assertEqual(run["failed"], ["contention tail", "contention control in effect"])
-        self.assertIn("the rule gives no verdict: 11 samples, and the rule needs 1000 for the quantile p99",
+        # Twelve samples of twelve releases: with a lead-in no release is left out as the first use.
+        self.assertIn("the rule gives no verdict: 12 samples, and the rule needs 1000 for the quantile p99",
                       (run["out"] / "grade.txt").read_text())
+        # Without a lead-in the plan is the plan of the accepted run: the first release is the first use of the
+        # processor, it is left out of the statistics, and the gate says so and grades no lead-in.
+        settings = self.small()
+        settings["pacing"]["lead_in"] = None
+        run = self.drive("cold", settings=settings)
+        self.assertEqual(run["status"], 0, run["said"][-2000:])
+        self.assertNotIn("lead-in", [item["check"] for item in run["grade"]["results"]])
+        lines = (run["out"] / "grade.txt").read_text()
+        self.assertIn("no lead-in: the first decode of a run is the first use of its processor", lines)
+        self.assertEqual(lines.count("no lead-in: in each of 1 repetition(s) the first release is the first use of the "
+                                     "processor"), 3)
+        record = json.loads((run["out"] / "mps_pacing.json").read_text())
+        self.assertEqual((record["cold_start"]["lead_in"], record["cold_start"]["first_use_in_schedule"]), (None, 3))
+        self.assertEqual(record["contention"]["service"]["dsp_only"]["count"], 11)
+        plan = json.loads((run["out"] / "plans/plan-tap.json").read_text())
+        self.assertNotIn("lead_in", plan["pacing"])
+        self.assertFalse((run["out"] / "arms/r0-dsp_only/native/pacing/lead_in.jsonl").exists())
         # A rule that allows nothing is exceeded by nothing here: the tails of the double are equal.
         settings = self.small()
         settings["contention"]["rule"].update(allowed_shift_us=0.0, allowed_shift_fraction=0.0)
@@ -259,6 +323,8 @@ class DriverTests(unittest.TestCase):
         record = json.loads((run["out"] / "mps_pacing.json").read_text())
         self.assertEqual(list(record["contention"]["shifts"]), ["mps_default"])
         self.assertNotIn("mps_priority", [item["control"] for arm in record["arms"].values() for item in arm])
+        # The same configuration with its lead-in grades one check more per arm with a receiver.
+        self.assertEqual([item["check"] for item in run["grade"]["results"]].count("lead-in"), 3)
 
     def test_setup_errors_leave_no_evidence(self):
         def refused(message, **options):
@@ -273,6 +339,9 @@ class DriverTests(unittest.TestCase):
         wait = self.small()
         wait["rings"]["o3"]["wait"] = "wait"
         refused("the wait mode spin of a timed run", settings=wait)
+        lead = self.small()
+        lead["pacing"]["lead_in"] = {"releases": 6}
+        refused("pacing.lead_in is null, or names how many of the first releases are decoded ahead", settings=lead)
         deeper = self.small()
         deeper["rings"]["o3"]["slots"] = 64
         refused("no arm enlarges a ring", settings=deeper)

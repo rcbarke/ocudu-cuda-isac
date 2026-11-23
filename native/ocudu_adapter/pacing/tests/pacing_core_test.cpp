@@ -621,6 +621,324 @@ void case_book_no_allocation()
   }
 }
 
+// The rules of a lead-in, and its times against the schedule they precede.
+void case_lead_in_rules()
+{
+  // The schedule of the demonstration: three uplink slots of 500 us in every 5 ms.
+  schedule plan;
+  for (std::int64_t period = 0; period != 4; ++period) {
+    for (std::int64_t slot = 0; slot != 3; ++slot) {
+      plan.release_ns.push_back(period * 5 * MS + slot * 500 * US);
+    }
+  }
+  plan.allowance_ns    = 500 * US;
+  plan.latest_start_ns = 250 * US;
+  lead_in warm;
+  warm.releases = 6;
+  warm.lead_ns  = 10 * MS;
+  check(plan, warm, 50 * MS);
+  // Two periods ahead: the lead-in is the first two bursts, at the times of two bursts before the first.
+  const std::int64_t start = 7000 * MS;
+  const std::int64_t wanted[] = {-10000, -9500, -9000, -5000, -4500, -4000};
+  for (std::size_t k = 0; k != 6; ++k) {
+    CHECK(lead_time(plan, warm, start, k) == start + wanted[k] * US);
+  }
+  CHECK_THROWS(lead_time(plan, warm, start, 6), state_error, "holds no decode 6");
+  // No lead-in: nothing to check, whatever its lead.
+  lead_in none;
+  none.lead_ns = -5;
+  check(plan, none, 0);
+  CHECK_THROWS(lead_time(plan, none, start, 0), state_error, "holds no decode 0");
+
+  lead_in many = warm;
+  many.releases = 13;
+  CHECK_THROWS(check(plan, many, 50 * MS), input_error, "repeats the first releases of its schedule");
+  lead_in flat = warm;
+  flat.lead_ns = 0;
+  CHECK_THROWS(check(plan, flat, 50 * MS), input_error, "the lead of a lead-in is positive");
+  // The sixth release lies 6 ms into the schedule: with a lead of 6.4 ms its decode, on its
+  // allowance of 0.5 ms, would end 0.1 ms after the first release.
+  lead_in close = warm;
+  close.lead_ns = 6400 * US;
+  CHECK_THROWS(check(plan, close, 50 * MS), input_error, "does not end before the schedule");
+  close.lead_ns = 6500 * US;
+  check(plan, close, 50 * MS);
+  // A lead beyond the start delay would issue a decode before the schedule exists.
+  CHECK_THROWS(check(plan, warm, 9 * MS), input_error, "begins before the schedule is fixed");
+  check(plan, warm, 10 * MS);
+  // A schedule that is refused is refused with a lead-in too.
+  schedule bad = plan;
+  bad.allowance_ns = 0;
+  CHECK_THROWS(check(bad, warm, 50 * MS), input_error, "allowance of a paced run is positive");
+}
+
+// A decoder that keeps the tokens it saw, as a processor keeps one notifier per decode.
+struct token_decoder final : decoder {
+  std::vector<std::uint64_t> seen;
+  std::vector<std::uint8_t>  bytes;
+
+  void start(const request& handed, completion_sink& sink) override
+  {
+    if (std::find(seen.begin(), seen.end(), handed.token) != seen.end()) {
+      throw std::runtime_error("the decode " + std::to_string(handed.token) + " was started before");
+    }
+    seen.push_back(handed.token);
+    std::copy_n(bytes.begin(), std::min(bytes.size(), handed.output_bytes), handed.output);
+    sink.complete(handed.token, true, std::string());
+  }
+};
+
+// Two books on one pool and one decoder: the schedule and its lead-in. The lead-in decodes the
+// first opportunities once more under the same keys, and no token, record or count of one book
+// is seen by the other.
+void case_book_lead_in()
+{
+  model_grid first(2, 2, 6), second(2, 2, 6);
+  o1_pool    pool({&first, &second});
+  paced_book book(pool);
+  const payload original = block("grant-a", 96, 9);
+  const std::size_t jobs = 5, ahead = 3;
+  std::vector<std::uint64_t> tokens, early;
+  for (std::size_t n = 0; n != jobs; ++n) {
+    tokens.push_back(book.prepare(key_of("op-" + std::to_string(n), "cuda"), "grant-record-a", "record-a", original));
+  }
+  CHECK(book.first_token() == 1 && book.next_token() == jobs + 1);
+  CHECK_THROWS(paced_book(pool, &monotonic_ns, 0), input_error, "zero names no decode");
+  paced_book lead(pool, &monotonic_ns, book.next_token());
+  for (std::size_t k = 0; k != ahead; ++k) {
+    // The key of the opportunity it repeats: a key is unique in its book, not across the two.
+    early.push_back(lead.prepare(key_of("op-" + std::to_string(k), "cuda"), "grant-record-a", "record-a", original));
+  }
+  CHECK(early.front() == jobs + 1 && early.back() == jobs + ahead && lead.size() == ahead && lead.first_token() == jobs + 1);
+  CHECK_THROWS(lead.prepare(key_of("op-0", "cuda"), "grant-record-a", "record-a", original), input_error, "duplicate delivery");
+  // A token of one book is no job of the other.
+  CHECK_THROWS(lead.snapshot(tokens[0]), state_error, "holds no job 1");
+  CHECK_THROWS(book.snapshot(early[0]), state_error, "holds no job 6");
+  CHECK_THROWS(lead.describe(jobs + ahead + 1), state_error, "holds no job 9");
+
+  token_decoder decoder;
+  decoder.bytes = original.bytes;
+  // The lead-in first, as the tool runs it: the grid of a decode is kept while the next one is
+  // filled and decoded, and given back then. Both grids are free for the schedule.
+  std::vector<ticket> grids(ahead);
+  for (std::size_t k = 0; k != ahead; ++k) {
+    grids[k]                = make_ready(pool, "record-a", static_cast<unsigned>(k));
+    const paced_result done = paced_dispatch(lead, decoder, early[k], grids[k], LONG_WAIT);
+    CHECK(done.admitted == admission::admitted && done.result == outcome::decoded);
+    CHECK(lead.holds(grids[k]) == 0 && book.holds(grids[k]) == 0);
+    if (k != 0) {
+      CHECK(grids[k].grid != grids[k - 1].grid && lead.release_grid(grids[k - 1]));
+    }
+  }
+  CHECK(lead.release_grid(grids[ahead - 1]));
+  CHECK(lead.held_grids() == 0 && pool.state(0) == isac_replay::grid_state::free &&
+        pool.state(1) == isac_replay::grid_state::free);
+  // Nothing of the schedule has started.
+  CHECK(book.count(outcome::decoded) == 0 && book.started_ns(tokens[0]) == 0 && !book.snapshot(tokens[0]).started);
+  const std::int64_t led = lead.completed_ns(early.back());
+  for (std::size_t n = 0; n != jobs; ++n) {
+    const ticket       ready = make_ready(pool, "record-a", static_cast<unsigned>(n));
+    const paced_result done  = paced_dispatch(book, decoder, tokens[n], ready, LONG_WAIT);
+    CHECK(done.admitted == admission::admitted && done.result == outcome::decoded && book.release_grid(ready));
+    CHECK(book.started_ns(tokens[n]) >= led);
+  }
+  // Each decoder start saw its own token, once: the lead-in behind the schedule.
+  CHECK(decoder.seen.size() == jobs + ahead);
+  for (std::size_t k = 0; k != ahead; ++k) {
+    CHECK(decoder.seen[k] == jobs + 1 + k);
+  }
+  for (std::size_t n = 0; n != jobs; ++n) {
+    CHECK(decoder.seen[ahead + n] == n + 1);
+  }
+  // The two accounts are apart: counts, records and anomalies.
+  CHECK(book.count(outcome::decoded) == jobs && lead.count(outcome::decoded) == ahead);
+  CHECK(book.jobs().size() == jobs && lead.jobs().size() == ahead);
+  CHECK(lead.jobs().front().token == jobs + 1 && lead.jobs().front().sequence == 0 &&
+        lead.jobs().front().key.text() == book.jobs().front().key.text());
+  CHECK(lead.decoded(early[1]) == original.bytes && lead.snapshot(early[1]).compared.equal);
+  CHECK(book.anomalies().empty() && lead.anomalies().empty());
+  // A completion that names a token of the other book is unknown to this one, and is counted there.
+  lead.complete(tokens[0], true, std::string());
+  CHECK(has_anomaly(lead.anomalies(), "unknown_completion", std::string()) && book.anomalies().empty());
+  // A lead-in decode that never calls back keeps its grid held, and the schedule finds one grid less.
+  deferred_decoder silent;
+  paced_book       stuck(pool, &monotonic_ns, lead.next_token());
+  const std::uint64_t lost  = stuck.prepare(key_of("op-0", "cuda"), "grant-record-a", "record-a", original);
+  const ticket        ready = make_ready(pool, "record-a", 77);
+  const paced_result  none  = paced_dispatch(stuck, silent, lost, ready, 2 * MS);
+  CHECK(none.admitted == admission::admitted && none.result == outcome::timeout);
+  CHECK(!stuck.release_grid(ready) && stuck.held_grids() == 1 && pool.state(ready.grid) == isac_replay::grid_state::ready);
+}
+
+// A decoder whose first use is cold, as a processor's is: its first start takes cold_ns and every
+// later one warm_ns, on a worker thread of its own. It keeps the token that paid for the first use.
+struct cold_decoder final : decoder {
+  cold_decoder(std::int64_t cold_ns_, std::int64_t warm_ns_) : cold_ns(cold_ns_), warm_ns(warm_ns_), worker([this]() { run(); })
+  {
+  }
+  ~cold_decoder() override
+  {
+    stop.store(true);
+    worker.join();
+  }
+
+  void start(const request& handed, completion_sink& sink_) override
+  {
+    sink    = &sink_;
+    current = &handed;
+    posted.fetch_add(1, std::memory_order_release);
+  }
+
+  void run()
+  {
+    std::uint64_t seen = 0;
+    while (!stop.load(std::memory_order_relaxed)) {
+      if (posted.load(std::memory_order_acquire) == seen) {
+        continue;
+      }
+      const request* handed = current;
+      if (seen == 0) {
+        first_token.store(handed->token, std::memory_order_release);
+      }
+      spin_until(monotonic_ns() + (seen == 0 ? cold_ns : warm_ns));
+      ++seen;
+      std::copy_n(bytes.begin(), std::min(bytes.size(), handed->output_bytes), handed->output);
+      sink->complete(handed->token, true, std::string());
+    }
+  }
+
+  std::vector<std::uint8_t>  bytes;
+  std::int64_t               cold_ns, warm_ns;
+  std::atomic<std::uint64_t> posted{0};
+  std::atomic<std::uint64_t> first_token{0};
+  std::atomic<bool>          stop{false};
+  const request*             current = nullptr;
+  completion_sink*           sink    = nullptr;
+  std::thread                worker;
+};
+
+// What one paced run of the cold decoder gave: with a lead-in or without one.
+struct cold_run {
+  std::uint64_t             first_token = 0; ///< The token that paid for the first use of the decoder.
+  std::vector<release_mark> marks;
+  pace_counts               counts;
+  std::size_t               decoded      = 0; ///< Decodes of the schedule.
+  std::size_t               decoded_lead = 0; ///< Decodes of the lead-in.
+  std::uint64_t             first_of_schedule = 0, first_of_lead = 0;
+  bool                      lead_in_order = true; ///< Every lead-in decode started at its time or later, after the one before.
+  bool                      apart         = true; ///< No decode of the schedule started before the lead-in was done.
+  std::size_t               grids_held    = 0;
+};
+
+// The schedule of the demonstration, three slots of 500 us in every 5 ms, on the real clock, as
+// the tool runs it: the lead-in first, when there is one, then the releases.
+cold_run run_cold(std::size_t ahead)
+{
+  model_grid first(2, 2, 6), second(2, 2, 6);
+  o1_pool    pool({&first, &second});
+  const payload original = block("grant-a", 256, 5);
+  schedule plan;
+  for (std::int64_t period = 0; period != 3; ++period) {
+    for (std::int64_t slot = 0; slot != 3; ++slot) {
+      plan.release_ns.push_back(period * 5 * MS + slot * 500 * US);
+    }
+  }
+  plan.allowance_ns    = 500 * US;
+  plan.latest_start_ns = 250 * US;
+  lead_in warm;
+  warm.releases = ahead;
+  warm.lead_ns  = 10 * MS;
+  const std::int64_t delay = 12 * MS;
+  check(plan, warm, delay);
+
+  paced_book book(pool);
+  std::vector<std::uint64_t> tokens, early;
+  for (std::size_t n = 0; n != plan.release_ns.size(); ++n) {
+    tokens.push_back(book.prepare(key_of("op-" + std::to_string(n), "cuda"), "grant-record-a", "record-a", original));
+  }
+  paced_book lead(pool, &monotonic_ns, book.next_token());
+  for (std::size_t k = 0; k != ahead; ++k) {
+    early.push_back(lead.prepare(key_of("op-" + std::to_string(k), "cuda"), "grant-record-a", "record-a", original));
+  }
+  // The first use of this decoder takes 1.3 ms, as the first decode of a receiver on the GB10 did.
+  cold_decoder decoder(1300 * US, 60 * US);
+  decoder.bytes = original.bytes;
+  cold_run made;
+  pacer    pace(plan);
+  const std::int64_t start = monotonic_ns() + delay;
+  pace.begin(start);
+
+  std::int64_t        before = 0;
+  std::vector<ticket> grids(ahead);
+  for (std::size_t k = 0; k != ahead; ++k) {
+    grids[k] = make_ready(pool, "record-a", static_cast<unsigned>(k));
+    const std::int64_t issue = lead_time(plan, warm, start, k);
+    spin_until(issue);
+    const paced_result done = paced_dispatch(lead, decoder, early[k], grids[k], LONG_WAIT);
+    made.decoded_lead += done.result == outcome::decoded ? 1 : 0;
+    made.lead_in_order = made.lead_in_order && lead.started_ns(early[k]) >= issue && lead.started_ns(early[k]) >= before;
+    before             = lead.completed_ns(early[k]);
+    if (k != 0) {
+      lead.release_grid(grids[k - 1]);
+    }
+  }
+  if (ahead != 0) {
+    lead.release_grid(grids[ahead - 1]);
+  }
+  std::vector<ticket> keys(plan.release_ns.size());
+  for (std::size_t n = 0; n != plan.release_ns.size(); ++n) {
+    if (!pace.take(n, monotonic_ns())) {
+      book.skip(tokens[n], skip_reason::missed_release);
+      continue;
+    }
+    keys[n] = make_ready(pool, "record-a", static_cast<unsigned>(n));
+    pace.ready(n, monotonic_ns());
+    pace.start(n, spin_until(pace.release_time(n)));
+    const paced_result done = paced_dispatch(book, decoder, tokens[n], keys[n], LONG_WAIT);
+    pace.done(n, monotonic_ns());
+    made.decoded += done.result == outcome::decoded ? 1 : 0;
+    made.apart = made.apart && book.started_ns(tokens[n]) >= before && book.started_ns(tokens[n]) >= pace.release_time(n);
+    book.release_grid(keys[n]);
+  }
+  made.first_token       = decoder.first_token.load();
+  made.marks             = pace.marks();
+  made.counts            = pace.counts();
+  made.first_of_schedule = tokens.front();
+  made.first_of_lead     = ahead != 0 ? early.front() : 0;
+  made.grids_held        = book.held_grids() + lead.held_grids();
+  CHECK(book.anomalies().empty() && lead.anomalies().empty());
+  CHECK(lead.count(outcome::decoded) == made.decoded_lead && book.count(outcome::decoded) == made.decoded);
+  return made;
+}
+
+// The finding and its remedy, on the real clock. Without a lead-in the first release pays for the
+// first use: it overruns, and the two releases behind it in its burst are skipped. With one the
+// first use is a decode of the lead-in, no release pays for it, and the two accounts stay apart.
+// Only what the rule makes certain is checked: a host that is busy may delay a job, and never
+// make the cold decode cheaper.
+void case_lead_in_takes_the_cold_start()
+{
+  const cold_run cold = run_cold(0);
+  CHECK(cold.first_token == cold.first_of_schedule && cold.decoded_lead == 0);
+  CHECK(cold.marks[0].outcome != release_outcome::skipped && cold.marks[0].overrun);
+  CHECK(cold.marks[0].done_ns - cold.marks[0].start_ns >= 1300 * US);
+  // The worker was busy for 1.3 ms: beyond the latest start of the releases 0.5 and 1.0 ms behind the first.
+  CHECK(cold.marks[1].outcome == release_outcome::skipped && cold.marks[2].outcome == release_outcome::skipped);
+  CHECK(cold.counts.skipped >= 2 && cold.counts.overruns >= 1 && cold.decoded + cold.counts.skipped == 9);
+  CHECK(cold.apart && cold.grids_held == 0);
+
+  const cold_run led = run_cold(6);
+  // The first use was a decode of the lead-in: no release of the schedule paid for it.
+  CHECK(led.first_token == led.first_of_lead && led.first_token != led.first_of_schedule);
+  CHECK(led.decoded_lead == 6 && led.lead_in_order && led.apart && led.grids_held == 0);
+  CHECK(led.decoded + led.counts.skipped == 9 && led.counts.offered == 9 && led.counts.taken == 9);
+  for (const release_mark& mark : led.marks) {
+    if (mark.outcome != release_outcome::skipped) {
+      CHECK(mark.start_ns >= mark.release_ns);
+    }
+  }
+}
+
 void case_spin_until()
 {
   const std::int64_t before = monotonic_ns();
@@ -658,6 +976,9 @@ const named_case CASES[] = {
     {"book_outcomes", case_book_outcomes},
     {"book_refusals", case_book_refusals},
     {"book_no_allocation", case_book_no_allocation},
+    {"lead_in_rules", case_lead_in_rules},
+    {"book_lead_in", case_book_lead_in},
+    {"lead_in_takes_the_cold_start", case_lead_in_takes_the_cold_start},
     {"spin_until", case_spin_until},
 };
 

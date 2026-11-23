@@ -85,6 +85,17 @@ class AcceptS41Tests(unittest.TestCase):
         # A rehearsal cannot close the gate: the script requires a closed hardware gate of a run that was none.
         self.assertIn('grade["hardware_gate"] == "closed" and grade["rehearsal"] is False', text)
         self.assertIn('record["graded"] is not False', text)
+        # The gate requires a tool that reads a lead-in, a record in which no release is the first use of its
+        # receiver, and a second reader that finds the lead-in apart from the releases and the radio records.
+        self.assertIn('"$said" == "pilot_ls pacing: pilot-ls-plan/v4"*"lead-in ahead of the schedule"*', text)
+        self.assertIn('if cold["first_use_in_schedule"] != 0 or cold["skipped_first_releases"] != 0 or cold["runs"] < 1:',
+                      text)
+        self.assertIn("""grep -cE '"schema": ?"pace-lead-in/v1"' "$arm/native/pacing/lead_in.jsonl" """.strip(), text)
+        self.assertIn("""grep -cE '"first_use": ?true' "$arm/native/radio/radio.jsonl" """.strip(), text)
+        self.assertIn("(( releases > 0 && radio + skipped == releases && (ahead == 0 || cold == 0) ))", text)
+        config_lead = config["pacing"]["lead_in"]
+        self.assertEqual((config_lead, config["pacing"]["cold_start_without_lead_in"]["run"]),
+                         ({"releases": 6, "lead_us": 10000}, "s41-spark-ecf8-20261123T140213Z"))
         # The second reader counts lines that the native tool writes without a space after the colon, and
         # lines that a Python writer puts one in.
         for pattern in ("""grep -cE '"schema": ?"pace-release/v1"'""", """grep -cE '"outcome": ?"decoded"'""",

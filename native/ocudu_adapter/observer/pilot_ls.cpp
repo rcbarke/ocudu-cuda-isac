@@ -73,6 +73,17 @@
 // every decode exists before the run, and the dispatch thread asks an atomic flag for the
 // completion. The ledger of Sprint 2.4 is not used by a paced run and is not edited. The run
 // writes DIR/pacing/releases.jsonl, one pace-release/v1 line per opportunity, after its drain.
+//
+// The lead-in of a paced run. The first decode of a PUSCH processor pays for what the processor
+// sets up on its first use, about seven times a decode on the GB10, and the two decodes behind it
+// are not yet at their steady time. On an offered schedule that cost two releases and the first
+// window of every run. A plan may therefore name a lead-in: the first releases of the schedule
+// are decoded once more ahead of it, each a declared time before its own release, with the same
+// grids, PDUs and transport blocks. A decode of the lead-in is no release: nothing of it is
+// observed, exported, counted or timed with the schedule, it is kept in a paced book of its own,
+// and the receiver has no observer registered while it runs. The run writes
+// DIR/pacing/lead_in.jsonl, one pace-lead-in/v1 line per decode of the lead-in, after its drain:
+// that file is the cold start of the receiver, measured apart from every release.
 // Built out of the OCUDU tree against the accepted Sprint 1.1 build, and a second time against
 // the patched build of Sprint 5.2. ASCII only.
 
@@ -160,6 +171,8 @@ constexpr const char* RELEASE_SCHEMA  = "pace-release/v1";
 constexpr const char* PACING_SCHEMA   = "pace-report/v1";
 constexpr const char* PACING_DIR      = "pacing";
 constexpr const char* RELEASES_FILE   = "releases.jsonl";
+constexpr const char* LEAD_IN_SCHEMA  = "pace-lead-in/v1";
+constexpr const char* LEAD_IN_FILE    = "lead_in.jsonl";
 constexpr const char* ESTIMATE_DIR    = "estimate";
 constexpr const char* CAPTURE_SCHEMA  = "o3-capture/v1";
 constexpr const char* RING_DIR        = "ring";
@@ -561,6 +574,9 @@ void usage()
                "time, a release that could not start within its latest start is skipped and counted, and no release\n"
                "time moves:\n"
                "  DIR/pacing/releases.jsonl   one pace-release/v1 line per opportunity: released, started, done\n"
+               "Its pacing object may name a lead-in: the first releases are decoded once more ahead of the schedule,\n"
+               "so that the first use of the processor is no release. Nothing of it is observed, exported or counted:\n"
+               "  DIR/pacing/lead_in.jsonl    one pace-lead-in/v1 line per decode of the lead-in: the cold start\n"
                "DIR must exist and must not hold a result. --only repeats named opportunities of the plan exactly.\n"
                "--phy-debug prints the path decision of the pinned processor for every PDU.\n"
                "--self-test decodes a two-block grant through the host processor with the tap off and on, and once\n"
@@ -1230,6 +1246,20 @@ struct timed_decode {
   bool          first_use = false;
 };
 
+/// What a paced run keeps of one decode of its lead-in until the run is done. Nothing of it is text.
+struct lead_slot {
+  std::size_t                sequence  = 0;     ///< The opportunity it decodes once more.
+  bool                       delivered = false; ///< It had a grid.
+  ticket                     key;
+  double                     fill_us   = 0.0;
+  std::int64_t               issue_ns  = 0;     ///< start + offset - lead: the time it is issued at.
+  std::int64_t               ready_ns  = 0;
+  std::int64_t               start_ns  = 0;
+  std::int64_t               done_ns   = 0;
+  bool                       released  = false;
+  std::vector<std::uint64_t> tokens;            ///< One per backend, of the book of the lead-in.
+};
+
 /// What a timed run keeps of one opportunity until the last one is done. Nothing of it is text.
 struct timed_slot {
   std::size_t               sequence  = 0;
@@ -1294,7 +1324,7 @@ int run(int argc, char** argv)
       // What a launcher asks before it writes a plan with an offered schedule. No device is touched.
       std::cout << "pilot_ls pacing: " << isac_observer::TAP_PLAN_SCHEMA_V4
                 << ", absolute releases on the host monotonic clock, paced book without an allocation per decode"
-                << std::endl;
+                << ", lead-in ahead of the schedule" << std::endl;
       return 0;
     } else if (arg == "--route") {
 #ifdef ISAC_O3_ROUTE
@@ -1462,6 +1492,13 @@ int run(int argc, char** argv)
       offered.release_ns.push_back(static_cast<std::int64_t>(offset) * 1000);
     }
     isac_pacing::check(offered);
+  }
+  // The lead-in of that schedule, or none: a plan that names none runs as the accepted Sprint 4.1 run did.
+  isac_pacing::lead_in warm;
+  if (paced) {
+    warm.releases = static_cast<std::size_t>(tap.pacing.lead_releases);
+    warm.lead_ns  = static_cast<std::int64_t>(tap.pacing.lead_us) * 1000;
+    isac_pacing::check(offered, warm, static_cast<std::int64_t>(tap.pacing.start_delay_us) * 1000);
   }
   if (tap.replay_plan.sha256.empty()) {
     throw input_error("the replay plan is bound by no hash");
@@ -1700,6 +1737,10 @@ int run(int argc, char** argv)
   if (paced) {
     paced_jobs = std::make_unique<isac_pacing::paced_book>(pool);
   }
+  // The decodes of a lead-in are kept apart, in a book whose tokens lie behind those of the
+  // schedule. Nothing below reads it but the lead-in itself and its own file.
+  std::unique_ptr<isac_pacing::paced_book> lead_jobs;
+  std::vector<lead_slot>                   led;
   auto job_of   = [&](std::uint64_t token) { return paced_jobs ? paced_jobs->snapshot(token) : book.snapshot(token); };
   auto bytes_of = [&](std::uint64_t token) { return paced_jobs ? paced_jobs->decoded(token) : book.decoded(token); };
   auto count_of = [&](outcome value, const std::string& backend = std::string()) {
@@ -2383,7 +2424,8 @@ int run(int argc, char** argv)
   // absolute release time of the slot, and a release that the harness could not start within its
   // latest start is skipped, recorded under its key and counted. No release time moves. Between
   // the release and the last decoder callback this loop takes no digest, reads no grid back,
-  // writes no file, builds no record, allocates nothing and takes no lock of its own. ----
+  // writes no file, builds no record, allocates nothing and takes no lock of its own. A plan with
+  // a lead-in decodes the first releases once more ahead of the schedule, under the same rule. ----
   std::unique_ptr<isac_pacing::pacer> pace;
   if (paced) {
     pace = std::make_unique<isac_pacing::pacer>(offered);
@@ -2403,6 +2445,26 @@ int run(int argc, char** argv)
         kept[n].decodes[b].token = t;
         backends[b]->expect(item.opportunity_id, setups[chosen[n]]);
         backends[b]->arrange(t, *paced_jobs);
+      }
+    }
+    // The lead-in: the first releases once more, named in a book of their own behind every token
+    // of the schedule. The PDU of each is the one that was named for its opportunity above.
+    if (warm.releases != 0) {
+      lead_jobs = std::make_unique<isac_pacing::paced_book>(pool, &isac_pacing::monotonic_ns, paced_jobs->next_token());
+      led.resize(warm.releases);
+      for (std::size_t k = 0; k != led.size(); ++k) {
+        const opportunity_spec& item  = spec.opportunities[chosen[k]];
+        const allocation&       bound = replay.scheduled(chosen[k]);
+        led[k].sequence = chosen[k];
+        for (std::size_t b = 0; b != backends.size(); ++b) {
+          job_key name;
+          name.opportunity_id   = item.opportunity_id;
+          name.backend          = backends[b]->name();
+          const std::uint64_t t = lead_jobs->prepare(name, bound.grant_id, bound.record_sha256,
+                                                     grants.at(bound.grant_id).original);
+          led[k].tokens.push_back(t);
+          backends[b]->arrange(t, *lead_jobs);
+        }
       }
     }
     std::vector<char>  halted(backends.size(), 0), started(backends.size(), 0);
@@ -2426,6 +2488,79 @@ int run(int argc, char** argv)
     std::cout << "pilot_ls: schedule start " << schedule_start << " ns on the host monotonic clock, " << chosen.size()
               << " releases" << std::endl;
     pace->begin(schedule_start);
+    // ---- The lead-in. The first use of a processor is no release of the schedule: the first
+    // releases are decoded once more, each at its own offset a declared lead ahead, with the grid,
+    // the PDU and the block of its opportunity. Nothing of it is tapped or published, and the
+    // receiver has no observer registered while it runs. A decode of the lead-in is never
+    // skipped: it is issued at its time, or as soon as the one before it is done. ----
+    if (!led.empty()) {
+#ifdef ISAC_O3_ROUTE
+      if (route) {
+        route->close();
+      }
+#endif
+      std::size_t retained = led.size(); // the decode whose grid is kept while the next one is filled and decoded
+      for (std::size_t k = 0; k != led.size(); ++k) {
+        lead_slot&        now      = led[k];
+        const std::size_t sequence = now.sequence;
+        const allocation& bound    = replay.scheduled(sequence);
+        now.issue_ns               = isac_pacing::lead_time(offered, warm, schedule_start, k);
+        const auto filling         = std::chrono::steady_clock::now();
+        ticket     key;
+        now.delivered = pool.try_acquire(key);
+        if (!now.delivered) {
+          break; // a decode of the lead-in that never called back holds its grid: nothing more is issued
+        }
+        try {
+          isac_replay::grid_sink& sink = pool.writer(key);
+          sink.clear();
+          replay.fill(sequence, sink);
+          pool.commit(key, replay.describe(sequence, bound, sink), isac_replay::evidence::timed);
+        } catch (...) {
+          pool.abort(key);
+          throw;
+        }
+        now.key      = key;
+        now.fill_us  = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - filling).count();
+        now.ready_ns = isac_pacing::monotonic_ns();
+        now.start_ns = isac_pacing::spin_until(now.issue_ns);
+        for (std::size_t b = 0; b != backends.size(); ++b) {
+          processor_backend& backend = *backends[b];
+          if (halted[b] != 0) {
+            lead_jobs->skip(now.tokens[b], isac_pacing::skip_reason::backend_stopped);
+            continue;
+          }
+          std::string                     refusal;
+          const isac_pacing::paced_result result =
+              isac_pacing::paced_dispatch(*lead_jobs, backend, now.tokens[b], key, limit_ns, &refusal);
+          if (result.admitted != admission::admitted) {
+            throw std::runtime_error("the grid of the lead-in decode " + std::to_string(k) + " was not admitted for " +
+                                     backend.name() + ": " + refusal);
+          }
+          // The first use of this processor is this decode, and no release of the schedule.
+          started[b] = 1;
+          if (result.result == outcome::timeout) {
+            halted[b]               = 1;
+            stopped[backend.name()] = "the " + backend.name() + " processor did not complete the lead-in decode " +
+                                      std::to_string(k) + " within " + std::to_string(plan.receiver.timeout_ms) + " ms";
+          }
+        }
+        now.done_ns = isac_pacing::monotonic_ns();
+        // As in the schedule: the grid of the decode before is given back once this one is done.
+        if (retained != led.size()) {
+          led[retained].released = lead_jobs->release_grid(led[retained].key);
+        }
+        retained = k;
+      }
+      if (retained != led.size()) {
+        led[retained].released = lead_jobs->release_grid(led[retained].key);
+      }
+#ifdef ISAC_O3_ROUTE
+      if (route) {
+        route->open();
+      }
+#endif
+    }
     for (std::size_t n = 0; n != chosen.size(); ++n) {
       const std::size_t  sequence = chosen[n];
       const allocation&  bound    = replay.scheduled(sequence);
@@ -2819,7 +2954,11 @@ int run(int argc, char** argv)
       }
     }
     json        times = service.count(backend->name()) != 0 ? service[backend->name()] : json::array();
-    json        stats = {{"count", times.size()}, {"excluded", "the first decode of the backend, which includes its set-up"}};
+    // A lead-in made the first use of the processor one of its own decodes: no release is left out.
+    json        stats = {{"count", times.size()},
+                         {"excluded", lead_jobs ? "nothing: the first use of the backend is a decode of the lead-in, in pacing/"
+                                                  "lead_in.jsonl"
+                                                : "the first decode of the backend, which includes its set-up"}};
     if (!times.empty()) {
       double total = 0.0, least = times[0].get<double>(), most = least;
       for (const json& value : times) {
@@ -2831,7 +2970,8 @@ int run(int argc, char** argv)
       stats["min"]  = least;
       stats["max"]  = most;
     }
-    incomplete = incomplete || count_of(outcome::timeout, backend->name()) != 0;
+    incomplete = incomplete || count_of(outcome::timeout, backend->name()) != 0 ||
+                 (lead_jobs && lead_jobs->count(outcome::timeout, backend->name()) != 0);
     backend_list.push_back({{"name", backend->name()},
                             {"factory", backend->factory_type()},
                             {"harq_id", backend->harq_id()},
@@ -3126,6 +3266,89 @@ int run(int argc, char** argv)
       }
     }
     write_bytes(pacing_path + "/" + RELEASES_FILE, lines.data(), lines.size());
+    // ---- The lead-in, written apart: one line per decode that was issued ahead of the schedule.
+    // No line of it is a release, a radio record or a sample of a service-time statistic. ----
+    json lead_report = nullptr;
+    if (lead_jobs) {
+      std::string  lead_lines;
+      std::size_t  issued = 0, decoded_ahead = 0;
+      std::int64_t first_issue = 0, last_done = 0;
+      json         service_ahead = json::object();
+      for (const std::unique_ptr<processor_backend>& backend : backends) {
+        service_ahead[backend->name()] = json::array();
+      }
+      for (std::size_t k = 0; k != led.size(); ++k) {
+        const lead_slot&        now   = led[k];
+        const opportunity_spec& item  = spec.opportunities[now.sequence];
+        const allocation&       bound = replay.scheduled(now.sequence);
+        const grant_entry&      grant = grants.at(bound.grant_id);
+        json                    decodes = json::array();
+        for (std::size_t b = 0; b != backends.size(); ++b) {
+          const std::uint64_t                token  = now.tokens[b];
+          const job                          record = lead_jobs->snapshot(token);
+          const bool                         called = record.completed && record.result != outcome::timeout;
+          const bool                         passed = called && record.crc_ok;
+          ocudu::pusch_processor_result_data sch;
+          const bool                         reported = backends[b]->result(token, sch);
+          decodes.push_back({{"backend", backends[b]->name()},
+                             {"key", record.key.text()},
+                             {"outcome", to_string(record.result)},
+                             {"crc_ok", passed},
+                             {"payload_match", passed && record.compared.equal},
+                             {"t_start_ns", record.started ? json(lead_jobs->started_ns(token)) : json(nullptr)},
+                             {"t_callback_ns", called ? json(lead_jobs->completed_ns(token)) : json(nullptr)},
+                             {"service_us", called ? json(record.service_us) : json(nullptr)},
+                             {"path", path_report(backends[b]->name(), reported, sch, built_with_cuda, acceleration,
+                                                  grant.record.rx_ports.size())}});
+          if (called) {
+            service_ahead[backends[b]->name()].push_back(record.service_us);
+          }
+          decoded_ahead += record.result == outcome::decoded ? 1 : 0;
+        }
+        const json line = {{"schema", LEAD_IN_SCHEMA},
+                           {"run_id", tap.run_id},
+                           {"sequence", k},
+                           {"opportunity_sequence", now.sequence},
+                           {"opportunity_id", item.opportunity_id},
+                           {"sfn", item.sfn},
+                           {"slot", item.slot},
+                           {"grant_id", bound.grant_id},
+                           {"offset_us", tap.pacing.release_us[now.sequence]},
+                           {"lead_us", tap.pacing.lead_us},
+                           {"issued", now.delivered},
+                           {"t_issue_ns", now.issue_ns},
+                           {"t_ready_ns", now.delivered ? json(now.ready_ns) : json(nullptr)},
+                           {"t_start_ns", now.delivered ? json(now.start_ns) : json(nullptr)},
+                           {"t_done_ns", now.delivered ? json(now.done_ns) : json(nullptr)},
+                           {"fill_us", now.delivered ? json(now.fill_us) : json(nullptr)},
+                           {"released", now.released},
+                           {"decodes", decodes}};
+        lead_lines += line.dump() + "\n";
+        if (now.delivered) {
+          first_issue = issued == 0 ? now.start_ns : first_issue;
+          last_done   = now.done_ns;
+          ++issued;
+        }
+      }
+      write_bytes(pacing_path + "/" + LEAD_IN_FILE, lead_lines.data(), lead_lines.size());
+      lead_report = {
+          {"schema", LEAD_IN_SCHEMA},
+          {"file", std::string(PACING_DIR) + "/" + LEAD_IN_FILE},
+          {"releases", led.size()},
+          {"lead_us", tap.pacing.lead_us},
+          {"rule", "lead(k) = start + offset(k) - lead: the first releases of the schedule, decoded once more ahead of "
+                   "it with their grids, PDUs and blocks. Never skipped: issued at its time, or as soon as the decode "
+                   "before it is done. No release, no radio record, no observation, no sample of a statistic"},
+          {"observer", "none registered with the receiver while the lead-in ran, and nothing tapped or published"},
+          {"issued", issued},
+          {"decodes", issued * backends.size()},
+          {"decoded", decoded_ahead},
+          {"t_first_start_ns", issued != 0 ? json(first_issue) : json(nullptr)},
+          {"t_last_done_ns", issued != 0 ? json(last_done) : json(nullptr)},
+          {"before_first_release_us",
+           issued != 0 ? json(static_cast<double>(pace->release_time(0) - last_done) / 1000.0) : json(nullptr)},
+          {"service_us", service_ahead}};
+    }
     pacing_report = {
         {"schema", PACING_SCHEMA},
         {"file", std::string(PACING_DIR) + "/" + RELEASES_FILE},
@@ -3154,7 +3377,8 @@ int run(int argc, char** argv)
         {"lateness_us", time_stats(lateness, "nothing")},
         {"busy_us", time_stats(busy, "nothing")},
         {"book", "paced: every decode named before the first fill, no allocation and no lock of the harness from the "
-                 "admission of a ready grid to its release, the completion asked for and never slept on"}};
+                 "admission of a ready grid to its release, the completion asked for and never slept on"},
+        {"lead_in", lead_report}};
   }
 
   const std::uint16_t endian = 1;
@@ -3244,7 +3468,8 @@ int run(int argc, char** argv)
     report["pacing"] = pacing_report;
     report["access"]["pacing"] =
         "pacing/ holds one pace-release/v1 line per opportunity of a paced run: the offered release time and the times "
-        "the harness took, and nothing of a grid, a transport block or a label";
+        "the harness took, and nothing of a grid, a transport block or a label; and, for a plan with a lead-in, one "
+        "pace-lead-in/v1 line per decode that was issued ahead of the schedule";
   }
   const std::string text = report.dump(2) + "\n";
   write_bytes(report_path, text.data(), text.size());
@@ -3269,6 +3494,10 @@ int run(int argc, char** argv)
     const isac_pacing::pace_counts counts = pace->counts();
     std::cout << ", paced " << counts.offered << " releases: " << counts.on_time << " on time, " << counts.late
               << " late, " << counts.skipped << " skipped, " << counts.overruns << " overruns";
+    if (lead_jobs) {
+      std::cout << ", lead-in " << lead_jobs->count(outcome::decoded) << " of " << lead_jobs->size()
+                << " decoded ahead of the schedule";
+    }
   }
   std::cout << ", report " << report_path << std::endl;
   if (incomplete) {

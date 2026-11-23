@@ -15,6 +15,18 @@ under its key and counted, and no release time ever moves. The rule is one funct
 host-free pacing core (native/ocudu_adapter/pacing/pacing_core.h) and is repeated here by
 Pacer, so that a unit case drives it with a clock of its own.
 
+The pacing object may name one more member, added after the ticket was accepted:
+
+  lead_in   null, or the lead-in of the run: how many of the first releases are decoded once more
+            ahead of the schedule, and how long ahead of its own release each of them is issued.
+
+The first decode of a PUSCH processor pays for what the processor sets up on its first use, and
+the two decodes behind it are not yet at their steady time. On an offered schedule that cost two
+releases and the first window of every run. With a lead-in the first use is no release: a decode
+of the lead-in is observed, exported, counted and timed with nothing of the schedule, and
+pacing/lead_in.jsonl holds it apart, as the cold start of the receiver. A plan without the member
+runs without a lead-in, as the accepted run did, and is read as before.
+
 This module is the offline side of the ticket. It
 
   * derives the offered schedule of a replay from the frame and slot of its opportunities;
@@ -54,8 +66,10 @@ RELEASE_SCHEMA = "pace-release/v1"
 PACING_SCHEMA = "pace-report/v1"
 INVENTORY_SCHEMA = "mps-inventory/v1"
 RULE_SCHEMA = "tail-shift-rule/v1"
+LEAD_IN_SCHEMA = "pace-lead-in/v1"
 PACING_DIR = "pacing"
 RELEASES_FILE = "releases.jsonl"
+LEAD_IN_FILE = "lead_in.jsonl"
 CLOCK = "host_monotonic"
 PLAN_FIELDS = ne.PLAN_FIELDS + ("pacing",)
 PACING_FIELDS = ("clock", "start_delay_us", "allowance_us", "latest_start_us", "release_us")
@@ -63,6 +77,16 @@ RELEASE_FIELDS = ("schema", "run_id", "sequence", "opportunity_id", "sfn", "slot
                   "t_release_ns", "t_free_ns", "t_ready_ns", "t_start_ns", "t_done_ns", "fill_us", "decodes")
 DECODE_FIELDS = ("backend", "key", "outcome", "skip", "t_start_ns", "t_callback_ns", "service_us")
 COUNT_FIELDS = ("offered", "taken", "on_time", "late", "skipped", "overruns", "max_lateness_ns", "max_excess_ns")
+# The lead-in: the member of the pacing object, the line of one of its decodes, and what the report says of it.
+LEAD_IN_FIELDS = ("releases", "lead_us")
+LEAD_LINE_FIELDS = ("schema", "run_id", "sequence", "opportunity_sequence", "opportunity_id", "sfn", "slot", "grant_id",
+                    "offset_us", "lead_us", "issued", "t_issue_ns", "t_ready_ns", "t_start_ns", "t_done_ns", "fill_us",
+                    "released", "decodes")
+LEAD_DECODE_FIELDS = ("backend", "key", "outcome", "crc_ok", "payload_match", "t_start_ns", "t_callback_ns",
+                      "service_us", "path")
+LEAD_REPORT_FIELDS = ("schema", "file", "releases", "lead_us", "rule", "observer", "issued", "decodes", "decoded",
+                      "t_first_start_ns", "t_last_done_ns", "before_first_release_us", "service_us")
+MAX_LEAD_RELEASES = 64
 RELEASE_OUTCOMES = ("on_time", "late", "skipped")
 SKIPS = ("missed_release", "no_free_grid", "backend_stopped")
 MAX_OFFSET_US = 3_600_000_000
@@ -117,16 +141,57 @@ def release_offsets(opportunities, slot_us=500, slots_per_frame=20, gap_slots=10
     return offsets
 
 
-def pacing_spec(release_us, allowance_us, latest_start_us, start_delay_us=20000):
-    """The pacing object of a plan."""
-    return check_pacing({"clock": CLOCK, "start_delay_us": start_delay_us, "allowance_us": allowance_us,
-                         "latest_start_us": latest_start_us, "release_us": list(release_us)})
+def pacing_spec(release_us, allowance_us, latest_start_us, start_delay_us=20000, lead_in=None):
+    """The pacing object of a plan. lead_in, when given, names the releases and the lead of a lead-in.
+
+    Without a lead-in the object has no such member: it is the object of the accepted Sprint 4.1 run.
+    """
+    made = {"clock": CLOCK, "start_delay_us": start_delay_us, "allowance_us": allowance_us,
+            "latest_start_us": latest_start_us, "release_us": list(release_us)}
+    if lead_in is not None:
+        made["lead_in"] = lead_in
+    return check_pacing(made)
+
+
+def lead_in_of(pacing):
+    """The lead-in that a pacing object names, or None."""
+    return None if pacing is None else pacing.get("lead_in")
+
+
+def lead_offsets(pacing):
+    """When each decode of a lead-in is issued, in microseconds from the start of the schedule: before it."""
+    lead = lead_in_of(pacing)
+    return [] if lead is None else [pacing["release_us"][k] - lead["lead_us"] for k in range(lead["releases"])]
+
+
+def check_lead_in(pacing):
+    """Apply the rules of a lead-in to a pacing object whose schedule was checked. See pacing_core.h."""
+    lead, offsets = pacing["lead_in"], pacing["release_us"]
+    if not isinstance(lead, dict) or set(lead) != set(LEAD_IN_FIELDS):
+        raise MpsPacingError(f"pacing.lead_in requires exactly {', '.join(LEAD_IN_FIELDS)}, or is null")
+    if type(lead["releases"]) is not int or not 1 <= lead["releases"] <= MAX_LEAD_RELEASES:
+        raise MpsPacingError(f"pacing.lead_in.releases must be an integer from 1 to {MAX_LEAD_RELEASES}, or the "
+                             "lead-in is null")
+    if lead["releases"] > len(offsets):
+        raise MpsPacingError(f"the lead-in names {lead['releases']} releases, and the schedule holds {len(offsets)}: a "
+                             "lead-in repeats the first releases of its schedule")
+    if type(lead["lead_us"]) is not int or not 1 <= lead["lead_us"] <= 60_000_000:
+        raise MpsPacingError("the lead of a lead-in is positive: pacing.lead_in.lead_us must be an integer from 1 to "
+                             "60000000")
+    ahead = lead["lead_us"] - offsets[lead["releases"] - 1] + offsets[0]
+    if ahead < pacing["allowance_us"]:
+        raise MpsPacingError(f"the lead-in does not end before the schedule: its last decode is issued {ahead} us "
+                             f"ahead of the first release, and the processing allowance is {pacing['allowance_us']} us")
+    if lead["lead_us"] - offsets[0] > pacing["start_delay_us"]:
+        raise MpsPacingError(f"the lead-in begins before the schedule is fixed: its lead is {lead['lead_us']} us, and "
+                             f"the schedule starts {pacing['start_delay_us']} us after it was fixed")
+    return lead
 
 
 def check_pacing(pacing, releases=None):
     """Apply the rules of an offered schedule. releases, when given, is the number of opportunities it must name."""
-    if not isinstance(pacing, dict) or set(pacing) != set(PACING_FIELDS):
-        raise MpsPacingError(f"pacing requires exactly {', '.join(PACING_FIELDS)}, or is null")
+    if not isinstance(pacing, dict) or set(pacing) - {"lead_in"} != set(PACING_FIELDS):
+        raise MpsPacingError(f"pacing requires exactly {', '.join(PACING_FIELDS)} and may name lead_in, or is null")
     if pacing["clock"] != CLOCK:
         raise MpsPacingError(f'pacing.clock is "{CLOCK}"')
     for name in ("start_delay_us", "allowance_us", "latest_start_us"):
@@ -148,6 +213,8 @@ def check_pacing(pacing, releases=None):
     if releases is not None and len(offsets) != releases:
         raise MpsPacingError(f"pacing.release_us names {len(offsets)} releases, and the replay holds {releases} "
                              "opportunities: one release each")
+    if pacing.get("lead_in") is not None:
+        check_lead_in(pacing)
     return pacing
 
 
@@ -334,11 +401,14 @@ def drive(pacer, start, work, prepare=0):
 class Output:
     """A verified native output of a plan of version 4."""
 
-    def __init__(self, directory, native, releases):
+    def __init__(self, directory, native, releases, lead_in=()):
         self.directory, self.native, self.releases = Path(directory), native, releases
         self.report, self.records, self.run_id, self.mode = native.report, native.records, native.run_id, native.mode
         self.pacing = self.report["pacing"]
         self.base, self.estimate, self.captures = native.base, native.estimate, native.captures
+        # The decodes that were issued ahead of the schedule. They are no releases and no radio records.
+        self.lead_in = list(lead_in)
+        self.lead = None if self.pacing is None else self.pacing.get("lead_in")
 
     def paced(self):
         return self.pacing is not None
@@ -404,6 +474,101 @@ def release_violations(line, pacing):
     return found
 
 
+def lead_in_violations(line, position, report, releases):
+    """What is wrong with one pace-lead-in/v1 line against the report and the releases of its run."""
+    if not isinstance(line, dict) or set(line) != set(LEAD_LINE_FIELDS):
+        return ["the line does not hold exactly the fields of a pace-lead-in/v1 line"]
+    pacing, lead = report["pacing"], report["pacing"]["lead_in"]
+    item, release = report["opportunities"][position], releases[position]
+    if line["schema"] != LEAD_IN_SCHEMA or line["run_id"] != report["run_id"] or line["sequence"] != position:
+        return ["another schema, another run or another place in the lead-in"]
+    if line["opportunity_sequence"] != item["sequence"] or line["opportunity_id"] != item["opportunity_id"] \
+            or (line["sfn"], line["slot"]) != (item["sfn"], item["slot"]) or line["grant_id"] != item["grant_id"]:
+        return [f"the decode does not repeat opportunity {item['sequence']} of the schedule"]
+    found = []
+    if line["offset_us"] != release["offset_us"] or line["lead_us"] != lead["lead_us"] \
+            or line["t_issue_ns"] != pacing["t_start_ns"] + (line["offset_us"] - lead["lead_us"]) * 1000:
+        return ["the decode is not issued at the start of the schedule plus its offset minus the lead"]
+    decodes = line["decodes"]
+    if not isinstance(decodes, list) or [decode.get("backend") if isinstance(decode, dict) else None
+                                         for decode in decodes] != [backend["name"] for backend in report["backends"]] \
+            or any(set(decode) != set(LEAD_DECODE_FIELDS) for decode in decodes):
+        return ["a decode of the lead-in names one decode per backend, each with exactly the fields of such a decode"]
+    times = [line[name] for name in ("t_ready_ns", "t_start_ns", "t_done_ns")]
+    if line["issued"] is not True:
+        if any(time is not None for time in times) or line["fill_us"] is not None or line["released"] \
+                or any(decode["t_start_ns"] is not None for decode in decodes):
+            found.append("a decode of the lead-in that was not issued names no time")
+        return found
+    ready, start, done = times
+    if any(type(time) is not int for time in times) or not ready <= start <= done:
+        return found + ["the times of a decode of the lead-in are not in order: ready, start, done"]
+    if start < line["t_issue_ns"]:
+        found.append("a decode of the lead-in started before the time it is issued at")
+    for decode in decodes:
+        began, called = decode["t_start_ns"], decode["t_callback_ns"]
+        if decode["key"] != f"{line['opportunity_id']}/{decode['backend']}":
+            found.append("a decode of the lead-in carries the key of the opportunity it repeats")
+        if decode["outcome"] == "not_dispatched":
+            if began is not None:
+                found.append("a decode of the lead-in that was not started names no start")
+            continue
+        if type(began) is not int or not start <= began <= done:
+            found.append("a decode of the lead-in starts inside its own job")
+        elif called is not None and (not began <= called <= done or decode["service_us"] is None
+                                     or abs(decode["service_us"] - (called - began) / 1000.0) > 1e-6):
+            found.append("the callback of a decode of the lead-in lies inside its job, and its service time is the "
+                         "distance from its start to its callback")
+        if decode["outcome"] == "decoded" and not (decode["crc_ok"] and decode["payload_match"]):
+            found.append("a decode of the lead-in that is decoded passed its CRC and gave the bytes of the original "
+                         "block")
+    return found
+
+
+def _read_lead_in(folder, report, releases):
+    """The lines of pacing/lead_in.jsonl, verified against the report: the lead-in is apart from the schedule."""
+    pacing, lead = report["pacing"], report["pacing"]["lead_in"]
+    try:
+        if set(lead) != set(LEAD_REPORT_FIELDS) or lead["schema"] != LEAD_IN_SCHEMA \
+                or lead["file"] != f"{PACING_DIR}/{LEAD_IN_FILE}" or type(lead["releases"]) is not int \
+                or type(lead["lead_us"]) is not int or not 1 <= lead["releases"] <= len(releases):
+            raise MpsPacingError("the report names a lead-in that is not a pace-lead-in/v1 object of its schedule")
+        lines = [json.loads(line) for line in (folder / LEAD_IN_FILE).read_text(encoding="ascii").splitlines()
+                 if line.strip()]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise MpsPacingError(f"{folder} holds no readable account of the lead-in: {error!r}") from None
+    if len(lines) != lead["releases"]:
+        raise MpsPacingError(f"the account of the lead-in holds {len(lines)} decodes, and the report names "
+                             f"{lead['releases']}")
+    before = None
+    for position, line in enumerate(lines):
+        problems = lead_in_violations(line, position, report, releases)
+        if problems:
+            raise MpsPacingError(f"lead-in decode {position}: {problems[0]}")
+        if line["issued"] and before is not None and line["t_start_ns"] < before:
+            raise MpsPacingError(f"lead-in decode {position} started before the one ahead of it was done")
+        if line["issued"] and before is None and position != 0:
+            raise MpsPacingError(f"lead-in decode {position} was issued although the one ahead of it was not")
+        before = line["t_done_ns"] if line["issued"] else None
+    issued = [line for line in lines if line["issued"]]
+    names = [backend["name"] for backend in report["backends"]]
+    decoded = sum(decode["outcome"] == "decoded" for line in lines for decode in line["decodes"])
+    service = {name: [decode["service_us"] for line in lines for decode in line["decodes"]
+                      if decode["backend"] == name and decode["t_callback_ns"] is not None] for name in names}
+    last = issued[-1]["t_done_ns"] if issued else None
+    margin = None if last is None else (releases[0]["t_release_ns"] - last) / 1000.0
+    if lead["issued"] != len(issued) or lead["decodes"] != len(issued) * len(names) or lead["decoded"] != decoded \
+            or lead["t_first_start_ns"] != (issued[0]["t_start_ns"] if issued else None) \
+            or lead["t_last_done_ns"] != last or lead["service_us"] != service \
+            or (margin is None) != (lead["before_first_release_us"] is None) \
+            or (margin is not None and abs(lead["before_first_release_us"] - margin) > 1e-6):
+        raise MpsPacingError("what the report says of its lead-in is not what the account of the lead-in holds")
+    # The first use of a backend is a decode of the lead-in, or a release of the schedule: never both.
+    warmed = {name for name in names if any(decode["backend"] == name and decode["t_start_ns"] is not None
+                                            for line in lines for decode in line["decodes"])}
+    return lines, warmed
+
+
 def open_output(directory):
     """Verify a native output of a plan of version 4 and return it.
 
@@ -412,7 +577,9 @@ def open_output(directory):
     the release rule on its own times, with the offered schedule of the report and with the
     radio records: a skipped release has only decodes that were not dispatched, and the service
     time of a decode is the one its radio record names. The counts of the report are those of
-    the lines. pacing/ holds nothing else.
+    the lines. With a lead-in, pacing/ also holds one line per decode that was issued ahead of
+    the schedule, consistent with the report, and no radio record names the first use of a
+    backend that the lead-in decoded on. pacing/ holds nothing else.
     """
     directory = Path(directory)
     try:
@@ -475,10 +642,18 @@ def open_output(directory):
         raise MpsPacingError("the counts of the report are not those of its releases")
     if pacing["first_offset_us"] != lines[0]["offset_us"] or pacing["last_offset_us"] != lines[-1]["offset_us"]:
         raise MpsPacingError("the report names another first or last offset than its releases")
-    extra = sorted(path.name for path in folder.iterdir() if path.name != RELEASES_FILE or not path.is_file())
+    known, ahead = {RELEASES_FILE}, []
+    if pacing.get("lead_in") is not None:
+        known.add(LEAD_IN_FILE)
+        ahead, warmed = _read_lead_in(folder, report, lines)
+        for record in native.records:
+            if record["timing"]["first_use"] and record["backend"] in warmed:
+                raise MpsPacingError(f"the radio record {record['key']} names the first use of its backend, and the "
+                                     "lead-in decoded on that backend before the schedule")
+    extra = sorted(path.name for path in folder.iterdir() if path.name not in known or not path.is_file())
     if extra:
         raise MpsPacingError(f"pacing/ holds {extra[0]}, which the report does not name")
-    return Output(directory, native, lines)
+    return Output(directory, native, lines, ahead)
 
 
 def offered_matches(output, plan):
@@ -492,6 +667,10 @@ def offered_matches(output, plan):
     for name in ("start_delay_us", "allowance_us", "latest_start_us"):
         if output.pacing[name] != pacing[name]:
             found.append(f"the report names another {name} than the plan")
+    wanted, ran = lead_in_of(pacing), output.lead
+    if (wanted is None) != (ran is None) or (wanted is not None and any(ran[name] != wanted[name]
+                                                                         for name in LEAD_IN_FIELDS)):
+        found.append("the lead-in of the report is not the lead-in of the plan")
     return found
 
 
@@ -520,6 +699,44 @@ def service_times(output, backend="cuda"):
     return [record["timing"]["service_us"] for record in output.records
             if record["backend"] == backend and record["timing"]["service_us"] is not None
             and not record["timing"]["first_use"]]
+
+
+def cold_start(output, backend="cuda"):
+    """The cold start of the receiver in one paced output, apart from every release.
+
+    With a lead-in: what each of its decodes took on the backend, in the order they were issued,
+    the stage times of the first one as the receiver reports them, how long before the first
+    release the lead-in was done, and what became of the first releases of the schedule behind
+    it. Without one: the decode of the schedule that was the first use of the backend, and the
+    releases it cost. Nothing of this is a sample of service_times.
+    """
+    if output.pacing is None:
+        return None
+    count = output.lead["releases"] if output.lead is not None else 3
+    first = []
+    for line in output.releases[:count]:
+        mine = [decode for decode in line["decodes"] if decode["backend"] == backend]
+        first.append({"sequence": line["sequence"], "outcome": line["outcome"], "overrun": line["overrun"],
+                      "service_us": mine[0]["service_us"] if mine else None})
+    made = {"backend": backend, "lead_in": None, "service_us": [], "stages_us": None, "before_first_release_us": None,
+            "decoded": None, "first_releases": first,
+            "skipped_first_releases": sum(item["outcome"] == "skipped" for item in first),
+            "first_use_in_schedule": [record["key"] for record in output.records
+                                      if record["backend"] == backend and record["timing"]["first_use"]]}
+    if output.lead is None:
+        cold = [record for record in output.records if record["backend"] == backend and record["timing"]["first_use"]
+                and record["timing"]["service_us"] is not None]
+        made["service_us"] = [record["timing"]["service_us"] for record in cold[:1]]
+        made["stages_us"] = ((cold[0]["path"] or {}).get("resident_us") if cold else None)
+        return made
+    decodes = [decode for line in output.lead_in for decode in line["decodes"] if decode["backend"] == backend]
+    called = [decode for decode in decodes if decode["t_callback_ns"] is not None]
+    made.update(lead_in={name: output.lead[name] for name in LEAD_IN_FIELDS},
+                service_us=[decode["service_us"] for decode in called],
+                stages_us=((called[0]["path"] or {}).get("resident_us") if called else None),
+                before_first_release_us=output.lead["before_first_release_us"],
+                decoded=sum(decode["outcome"] == "decoded" for decode in decodes))
+    return made
 
 
 def radio_summary(output, backend="cuda"):

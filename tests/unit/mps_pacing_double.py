@@ -19,7 +19,7 @@ out, with everything the processes of the arm would have written.
 
 MPS_PACING_FAULT names one fault to inject, so that each check of the driver can be shown to fail:
 
-    skipped-release    the receiver with the tap off skips the release of one opportunity
+    skipped-release    the receiver with the tap off skips the release of one opportunity behind the first ones
     early-start        a job starts before its offered release time
     shifted-schedule   every release after the first lies 100 us later than the plan offers
     other-service      a release names another service time than its radio record
@@ -28,6 +28,9 @@ MPS_PACING_FAULT names one fault to inject, so that each check of the driver can
     drop               the consumer of the O3 ring is slow: records are dropped
     sensor-exit        the sensor ends with status 3
     receiver-exit      the receiver ends with status 3 after writing
+    no-lead-in         the receiver runs a plan with a lead-in as a plan without one
+    cold-schedule      a release is the first use of the processor although the lead-in ran
+    late-lead-in       the first decode of the lead-in takes so long that the lead-in ends inside the schedule
 
 It is not a test module: discovery skips it.
 """
@@ -83,9 +86,38 @@ def pace(native, plan, plan_path, fault):
     start = START_NS + pacing["start_delay_us"] * 1000
     pacer.begin(start)
     now, lines = START_NS, []
+    # The lead-in of the plan: the first releases once more, ahead of the schedule, on the clock of the double.
+    # A decode of it is no release and no radio record. Its first decode is cold, as a processor's first use is.
+    lead = None if fault == "no-lead-in" else mp.lead_in_of(pacing)
+    ahead, names = [], [backend["name"] for backend in report["backends"]]
+    service_ahead = {name: [] for name in names}
+    cold = (1310.0, 236.0, 200.5, 185.25, 181.0, 180.5)
+    for k in range(lead["releases"] if lead else 0):
+        item, offset = report["opportunities"][k], offsets[k] // 1000  # the schedule the double runs, shifted or not
+        issue = start + (offset - lead["lead_us"]) * 1000
+        now += 80_000
+        ready = now
+        began_job = now = max(now, issue)
+        decodes = []
+        for record in by_sequence[item["sequence"]]:
+            # The double keeps a ring whole, so only the plan with the tap off can lose releases to a slow lead-in.
+            slow = fault == "late-lead-in" and k == 0 and plan["observer"]["tap"] == "none"
+            took = 9950.0 if slow else cold[min(k, len(cold) - 1)]
+            began, now = now, now + int(round(took * 1000))
+            decodes.append({"backend": record["backend"], "key": record["key"], "outcome": "decoded", "crc_ok": True,
+                            "payload_match": True, "t_start_ns": began, "t_callback_ns": now, "service_us": took,
+                            "path": record["path"]})
+            service_ahead[record["backend"]].append(took)
+        now += 6_000
+        ahead.append({"schema": mp.LEAD_IN_SCHEMA, "run_id": report["run_id"], "sequence": k,
+                      "opportunity_sequence": item["sequence"], "opportunity_id": item["opportunity_id"],
+                      "sfn": item["sfn"], "slot": item["slot"], "grant_id": item["grant_id"], "offset_us": offset,
+                      "lead_us": lead["lead_us"], "issued": True, "t_issue_ns": issue, "t_ready_ns": ready,
+                      "t_start_ns": began_job, "t_done_ns": now, "fill_us": 76.5, "released": True, "decodes": decodes})
     for position, item in enumerate(report["opportunities"]):
         records = by_sequence[item["sequence"]]
-        skipped = fault == "skipped-release" and position == 1 and plan["observer"]["tap"] == "none"
+        # Behind the first releases, which a lead-in answers for: this fault is about the schedule alone.
+        skipped = fault == "skipped-release" and position == 7 and plan["observer"]["tap"] == "none"
         if skipped:
             now = pacer.release_time(position) + pacing["latest_start_us"] * 1000 + 1
         taken = pacer.take(position, now)
@@ -143,10 +175,22 @@ def pace(native, plan, plan_path, fault):
         outcomes = report["totals"]["outcomes"]
         outcomes["decoded"] -= len(gone) * len(report["backends"])
         outcomes["not_dispatched"] = outcomes.get("not_dispatched", 0) + len(gone) * len(report["backends"])
+    if lead and fault != "cold-schedule":
+        for record in radio:
+            record["timing"]["first_use"] = False  # the first use of the processor was a decode of the lead-in
     radio_path.write_text("".join(json.dumps(record) + "\n" for record in radio))
     folder = native / mp.PACING_DIR
     folder.mkdir()
     (folder / mp.RELEASES_FILE).write_text("".join(json.dumps(line) + "\n" for line in lines))
+    led = None
+    if lead:
+        (folder / mp.LEAD_IN_FILE).write_text("".join(json.dumps(line) + "\n" for line in ahead))
+        led = {"schema": mp.LEAD_IN_SCHEMA, "file": f"{mp.PACING_DIR}/{mp.LEAD_IN_FILE}", "releases": lead["releases"],
+               "lead_us": lead["lead_us"], "rule": "the lead-in of the reference", "observer": "none",
+               "issued": len(ahead), "decodes": len(ahead) * len(names), "decoded": len(ahead) * len(names),
+               "t_first_start_ns": ahead[0]["t_start_ns"], "t_last_done_ns": ahead[-1]["t_done_ns"],
+               "before_first_release_us": (lines[0]["t_release_ns"] - ahead[-1]["t_done_ns"]) / 1000.0,
+               "service_us": service_ahead}
     report.update(schema=mp.NATIVE_SCHEMA, plan={"file": str(plan_path), "sha256": hashlib.sha256(Path(plan_path).read_bytes()).hexdigest()})
     report["evidence"]["plan_version"] = 4
     report["access"]["pacing"] = "pacing/ holds one pace-release/v1 line per opportunity of a paced run"
@@ -156,6 +200,8 @@ def pace(native, plan, plan_path, fault):
                         "allowance_us": pacing["allowance_us"], "latest_start_us": pacing["latest_start_us"],
                         "first_offset_us": lines[0]["offset_us"], "last_offset_us": lines[-1]["offset_us"],
                         "counts": pacer.counts(), "book": "the double keeps no book"}
+    if mp.lead_in_of(pacing) is not None and fault != "no-lead-in":
+        report["pacing"]["lead_in"] = led
     (native / "native.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="ascii")
     return report
 

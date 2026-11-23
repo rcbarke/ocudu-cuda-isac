@@ -31,6 +31,19 @@
 // the one rule of the dispatch core (isac_receiver::classify). Its job records are those of the
 // ledger, field by field, and the unit target compares the two.
 //
+// The lead-in. The first decode of a processor pays for what the processor sets up on its first
+// use, and the decodes behind it are not yet at their steady time. On an offered schedule that
+// cost is an overrun and skipped releases, and it says nothing about pacing: a receiver that
+// serves a cell is warm. A paced run may therefore issue the first releases of its schedule once
+// more, ahead of it:
+//
+//     lead(k) = start + offset(k) - lead      for k below the number of lead-in releases
+//
+// A lead-in decode is no release of the schedule. It is never skipped: it is issued at lead(k),
+// or as soon as the decode before it is done. It is kept in a paced book of its own, whose
+// tokens lie behind those of the schedule, so that nothing of it is counted, recorded or timed
+// with an offered release. The cold start is what the lead-in measures, apart.
+//
 // Threads. complete() may be called from any thread, as a processor does. Every other function
 // belongs to the one dispatch thread, which is also the only user of the grid pool.
 //
@@ -139,6 +152,24 @@ private:
   bool                      has_begun = false;
 };
 
+// ---------------------------------------------------------------------------------------------- lead-in
+
+/// The first releases of a schedule, issued once more ahead of it. See the header comment.
+struct lead_in {
+  std::size_t  releases = 0; ///< How many of the first releases are issued ahead. Zero: no lead-in.
+  std::int64_t lead_ns  = 0; ///< How long before its own release each of them is issued.
+};
+
+/// Throws input_error for a lead-in that names more releases than the schedule, for a lead that
+/// is not positive, for a lead-in whose last decode, done on its allowance, would end after the
+/// first release of the schedule, and for a first lead-in time before the schedule was fixed:
+/// start_delay_ns is the time from that moment to the start of the schedule. A lead-in of no
+/// release passes whatever its lead.
+void check(const schedule& plan, const lead_in& warm, std::int64_t start_delay_ns);
+
+/// The time decode k of the lead-in is issued at: start + offset(k) - lead.
+std::int64_t lead_time(const schedule& plan, const lead_in& warm, std::int64_t start_ns, std::size_t k);
+
 // ---------------------------------------------------------------------------------------------- paced book
 
 /// Why a prepared decode was never started.
@@ -153,13 +184,15 @@ public:
   using clock_fn = std::int64_t (*)();
 
   /// The pool is not owned and must outlive the book. clock is the monotonic clock, or one of a unit case.
-  explicit paced_book(isac_replay::o1_pool& pool_, clock_fn clock_ = &monotonic_ns);
+  /// first_token is the token of the first decode that is named: one, or, for a second book on
+  /// the same decoders, a token behind every token of the first, so that no decoder sees a token twice.
+  explicit paced_book(isac_replay::o1_pool& pool_, clock_fn clock_ = &monotonic_ns, std::uint64_t first_token = 1);
   ~paced_book() override;
   paced_book(const paced_book&)            = delete;
   paced_book& operator=(const paced_book&) = delete;
 
-  /// Before the first fill: names one decode and allocates everything of it. Tokens count from one
-  /// in the order of the calls. A key that was named before and an empty block are refused.
+  /// Before the first fill: names one decode and allocates everything of it. Tokens count from the
+  /// first token in the order of the calls. A key that was named before and an empty block are refused.
   std::uint64_t prepare(const isac_receiver::job_key& key,
                         const std::string&            grant_id,
                         const std::string&            grant_record_sha256,
@@ -191,6 +224,9 @@ public:
   std::size_t holds(const isac_replay::ticket& grid) const;
   std::size_t held_grids() const;
   std::size_t size() const { return entries.size(); }
+  /// The token of the first decode, and the token behind the last one that was named.
+  std::uint64_t first_token() const { return first; }
+  std::uint64_t next_token() const { return first + entries.size(); }
 
   // ---- After the run. These allocate. ----
   isac_receiver::job                  snapshot(std::uint64_t token) const;
@@ -209,9 +245,12 @@ private:
   const entry& find(std::uint64_t token, const char* action) const;
   void         refuse(const entry& item, const char* kind, const std::string& detail);
 
+  bool         known(std::uint64_t token) const { return token >= first && token - first < entries.size(); }
+
   isac_replay::o1_pool&                        pool;
   clock_fn                                     clock;
-  std::vector<std::unique_ptr<entry>>          entries; ///< Index token - 1.
+  std::uint64_t                                first;   ///< The token of entries[0].
+  std::vector<std::unique_ptr<entry>>          entries; ///< Index token - first.
   std::vector<std::vector<std::uint64_t>>      holders; ///< Per grid of the pool: the tokens that hold it.
   std::vector<isac_receiver::anomaly>          noted;   ///< Refusals. Dispatch thread only.
   std::atomic<std::uint64_t>                   unknown_completions{0};
