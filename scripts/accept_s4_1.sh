@@ -285,7 +285,10 @@ sys.exit(0 if ok else 1)' "$out/grade.json" 2> "$run_dir/grade-read.log")
     # The record of the card, read here with the standard library alone. The gate requires that it
     # exists, that it is not graded as a latency, that every timed arm carries the label MPS on a
     # proof, and that the load is stated. What the figures are is recorded and decides nothing.
-    record=$("$python" -c 'import json, sys
+    record=$("$python" -c 'import json, os, sys
+if not os.path.isfile(sys.argv[1] + "/mps_pacing.json"):
+    sys.exit("mps_pacing.json was not written. The driver writes it in its last case, records, and that case runs "
+             "only when every arm before it ran clean: see the first FAIL line of the driver above")
 record = json.load(open(sys.argv[1] + "/mps_pacing.json", encoding="utf-8"))
 if record["graded"] is not False or record["load"]["scripted"] is not True or record["rehearsal"] is not False:
     sys.exit("the record is graded, names no scripted load, or is that of a rehearsal")
@@ -307,19 +310,28 @@ else:
              "%.1f us in the median of %d runs, the first release of a schedule %.1f us"
              % (cold["lead_in"]["releases"], cold["by_decode_us"][0]["p50_us"], cold["runs"],
                 cold["first_release_us"]["p50_us"]))
+scores = record["decisions"]
+if scores["joined"] < 1 or scores["problems"] or any(not flip["at_threshold"] for flip in scores["flips"]):
+    sys.exit("a window of the concurrent arm breaks the rule of the scores: %s" % "; ".join(scores["problems"][:2]))
+same = ("%d windows beside the receiver against the sensor alone: %d on the same input bytes, %d of them with the same "
+        "logit bit for bit; %d on two decodes that differ, logits within %.2e; %d decide alike and %d flip(s) lie at "
+        "the threshold" % (scores["joined"], scores["same_input"], scores["same_input_same_logit"],
+                           scores["other_input"], scores["largest_logit_difference_other_input"], scores["agree"],
+                           len(scores["flips"])))
 print("mps_pacing.json holds %d launches; PUSCH service time, median / 99th percentile in us: tap off %.1f / %.1f, "
       "capture only %.1f / %.1f, concurrent %.1f / %.1f; the %s moved by %.1f us against %.1f us allowed by the %s "
-      "rule; control in effect %s; %s; load scripted, no core network attached; \"graded\": false"
+      "rule; control in effect %s; %s; %s; load scripted, no core network attached; \"graded\": false"
       % (sum(len(items) for items in arms.values()), service["dsp_only"]["p50_us"], service["dsp_only"]["p99_us"],
          service["capture_only"]["p50_us"], service["capture_only"]["p99_us"], service["concurrent"]["p50_us"],
          service["concurrent"]["p99_us"], shift["quantile"], shift["shift_us"], shift["allowed_us"],
-         record["contention"]["rule"]["status"], record["contention"]["control_in_effect"], apart))' "$out" \
+         record["contention"]["rule"]["status"], record["contention"]["control_in_effect"], apart, same))' "$out" \
         2> "$run_dir/records-read.log")
     if [[ -n "$record" ]]; then
         pass "S4.1 record, written and not graded: $record"
     else
-        fail "S4.1 record: mps_pacing.json is missing, graded, incomplete, holds a timed arm without a proven label, or" \
-            "names a release as the first use of its receiver (see records-read.log)"
+        fail "S4.1 record: mps_pacing.json is missing, graded, incomplete, holds a timed arm without a proven label," \
+            "names a release as the first use of its receiver, or holds a window that breaks the rule of the scores" \
+            "(see records-read.log)"
         detail "$run_dir/records-read.log"
     fi
 

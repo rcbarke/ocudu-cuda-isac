@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -106,6 +107,57 @@ class AcceptS41Tests(unittest.TestCase):
                         '"pace-release/v1"}\n')
         counted = subprocess.run(["grep", "-cE", '"schema": ?"pace-release/v1"', str(line)], capture_output=True, text=True)
         self.assertEqual(counted.stdout.strip(), "2")
+
+    def test_the_record_is_read_with_its_scores_and_a_record_that_was_not_written_is_named(self):
+        # What the gate runs on the record of the driver, taken from the script and run as the gate runs it.
+        text = SCRIPT.read_text(encoding="ascii")
+        opening = "record=$(\"$python\" -c '"
+        first = text.index(opening) + len(opening)
+        code = text[first:text.index("' \"$out\"", first)]
+        runs = [{"warmup": False, "control": "mps_default", "fault": None,
+                 "sharing": {"requested": "mps", "label": "mps", "verified": True}}]
+        tails = {"p50_us": 187.2, "p99_us": 219.5}
+        record = {"graded": False, "rehearsal": False, "load": {"scripted": True},
+                  "arms": {name: runs for name in ("dsp_only", "capture_only", "ai_only", "concurrent")},
+                  "contention": {"service": {name: tails for name in ("dsp_only", "capture_only", "concurrent")},
+                                 "shifts": {"mps_default": {"quantile": "p99", "shift_us": 2.7, "allowed_us": 25.7}},
+                                 "rule": {"status": "proposed"}, "control_in_effect": "mps_default"},
+                  "cold_start": {"lead_in": {"releases": 6, "lead_us": 10000}, "first_use_in_schedule": 0,
+                                 "skipped_first_releases": 0, "runs": 9, "by_decode_us": [{"p50_us": 1320.7}],
+                                 "first_release_us": {"p50_us": 189.6}},
+                  # The scores of the run s41-spark-ecf8-20261123T161419Z: one flip in 960 windows, at the threshold.
+                  "decisions": {"joined": 960, "agree": 959, "same_input": 772, "same_input_same_logit": 772,
+                                "other_input": 188, "largest_logit_difference_other_input": 3.489e-3, "problems": [],
+                                "flips": [{"at_threshold": True}]}}
+
+        def read(made):
+            where = Path(tempfile.mkdtemp(dir=self.root))
+            if made is not None:
+                (where / "mps_pacing.json").write_text(json.dumps(made), encoding="ascii")
+            return subprocess.run([sys.executable, "-c", code, str(where)], capture_output=True, text=True, timeout=60)
+
+        done = read(record)
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        self.assertIn("960 windows beside the receiver against the sensor alone: 772 on the same input bytes, 772 of them "
+                      "with the same logit bit for bit; 188 on two decodes that differ, logits within 3.49e-03; 959 decide "
+                      "alike and 1 flip(s) lie at the threshold", done.stdout)
+        self.assertIn("the first decode of a receiver 1320.7 us in the median of 9 runs", done.stdout)
+        # A window that breaks the rule of the scores, and a flip that is not at the threshold, fail the record.
+        broken = json.loads(json.dumps(record))
+        broken["decisions"]["problems"] = ["r2: window 387b28319ca93c0d/2: the same input bytes gave two logits"]
+        done = read(broken)
+        self.assertEqual((done.returncode, done.stdout), (1, ""))
+        self.assertIn("a window of the concurrent arm breaks the rule of the scores: r2: window 387b28319ca93c0d/2",
+                      done.stderr)
+        away = json.loads(json.dumps(record))
+        away["decisions"]["flips"] = [{"at_threshold": False}]
+        self.assertEqual(read(away).returncode, 1)
+        # A driver that failed a case before its last one wrote no record: the gate says so, in one sentence.
+        done = read(None)
+        self.assertEqual((done.returncode, done.stdout), (1, ""))
+        self.assertIn("mps_pacing.json was not written. The driver writes it in its last case, records", done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertIn("or holds a window that breaks the rule of the scores", text)
 
 
 if __name__ == "__main__":

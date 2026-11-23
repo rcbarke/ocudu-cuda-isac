@@ -24,8 +24,11 @@ on the same schedule. Twelve cases, each graded on its own:
   ai_only       no receiver: the records the capture-only arm kept, published again at the pace
                 of their slots, to sense_host
   concurrent    the receiver and sense_host together: both process identifiers in one reading of
-                the client list, the sensor's context before the receiver, the same decisions as
-                the ai-only arm, and both at work over a common interval
+                the client list, the sensor's context before the receiver, and both at work over
+                a common interval. Against the ai-only arm a window is compared by the input its
+                sensor was given: the same input bytes give the same score, two decodes that
+                differ give logits within the declared tolerance, and a decision that differs
+                inside that bound is a flip at the threshold, listed and no failure
   contention    the arrival counts of every arm, and the PUSCH service-time tail of the
                 capture-only arm against the concurrent arm by the rule of the configuration;
                 where the rule is exceeded the sensor-side controls are applied in their order
@@ -168,7 +171,8 @@ def load_config(path):
         if any(phy & set(run_m1.parse_cpus(config["cpus"][role])) for role in ("sensor", "o2", "tools")):
             raise ConfigError("the sensor, the consumer of the O2 ring and the tools run outside the CPU set of the "
                               "receiver")
-        if not 1 <= config["mps"]["thread_pct"] <= 100 or not 0 <= expect["min_decision_agreement"] <= 1 \
+        if not 1 <= config["mps"]["thread_pct"] <= 100 \
+                or not 0 <= expect["same_input_logit_tolerance"] <= expect["logit_tolerance"] \
                 or not expect["logit_tolerance"] > 0 or type(config["time_slicing_control"]) is not bool \
                 or config["sensor"]["o2_consumer"] not in ("presence", "obs_tail") \
                 or config["sensor"]["reference_device"] not in ("cuda", "cpu"):
@@ -787,6 +791,73 @@ def run_ai_only(setup, grader):
     return {"feed": fed, "sensor": counts}
 
 
+def same_scores(arms, alone, expect):
+    """The scored windows of every repetition beside the receiver against the sensor alone.
+
+    One mps_pacing.decision_agreement per repetition, summed, with the repetition named in every
+    flip and in every problem.
+    """
+    counted = ("first", "second", "joined", "agree", "same_input", "same_input_same_logit", "same_input_same_map",
+               "other_input", "beyond_tolerance", "flips_at_threshold")
+    whole = {key: 0 for key in counted}
+    whole.update(largest_logit_difference=0.0, largest_logit_difference_same_input=0.0,
+                 largest_logit_difference_other_input=0.0, logit_tolerance=expect["logit_tolerance"],
+                 same_input_tolerance=expect["same_input_logit_tolerance"], threshold_logit=None, flips=[],
+                 problems=[], repetitions=[],
+                 rule="a window is compared by the input its sensor was given: the same input bytes give the same "
+                      "logit within same_input_tolerance; two decodes that differ give logits within logit_tolerance; "
+                      "a decision that differs inside the bound of its window is a flip at the threshold and is listed")
+    for item in arms:
+        repetition = item.label.split("-")[0]
+        other = alone.get(repetition)
+        if other is None:
+            continue
+        found = mp.decision_agreement(item.sensor.scored, other.sensor.scored, expect["logit_tolerance"],
+                                      expect["same_input_logit_tolerance"])
+        for key in counted:
+            whole[key] += found[key]
+        for key in ("largest_logit_difference", "largest_logit_difference_same_input",
+                    "largest_logit_difference_other_input"):
+            whole[key] = max(whole[key], found[key])
+        whole["flips"] += [dict(flip, repetition=repetition) for flip in found["flips"]]
+        whole["problems"] += [f"{repetition}: {problem}" for problem in found["problems"]]
+        whole["repetitions"].append({"repetition": repetition, **{key: found[key] for key in counted},
+                                     "largest_logit_difference": found["largest_logit_difference"]})
+        if item.sensor.scored:
+            whole["threshold_logit"] = item.sensor.scored[0]["decision"]["threshold_logit"]
+    return whole
+
+
+def said_of(agreement):
+    """One line for the check of the scores of two arms."""
+    flips = agreement["flips"]
+    said = (f"{agreement['joined']} windows were scored beside the receiver and, from the buffered records of the "
+            f"capture-only arm, by the sensor alone. {agreement['same_input']} of them were given the same input bytes in "
+            f"both arms, and the sensor gave {agreement['same_input_same_logit']} of them the same logit bit for bit and "
+            f"{agreement['same_input_same_map']} the same map; their logits are "
+            f"{agreement['largest_logit_difference_same_input']:.1e} apart at most, "
+            f"{agreement['same_input_tolerance']:.0e} allowed. ")
+    if agreement["other_input"]:
+        said += (f"The remaining {agreement['other_input']} window(s) were scored from two decodes of one grid that "
+                 f"differ, as the receiver's estimate is not bit-reproducible: their logits are "
+                 f"{agreement['largest_logit_difference_other_input']:.2e} apart at most, "
+                 f"{agreement['logit_tolerance']} allowed. ")
+    else:
+        said += "No window was scored from two decodes that differ. "
+    said += f"{agreement['agree']} decide alike, {len(flips)} flip(s)"
+    if flips:
+        shown = "; ".join(
+            f"{flip['repetition']} {flip['episode']}/{flip['period']} with {flip['logits'][0]:.6f} and "
+            f"{flip['logits'][1]:.6f}, {flip['margins'][0]:+.2e} and {flip['margins'][1]:+.2e} from it, "
+            + ("two decodes" if not flip["same_input"] else "the same input")
+            + ("" if flip["at_threshold"] else ", not at the threshold") for flip in flips[:3])
+        said += (f", {agreement['flips_at_threshold']} of them at the threshold {flips[0]['threshold_logit']:.6f}, each "
+                 f"listed in comparison.json: {shown}" + (f"; and {len(flips) - 3} more" if len(flips) > 3 else ""))
+    if agreement["problems"]:
+        said += f". {len(agreement['problems'])} window(s) break the rule, first: {agreement['problems'][0]}"
+    return said
+
+
 def run_concurrent(setup, grader, evaluator_latency):
     name, arms, expect = "concurrent", setup.of("concurrent"), setup.config["expect"]
     if not launch_check(grader, name, arms, ["the receiver", "the sensor"], setup):
@@ -815,22 +886,10 @@ def run_concurrent(setup, grader, evaluator_latency):
                  f"{account['o2']['published']} published and {account['o2']['dropped']} dropped to "
                  + ("the delay-Doppler branch on the CPU" if any("delay-doppler" in item.archives for item in arms)
                     else "obs_tail"))
-    # ---- The same decisions as the sensor alone on the buffered records of the same repetition.
-    alone = {item.label.split("-")[0]: item for item in setup.of("ai_only") if item.ok()}
-    joined = agree = 0
-    worst, flips = 0.0, []
-    for item in arms:
-        other = alone.get(item.label.split("-")[0])
-        if other is None:
-            continue
-        found = mp.decision_agreement(item.sensor.scored, other.sensor.scored, expect["logit_tolerance"])
-        joined, agree = joined + found["joined"], agree + found["agree"]
-        worst, flips = max(worst, found["largest_logit_difference"]), flips + found["flips"]
-    grader.check(name, "same decisions", joined >= 1 and agree >= expect["min_decision_agreement"] * joined,
-                 f"{joined} windows were scored beside the receiver and, from the buffered records of the capture-only "
-                 f"arm, by the sensor alone: {agree} decide alike, {len(flips)} flip(s), and the largest logit difference "
-                 f"is {worst:.2e}. The two arms read two decodes of one grid, and the receiver's estimate is not "
-                 "bit-reproducible, so the scores are compared by decision and never by digest")
+    # ---- The same scores as the sensor alone on the buffered records of the same repetition. The two arms
+    # score two decodes of one grid, so a window is compared by the input its sensor was given.
+    agreement = same_scores(arms, {item.label.split("-")[0]: item for item in setup.of("ai_only") if item.ok()}, expect)
+    grader.check(name, "same decisions", agreement["joined"] >= 1 and not agreement["problems"], said_of(agreement))
     # ---- Both clients at work over a common interval, from their own marks on one clock.
     found = [mp.overlap(item.output, item.sensor.scored) for item in arms]
     common = all(entry["common_interval_ns"] is not None and entry["sensor_inside_run"] >= 1 for entry in found)
@@ -844,9 +903,8 @@ def run_concurrent(setup, grader, evaluator_latency):
                  "window closes with the last uplink slot of its period, so its submission falls behind the burst"
                  if common else "rehearsal: the marks of an archive replay are not those of a live ring" if setup.rehearsal
                  else "the marks of the two clients give no common interval")
-    return dict(total, account=account, sensor=counts, agreement={"joined": joined, "agree": agree, "flips": flips,
-                                                                  "largest_logit_difference": worst},
-                overlap=found, **service_note(grader, name, arms))
+    return dict(total, account=account, sensor=counts, agreement=agreement, overlap=found,
+                **service_note(grader, name, arms))
 
 
 # ---------------------------------------------------------------- comparison of the arms
@@ -1105,6 +1163,7 @@ def run_records(setup, grader, measured, readers, evaluator, obs):
                    "plans": {key: setup.plans[key]["sha256"] for key in ("tap", "dsp") if key in setup.plans}},
         "mps": measured.get("mps"), "schedule": measured.get("schedule"), "arms": arms,
         "cold_start": cold_record(config, measured),
+        "decisions": (measured.get("concurrent") or {}).get("agreement"),
         "contention": measured.get("contention"), "runtime": measured.get("runtime"), "faults": measured.get("faults"),
         "time_slicing": sliced, "rehearsal": setup.rehearsal}
     write_json(setup.out / RECORD_FILE, record)

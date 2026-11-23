@@ -90,6 +90,7 @@ MAX_LEAD_RELEASES = 64
 RELEASE_OUTCOMES = ("on_time", "late", "skipped")
 SKIPS = ("missed_release", "no_free_grid", "backend_stopped")
 MAX_OFFSET_US = 3_600_000_000
+SAME_INPUT_LOGIT = 1e-6  # two scorings of the same input bytes: the bound of the live case of Sprint 3.6
 # The arms of the ticket. Each names what runs beside the receiver, and whether the receiver runs.
 ARMS = ("dsp_only", "capture_only", "ai_only", "concurrent", "concurrent_reference")
 TIMED_ARMS = ("dsp_only", "capture_only", "ai_only", "concurrent")
@@ -964,28 +965,76 @@ def window_latency(output, decisions):
     return {key: statistics(value) if isinstance(value, list) else value for key, value in made.items()}
 
 
-def decision_agreement(first, second, logit_tolerance):
+def decision_agreement(first, second, logit_tolerance, same_input_tolerance=SAME_INPUT_LOGIT):
     """The scored windows of two sensor outputs on the same offered trace, joined by episode and period.
 
-    Returns the count of joined windows, how many decide alike, the largest logit difference and
-    every flip with its margins. The receiver's own estimate is not bit-reproducible between two
-    decodes of one grid, so the scores of two arms are compared by tolerance and never by digest.
+    The two outputs score two decodes of one grid, and the receiver's own estimate is not
+    bit-reproducible between two decodes (Sprint 5.2). A window is therefore compared by what the
+    sensor was given, which the digest of its input says:
+
+      same input    both outputs name one digest: the sensor was given the same bytes and has to
+                    give the same score. The logits lie within same_input_tolerance, the bound of
+                    the live case of Sprint 3.6 for a record that is read twice.
+      other input   the two decodes differ. The logits lie within logit_tolerance.
+
+    A decision that differs between the outputs is a flip. Inside the bound of its window the
+    threshold lies between two logits that are at most the bound apart, so both lie within the
+    bound of the threshold: a flip at the threshold, which is listed with its margins and is no
+    problem. That is the rule of the parity of Sprints 3.5 and 3.6. A logit difference beyond the
+    bound is a problem with or without a flip, and so is a flip that the two logits do not explain.
+
+    Returns the counts, the largest difference of each kind, every flip and the problems. Two
+    outputs agree when they share a window and there is no problem.
     """
     def keyed(lines):
         return {(line["window"]["episode"], line["window"]["period"]): line for line in lines}
 
     mine, theirs = keyed(first), keyed(second)
     joined = sorted(set(mine) & set(theirs))
-    made = {"first": len(mine), "second": len(theirs), "joined": len(joined), "agree": 0, "beyond_tolerance": 0,
-            "largest_logit_difference": 0.0, "logit_tolerance": logit_tolerance, "flips": []}
+    made = {"first": len(mine), "second": len(theirs), "joined": len(joined), "agree": 0, "same_input": 0,
+            "same_input_same_logit": 0, "same_input_same_map": 0, "other_input": 0, "beyond_tolerance": 0,
+            "largest_logit_difference": 0.0, "largest_logit_difference_same_input": 0.0,
+            "largest_logit_difference_other_input": 0.0, "logit_tolerance": logit_tolerance,
+            "same_input_tolerance": same_input_tolerance, "flips": [], "flips_at_threshold": 0, "problems": []}
     for key in joined:
         a, b = mine[key], theirs[key]
-        difference = abs(a["score"]["logit"] - b["score"]["logit"])
+        name = f"window {key[0]}/{key[1]}"
+        logits, threshold = [a["score"]["logit"], b["score"]["logit"]], a["decision"]["threshold_logit"]
+        same = a["input"]["sha256"] == b["input"]["sha256"]
+        allowed = same_input_tolerance if same else logit_tolerance
+        difference = abs(logits[0] - logits[1])
+        one_threshold = b["decision"]["threshold_logit"] == threshold
+        flip = a["decision"]["present"] != b["decision"]["present"]
         made["largest_logit_difference"] = max(made["largest_logit_difference"], difference)
-        made["beyond_tolerance"] += difference > logit_tolerance
-        if a["decision"]["present"] == b["decision"]["present"]:
-            made["agree"] += 1
+        if same:
+            made["same_input"] += 1
+            made["same_input_same_logit"] += difference == 0.0
+            made["same_input_same_map"] += a["location"]["map"]["sha256"] == b["location"]["map"]["sha256"]
+            made["largest_logit_difference_same_input"] = max(made["largest_logit_difference_same_input"], difference)
         else:
-            made["flips"].append({"episode": key[0], "period": key[1], "logits": [a["score"]["logit"], b["score"]["logit"]],
-                                  "threshold_logit": a["decision"]["threshold_logit"]})
+            made["other_input"] += 1
+            made["largest_logit_difference_other_input"] = max(made["largest_logit_difference_other_input"],
+                                                               difference)
+        if not one_threshold:
+            made["problems"].append(f"{name}: the two outputs decide at two thresholds, {threshold!r} and "
+                                    f"{b['decision']['threshold_logit']!r}")
+        if difference > allowed:
+            made["beyond_tolerance"] += 1
+            made["problems"].append(
+                f"{name}: " + ("the same input bytes gave" if same else "two decodes that differ gave")
+                + f" the logits {logits[0]:.9f} and {logits[1]:.9f}, {difference:.3e} apart (at most {allowed:.1e})"
+                + (", and two decisions" if flip else ""))
+        if not flip:
+            made["agree"] += 1
+            continue
+        margins = [logits[0] - threshold, logits[1] - threshold]
+        explained = one_threshold and (margins[0] > 0) != (margins[1] > 0)
+        at_threshold = explained and difference <= allowed
+        made["flips_at_threshold"] += at_threshold
+        made["flips"].append({"episode": key[0], "period": key[1], "logits": logits, "threshold_logit": threshold,
+                              "margins": margins, "difference": difference, "same_input": same,
+                              "at_threshold": at_threshold})
+        if one_threshold and not explained:
+            made["problems"].append(f"{name}: the decision differs, and the threshold {threshold:.6f} does not lie "
+                                    f"between the logits {logits[0]:.9f} and {logits[1]:.9f}")
     return made

@@ -31,6 +31,14 @@ MPS_PACING_FAULT names one fault to inject, so that each check of the driver can
     no-lead-in         the receiver runs a plan with a lead-in as a plan without one
     cold-schedule      a release is the first use of the processor although the lead-in ran
     late-lead-in       the first decode of the lead-in takes so long that the lead-in ends inside the schedule
+    other-score        beside the receiver the sensor gives another logit, 1e-3 apart, for the same input bytes
+    far-score          beside the receiver a window is scored from another decode, with a logit 0.2 apart
+                       (both away from the threshold: the decision of the window stays what it was)
+
+and one condition that is no fault, so that the driver can be shown to pass it and to list it:
+
+    threshold-flip     a window is scored from two decodes, 1e-3 above the threshold beside the receiver and 1e-3
+                       below it alone: a flip at the threshold
 
 It is not a test module: discovery skips it.
 """
@@ -39,6 +47,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -243,7 +252,59 @@ def receiver(spec, directory, fault):
     return (3 if fault == "receiver-exit" else status), kept
 
 
-def sensor(item, records, fault):
+def rescore(output, position, logit=None, moved=0.0, other_input=False):
+    """Rewrite one scored decision of a sensor output so that its reader still accepts it.
+
+    The logit is set, or moved. The probability and the decision follow from it at the frozen
+    threshold, and the count of the report follows from the decisions. With other_input the
+    lowest bit of the first element of the input is turned, and the decision names the digest of
+    the new bytes: the input of another decode of the same grid.
+    """
+    from ocudu_cuda_isac.sensing import cusense
+    output = Path(output)
+    lines = [json.loads(text) for text in (output / cusense.DECISIONS_FILE).read_text(encoding="ascii").splitlines()
+             if text.strip()]
+    scored = [line for line in lines if line["status"] == "ok"]
+    line = scored[position]
+    value = float(line["score"]["logit"] + moved if logit is None else logit)
+    line["score"] = dict(line["score"], logit=value, probability=1.0 / (1.0 + math.exp(-value)))
+    line["decision"] = dict(line["decision"], present=value > line["decision"]["threshold_logit"])
+    if other_input:
+        size = 4 * math.prod(line["input"]["shape"])
+        data = bytearray((output / cusense.INPUTS_FILE).read_bytes())
+        first = line["input"]["index"] * size
+        data[first] ^= 1
+        (output / cusense.INPUTS_FILE).write_bytes(bytes(data))
+        line["input"] = dict(line["input"], sha256=hashlib.sha256(bytes(data[first:first + size])).hexdigest())
+    (output / cusense.DECISIONS_FILE).write_text("".join(json.dumps(entry) + "\n" for entry in lines), encoding="ascii")
+    report = json.loads((output / cusense.REPORT_FILE).read_text(encoding="ascii"))
+    report["counts"]["present"] = sum(entry["decision"]["present"] for entry in scored)
+    (output / cusense.REPORT_FILE).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="ascii")
+    return line
+
+
+def other_scores(output, spec, fault):
+    """The faults of the scores, on the second scored window of the first repetition of an arm.
+
+    A fault moves the logit away from the threshold, so that the decision stays what it was on
+    every host: what fails is the score, with no flip beside it.
+    """
+    if spec is None or spec["label"] != f"r0-{spec['arm']}" \
+            or fault not in ("other-score", "far-score", "threshold-flip"):
+        return
+    from ocudu_cuda_isac.sensing import cusense
+    decision = [line for line in map(json.loads, (Path(output) / cusense.DECISIONS_FILE).read_text().splitlines())
+                if line["status"] == "ok"][1]["decision"]
+    beside, away = spec["arm"] == "concurrent", 1.0 if decision["present"] else -1.0
+    if fault == "other-score" and beside:
+        rescore(output, 1, moved=away * 1e-3)
+    elif fault == "far-score" and beside:
+        rescore(output, 1, moved=away * 0.2, other_input=True)
+    elif fault == "threshold-flip" and spec["arm"] in ("concurrent", "ai_only"):
+        rescore(output, 1, logit=decision["threshold_logit"] + (1e-3 if beside else -1e-3), other_input=beside)
+
+
+def sensor(item, records, fault, spec=None):
     """One sensor on the records the double kept. Returns its status."""
     command, kind = item["command"], item["kind"]
     output, artifact = Path(_argument(command, "--output-dir")), _argument(command, "--artifact")
@@ -263,6 +324,8 @@ def sensor(item, records, fault):
                _argument(command, "--windows", "4096")]
         done = subprocess.run(run, capture_output=True, text=True, timeout=600, check=False)
         (output.parent / f"{item['role']}.log").write_text(" ".join(run) + "\n" + done.stdout + done.stderr)
+        if done.returncode == 0:
+            other_scores(output, spec, fault)
         return done.returncode
     from ocudu_cuda_isac.sensing import cusense, presence
     if kind == "cusense":
@@ -328,7 +391,7 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
             if item["kind"] == "obs_tail":
                 statuses[item["role"]] = 0 if kept[item["role"]].is_dir() else 2
             else:
-                statuses[item["role"]] = sensor(item, kept[item["role"]], fault)
+                statuses[item["role"]] = sensor(item, kept[item["role"]], fault, spec)
     else:
         archive = Path(_argument(spec["producer"]["command"], "--archive"))
         count = len(list(archive.glob("*.obs")))
@@ -337,7 +400,7 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
              "pending_at_cutoff": 0, "faults": 0, "pace": "slots"}) + "\n")
         status = 0
         for item in spec["consumers"]:
-            statuses[item["role"]] = sensor(item, archive, fault)
+            statuses[item["role"]] = sensor(item, archive, fault, spec)
     if spec["fault"] is not None:
         note = spec["fault"]
         killed = entries[note["role"]]

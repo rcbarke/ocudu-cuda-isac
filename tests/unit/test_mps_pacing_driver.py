@@ -11,7 +11,10 @@ sense_host of the host twin of the core, on the records the double kept. The rea
 reducers and every check of the driver are the real ones. The rehearsal grades every case,
 writes mps_pacing.json and leaves its hardware gate open, and each injected fault must fail
 the check that names it. The double of the receiver runs the lead-in of a plan on its own clock,
-with a first decode of 1.3 ms, so that the checks of the cold start are graded here as well.
+with a first decode of 1.3 ms, so that the checks of the cold start are graded here as well. The
+double can rewrite one score of a sensor: the same input with another logit and another decode
+with a logit far away fail the check of the scores, and a flip at the threshold between two
+decodes is listed and fails nothing.
 
 It needs cmake, a C++17 compiler, NumPy, PyTorch and pybind11, and no CUDA and no MPS.
 """
@@ -161,7 +164,11 @@ class DriverTests(unittest.TestCase):
         lines = (out / "grade.txt").read_text()
         for text in ("12 opportunities, one release each, over 17.0 ms of offered schedule with distances of 500, 4000, "
                      "5000 us", "24 of 24 released grids gave the original bytes", "0 of 24 offered releases were skipped",
-                     "8 decide alike, 0 flip(s)", "the control in effect is mps_default",
+                     "8 windows were scored beside the receiver and, from the buffered records of the capture-only arm, "
+                     "by the sensor alone. 8 of them were given the same input bytes in both arms, and the sensor gave 8 "
+                     "of them the same logit bit for bit and 8 the same map; their logits are 0.0e+00 apart at most, "
+                     "1e-06 allowed. No window was scored from two decodes that differ. 8 decide alike, 0 flip(s)",
+                     "the control in effect is mps_default",
                      "sense_host is killed 700 ms after the start of the offered schedule: the receiver was never signalled",
                      "carries the label time_slicing and never MPS", "is no client of the server, and the label is refused",
                      "1 held-out pairs of the set are not read by this gate",
@@ -200,6 +207,13 @@ class DriverTests(unittest.TestCase):
         self.assertEqual({arm: counts for arm, counts in contention["offered"].items()},
                          {"dsp_only": [12, 12], "capture_only": [12, 12], "concurrent": [12, 12]})
         self.assertEqual(set(record["faults"]), {"consumer_exit", "consumer_restart"})
+        # ---- The scores beside the receiver against the sensor alone, by repetition, with nothing to list.
+        scores = record["decisions"]
+        self.assertEqual((scores["joined"], scores["agree"], scores["same_input"], scores["same_input_same_logit"],
+                          scores["other_input"], scores["flips"], scores["problems"]), (8, 8, 8, 8, 0, [], []))
+        self.assertEqual((scores["logit_tolerance"], scores["same_input_tolerance"],
+                          [entry["repetition"] for entry in scores["repetitions"]]), (0.05, 1e-06, ["r0", "r1"]))
+        self.assertEqual(scores, json.loads((out / "comparison.json").read_text())["concurrent"]["agreement"])
         # ---- The cold start is apart: the decodes of the lead-in of every run with a receiver, and no release.
         cold = record["cold_start"]
         self.assertEqual((cold["lead_in"], cold["runs"], cold["first_use_in_schedule"], cold["skipped_first_releases"]),
@@ -261,7 +275,10 @@ class DriverTests(unittest.TestCase):
                 # The lead-in: a tool that runs none, a release that is cold beside one, and one that ends too late.
                 ("no-lead-in", ["dsp_only launch", "capture_only launch", "concurrent launch"]),
                 ("cold-schedule", arms),
-                ("late-lead-in", ["dsp_only schedule kept", "dsp_only lead-in"])):
+                ("late-lead-in", ["dsp_only schedule kept", "dsp_only lead-in"]),
+                # The scores: another logit for the same input bytes, and another decode with a logit far away.
+                ("other-score", ["concurrent same decisions"]),
+                ("far-score", ["concurrent same decisions"])):
             with self.subTest(fault=fault):
                 run = self.drive(fault, fault, self.small())
                 self.assertEqual(run["status"], 1, fault)
@@ -284,10 +301,51 @@ class DriverTests(unittest.TestCase):
         late = (self.scratch / "late-lead-in" / "grade.txt").read_text()
         self.assertIn("a lead-in was not done before the first release of its schedule: it ended 1369.2 us after it; 3 "
                       "of the first 6 releases of a schedule were skipped: the cold start still costs the schedule", late)
+        # The same input bytes with another logit, and two decodes further apart than was declared: each is named.
+        self.assertIn("1 window(s) break the rule, first: r0: window ", (self.scratch / "other-score" / "grade.txt").read_text())
+        self.assertRegex((self.scratch / "other-score" / "grade.txt").read_text(),
+                         r"the same input bytes gave the logits -?\d+\.\d{9} and -?\d+\.\d{9}, 1\.000e-03 apart "
+                         r"\(at most 1\.0e-06\)")
+        self.assertRegex((self.scratch / "far-score" / "grade.txt").read_text(),
+                         r"The remaining 1 window\(s\) were scored from two decodes of one grid that differ, as the "
+                         r"receiver's estimate is not bit-reproducible: their logits are 2\.00e-01 apart at most, 0\.05 "
+                         r"allowed\. 4 decide alike, 0 flip\(s\)\. 1 window\(s\) break the rule, first: r0: window \S+: two "
+                         r"decodes that differ gave the logits")
         # A client of the server before the first arm: no arm is launched beside it.
         run = self.drive("foreign", "foreign-client", self.small())
         self.assertEqual(run["failed"][0], "mps daemon")
         self.assertFalse((run["out"] / "arms").exists())
+
+    def test_a_flip_at_the_threshold_between_two_decodes_is_listed_and_fails_nothing(self):
+        # One window is scored from two decodes, 1e-3 above the threshold beside the receiver and 1e-3 below it
+        # alone: what the Spark measured in the run s41-spark-ecf8-20261123T161419Z, where a gate that asked for
+        # equal decisions of two decodes failed on one window in 960.
+        run = self.drive("flip", "threshold-flip", self.small())
+        self.assertEqual((run["status"], run["failed"]), (0, []), run["said"][-3000:] + run["errors"][-2000:])
+        self.assertEqual((run["grade"]["judgment"], run["grade"]["cases_passed"]), ("pass", 12))
+        lines = (run["out"] / "grade.txt").read_text()
+        self.assertRegex(lines, r"PASS  S4\.1 concurrent same decisions: 4 windows .* 3 of them were given the same input "
+                                r"bytes in both arms, .* The remaining 1 window\(s\) were scored from two decodes of one "
+                                r"grid that differ, .* their logits are 2\.00e-03 apart at most, 0\.05 allowed\. 3 decide "
+                                r"alike, 1 flip\(s\), 1 of them at the threshold -?\d+\.\d{6}, each listed in "
+                                r"comparison\.json: r0 \S+ with -?\d+\.\d{6} and -?\d+\.\d{6}, \+1\.00e-03 and -1\.00e-03 "
+                                r"from it, two decodes\n")
+        scores = json.loads((run["out"] / "mps_pacing.json").read_text())["decisions"]
+        self.assertEqual(scores, json.loads((run["out"] / "comparison.json").read_text())["concurrent"]["agreement"])
+        self.assertEqual((scores["joined"], scores["agree"], scores["same_input"], scores["other_input"],
+                          scores["flips_at_threshold"], scores["problems"]), (4, 3, 3, 1, 1, []))
+        self.assertEqual((scores["largest_logit_difference_same_input"], scores["largest_logit_difference"]),
+                         (0.0, scores["largest_logit_difference_other_input"]))
+        flip, = scores["flips"]
+        self.assertEqual((flip["repetition"], flip["same_input"], flip["at_threshold"]), ("r0", False, True))
+        self.assertEqual(flip["threshold_logit"], scores["threshold_logit"])
+        self.assertAlmostEqual(flip["margins"][0], 1e-3, places=9)
+        self.assertAlmostEqual(flip["margins"][1], -1e-3, places=9)
+        # Both outputs still verify with the reader of the reference: the decisions follow from their logits.
+        from ocudu_cuda_isac.sensing import cusense
+        for arm, present in (("r0-concurrent", True), ("r0-ai_only", False)):
+            output = cusense.open_output(run["out"] / "arms" / arm / "sensor")
+            self.assertEqual(output.scored[1]["decision"]["present"], present, arm)
 
     def test_the_rule_and_the_order_of_the_controls_decide_what_is_applied(self):
         # A rule that needs more samples than the arms hold gives no verdict, and says so.
@@ -339,6 +397,15 @@ class DriverTests(unittest.TestCase):
         wait = self.small()
         wait["rings"]["o3"]["wait"] = "wait"
         refused("the wait mode spin of a timed run", settings=wait)
+        # The scores of two decodes are compared by tolerance. A configuration of the accepted run, which asked
+        # for a share of equal decisions, names no tolerance for the same input and is refused.
+        share = self.small()
+        del share["expect"]["same_input_logit_tolerance"]
+        share["expect"]["min_decision_agreement"] = 1.0
+        refused("the configuration is incomplete or unusable: KeyError('same_input_logit_tolerance')", settings=share)
+        loose = self.small()
+        loose["expect"]["same_input_logit_tolerance"] = 0.1
+        refused("a setting of the configuration is outside its range", settings=loose)
         lead = self.small()
         lead["pacing"]["lead_in"] = {"releases": 6}
         refused("pacing.lead_in is null, or names how many of the first releases are decoded ahead", settings=lead)

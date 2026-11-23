@@ -14,6 +14,9 @@ a CUDA device and without an MPS daemon:
     before the receiver exists, an observer is stopped and restarted without a signal to the
     producer, and no arm reconfigures the receiver for the sensor;
   * the rule by which a concurrent arm may move the radio's tail, and the order of the controls;
+  * the rule by which the scores of the sensor beside the receiver are those of the sensor alone:
+    the same input bytes give the same score, two decodes that differ give logits within the
+    declared tolerance, and a decision that differs inside that bound is a flip at the threshold;
   * the tree: the paced loop of the tool, the build and the strings both sides share.
 """
 
@@ -288,6 +291,100 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(run_m1.control_settings("release_after_radio", radio_allowance_us=120), ({}, "after_radio", 120))
         with self.assertRaisesRegex(run_m1.LaunchError, "unknown contention control"):
             run_m1.control_settings("deeper_ring")
+
+
+THRESHOLD = -7.698940277099609  # the frozen threshold of the accepted artifact, as a decision line names it
+
+
+def scored(period, logit, given="a", drawn=None, threshold=THRESHOLD, present=None, episode="387b28319ca93c0d"):
+    """What the comparison of two arms reads of a scored decision: its window, its input, its score and its decision."""
+    return {"window": {"episode": episode, "period": period}, "score": {"logit": logit},
+            "decision": {"present": logit > threshold if present is None else present, "threshold_logit": threshold},
+            "input": {"sha256": given * 64}, "location": {"map": {"sha256": (drawn or given) * 64}}}
+
+
+class ScoreTests(unittest.TestCase):
+    """The sensor beside the receiver against the sensor alone: two decodes of one grid, compared by their input."""
+    TOLERANCE = 0.05
+
+    def judged(self, beside, alone):
+        return mp.decision_agreement(beside, alone, self.TOLERANCE)
+
+    def test_the_same_input_bytes_give_the_same_score(self):
+        lines = [scored(0, -9.25), scored(1, -7.5), scored(2, 3.0)]
+        made = self.judged(lines, copy.deepcopy(lines))
+        self.assertEqual((made["first"], made["second"], made["joined"], made["agree"], made["same_input"],
+                          made["same_input_same_logit"], made["same_input_same_map"], made["other_input"]),
+                         (3, 3, 3, 3, 3, 3, 3, 0))
+        self.assertEqual((made["largest_logit_difference"], made["flips"], made["problems"], made["same_input_tolerance"]),
+                         (0.0, [], [], mp.SAME_INPUT_LOGIT))
+        self.assertEqual(mp.SAME_INPUT_LOGIT, 1e-6)
+        # Inside the bound of a record that is read twice the logit need not be the same bits. The bound is inclusive.
+        near = self.judged([scored(0, 0.0)], [scored(0, 1e-6, drawn="b")])
+        self.assertEqual((near["same_input"], near["same_input_same_logit"], near["same_input_same_map"],
+                          near["problems"]), (1, 0, 0, []))
+        # Beyond it the sensor did not compute the same thing of the same bytes, far below the tolerance of two decodes.
+        apart = self.judged([scored(0, -7.365132736)], [scored(0, -7.366132736)])
+        self.assertEqual((apart["agree"], apart["beyond_tolerance"], apart["flips"]), (1, 1, []))
+        self.assertEqual(apart["problems"], ["window 387b28319ca93c0d/0: the same input bytes gave the logits "
+                                             "-7.365132736 and -7.366132736, 1.000e-03 apart (at most 1.0e-06)"])
+        self.assertEqual((apart["largest_logit_difference_same_input"], apart["largest_logit_difference_other_input"]),
+                         (apart["largest_logit_difference"], 0.0))
+
+    def test_two_decodes_that_differ_give_logits_within_the_declared_tolerance(self):
+        made = self.judged([scored(0, -9.0, "a"), scored(1, 2.0, "a")], [scored(0, -9.0035, "b"), scored(1, 2.0, "a")])
+        self.assertEqual((made["same_input"], made["other_input"], made["agree"], made["problems"]), (1, 1, 2, []))
+        self.assertAlmostEqual(made["largest_logit_difference"], 3.5e-3, places=12)
+        self.assertEqual((made["largest_logit_difference_same_input"], made["largest_logit_difference_other_input"]),
+                         (0.0, made["largest_logit_difference"]))
+        # Two decodes whose logits lie further apart than was declared, with the same decision: a failure all the same.
+        far = self.judged([scored(0, -9.0, "a")], [scored(0, -9.06, "b")])
+        self.assertEqual((far["agree"], far["beyond_tolerance"], far["flips"]), (1, 1, []))
+        self.assertIn("two decodes that differ gave the logits -9.000000000 and -9.060000000, 6.000e-02 apart (at most "
+                      "5.0e-02)", far["problems"][0])
+        # Windows are joined by episode and period: what one output did not score is compared with nothing.
+        fewer = self.judged([scored(0, 1.0), scored(1, 1.0), scored(2, 1.0)], [scored(0, 1.0), scored(2, 1.0)])
+        self.assertEqual((fewer["first"], fewer["second"], fewer["joined"], fewer["agree"]), (3, 2, 2, 2))
+        other = self.judged([scored(0, 1.0)], [scored(0, 1.0, episode="0f3628f56f151afb")])
+        self.assertEqual((other["joined"], other["problems"]), (0, []))
+
+    def test_a_flip_at_the_threshold_between_two_decodes_is_listed_and_is_no_failure(self):
+        # The window that the Spark measured (s41-spark-ecf8-20261123T161419Z, repetition 2): the usual decode lies
+        # 9.2e-05 below the frozen threshold, and the decode beside the receiver gave another input, 2.8e-03 higher.
+        beside, alone = -7.696203231811523, -7.699031829833984
+        made = self.judged([scored(1, -9.0), scored(2, beside, "9")], [scored(1, -9.0), scored(2, alone, "5")])
+        self.assertEqual((made["joined"], made["agree"], made["flips_at_threshold"], made["problems"]), (2, 1, 1, []))
+        self.assertEqual(made["flips"], [{"episode": "387b28319ca93c0d", "period": 2, "logits": [beside, alone],
+                                          "threshold_logit": THRESHOLD, "margins": [beside - THRESHOLD, alone - THRESHOLD],
+                                          "difference": abs(beside - alone), "same_input": False, "at_threshold": True}])
+        self.assertAlmostEqual(made["flips"][0]["margins"][0], 2.737e-3, places=6)
+        self.assertAlmostEqual(made["flips"][0]["margins"][1], -9.155e-5, places=8)
+        # A flip inside the bound lies within the bound of the threshold on both sides: nothing else can flip.
+        for flip in made["flips"]:
+            self.assertLessEqual(max(abs(margin) for margin in flip["margins"]), self.TOLERANCE)
+        # The same two logits from the same input bytes: the sensor gave two scores for one input, and that is none.
+        same = self.judged([scored(2, beside)], [scored(2, alone)])
+        self.assertEqual((same["agree"], same["flips_at_threshold"], same["flips"][0]["at_threshold"],
+                          same["flips"][0]["same_input"]), (0, 0, False, True))
+        self.assertEqual(len(same["problems"]), 1)
+        self.assertTrue(same["problems"][0].endswith("(at most 1.0e-06), and two decisions"), same["problems"])
+
+    def test_a_flip_away_from_the_threshold_or_one_the_logits_do_not_explain_is_a_failure(self):
+        # Two decodes on the two sides of the threshold, further apart than the declared tolerance.
+        made = self.judged([scored(0, THRESHOLD + 0.04, "a")], [scored(0, THRESHOLD - 0.04, "b")])
+        self.assertEqual((made["agree"], made["beyond_tolerance"], made["flips_at_threshold"]), (0, 1, 0))
+        self.assertEqual((made["flips"][0]["at_threshold"], len(made["problems"])), (False, 1))
+        self.assertIn("two decodes that differ gave the logits", made["problems"][0])
+        self.assertTrue(made["problems"][0].endswith("(at most 5.0e-02), and two decisions"))
+        # Two decisions although both logits lie on one side of the threshold: no decode explains that.
+        made = self.judged([scored(0, THRESHOLD + 0.002, "a")], [scored(0, THRESHOLD + 0.001, "b", present=False)])
+        self.assertEqual((made["flips"][0]["at_threshold"], made["flips_at_threshold"]), (False, 0))
+        self.assertEqual(made["problems"], ["window 387b28319ca93c0d/0: the decision differs, and the threshold "
+                                            "-7.698940 does not lie between the logits -7.696940277 and -7.697940277"])
+        # Two outputs that decide at two thresholds were not scored with one artifact.
+        made = self.judged([scored(0, -7.0, "a")], [scored(0, -7.0, "a", threshold=-6.5)])
+        self.assertEqual((made["flips"][0]["at_threshold"], len(made["problems"])), (False, 1))
+        self.assertIn("the two outputs decide at two thresholds", made["problems"][0])
 
 
 def inventory(clients, servers=(900,), devices=1, alive=True):
@@ -980,6 +1077,14 @@ class TreeTests(unittest.TestCase):
             self.assertEqual((ring["wait"], ring["slots"]), ("spin", sr.ring_spec(ring["window_records"],
                                                                                  ring["burst_records"])["slots"]))
         self.assertLessEqual(config["pacing"]["latest_start_us"], config["pacing"]["allowance_us"])
+        # The scores of two arms are compared by tolerance: no share of equal decisions is asked of two decodes.
+        expect = config["expect"]
+        self.assertNotIn("min_decision_agreement", expect)
+        self.assertEqual((expect["logit_tolerance"], expect["same_input_logit_tolerance"]), (0.05, mp.SAME_INPUT_LOGIT))
+        driver = (ROOT / "tests/integration/mps_pacing.py").read_text()
+        self.assertIn('agreement["joined"] >= 1 and not agreement["problems"]', driver)
+        self.assertIn('"decisions": (measured.get("concurrent") or {}).get("agreement"),', driver)
+        self.assertNotIn("min_decision_agreement", driver)
         phy, others = set(run_m1.parse_cpus(config["cpus"]["receiver"])), set()
         for role in ("sensor", "o2", "tools"):
             others |= set(run_m1.parse_cpus(config["cpus"][role]))

@@ -4,7 +4,7 @@ The contract of Sprint 4.1 (`mps_pacing`): the paced plan of the staged harness,
 
 **Status.** Accepted on the DGX Spark `spark-ecf8` on 2026-11-23 (UTC): `make accept-s4.1` passed at commit `3302329`, run `s41-spark-ecf8-20261123T140213Z`, on its third run. [What the accepted run measured](#what-the-accepted-run-measured) | [what the first Spark run showed](#what-the-first-spark-run-showed) | [what the second Spark run showed](#what-the-second-spark-run-showed)
 
-**After acceptance.** The accepted run measured what the first decode of a receiver process costs a schedule. A lead-in ahead of the schedule now takes that cost out of every release and every statistic and records it apart. It is built and unit tested, and it has not yet run on the Spark: `make accept-s4.1` runs it. [The cold start](#the-cold-start) | [the lead-in](#the-lead-in)
+**After acceptance.** The accepted run measured what the first decode of a receiver process costs a schedule. A lead-in ahead of the schedule now takes that cost out of every release and every statistic and records it apart. It ran on the Spark in the run `s41-spark-ecf8-20261123T161419Z` at commit `c00b707`: no release was skipped or overran in nine runs, and the first window of every run was scored. The gate of that run did not close. One check asked two decodes of one grid for equal decisions, and one window of 960, which lies 9.2e-05 from the threshold, decided otherwise beside the receiver. The check now compares the scores by the input the sensor was given. [The cold start](#the-cold-start) | [the lead-in](#the-lead-in) | [the scores of two decodes](#the-scores-of-two-decodes) | [what the run with the lead-in showed](#what-the-run-with-the-lead-in-showed)
 
 ## What the sprint adds
 
@@ -124,9 +124,35 @@ No arm slows, queues or reconfigures the receiver, and no arm enlarges a ring. T
 
 The rule compares the PUSCH service-time tail of the capture-only arm with that of the concurrent arm on the same offered schedule: `tail-shift-rule/v1` with a quantile, a least sample count, and an allowed shift that is the larger of an absolute term and a fraction of the base tail. The rule in `configs/integration/mps_pacing.json` (99th percentile, 1,000 samples, 25 us or 10 percent) has the status `proposed`: S4.6 declares the rule of the profile. With fewer samples than the rule needs it gives no verdict, and the gate says so. The first control whose shift does not exceed the rule is the control in effect. A control that this host or its MPS release lacks is a planned cell with its reason.
 
+## The scores of two decodes
+
+The check `concurrent same decisions` compares what `sense_host` scored beside the receiver with what it scored alone, from the records that the capture-only arm of the same repetition kept. The two arms read two decodes of one grid, and the receiver's estimate is not bit-reproducible between two decodes: [Sprint 5.2 measured that](NATIVE_ESTIMATE.md). A window is therefore compared by what its sensor was given, which the digest of its input says.
+
+| Window | Rule | Bound |
+|---|---|---|
+| Same input: both outputs name one digest | The sensor was given the same bytes and has to give the same score: the logits lie within the bound | `expect.same_input_logit_tolerance`, 1e-6, the bound of the live case of Sprint 3.6 for a record that is read twice |
+| Other input: the two decodes differ | The logits lie within the bound | `expect.logit_tolerance`, 0.05, as declared before the first run |
+| A decision that differs, inside the bound of its window | A flip at the threshold: the threshold lies between two logits that are at most the bound apart, so both lie within the bound of it. Listed with both logits and both margins, and no failure | The rule of the parity of Sprints 3.5 and 3.6 |
+| A decision that differs otherwise | A failure: the logits lie further apart than the bound, the threshold does not lie between them, or the two outputs name two thresholds | |
+
+The check passes when the two arms share a window and no window breaks a rule. Its line states the counts of both kinds of window, the largest difference of each, how many decide alike, and every flip. `mps_pacing.decision_agreement` is the rule, one call per repetition. `comparison.json` holds the result under `concurrent.agreement`, also when a later case fails, and the record holds it under `decisions`.
+
+**Why no share of equal decisions is asked.** Until the run with the lead-in the check required that every window decides alike in both arms (`expect.min_decision_agreement: 1.0`), and it computed the logit differences without grading them. That rule cannot hold on the entries this gate replays. The threshold of the artifact is frozen by the rule of Sprint 3.5 as the logit of one validation window, the target-absent window of rank 17, and this gate replays validation entries. So a window of this gate lies at the threshold by the rule that set it. The window 2 of the episode `387b28319ca93c0d` does: in its usual decode `sense_host` scores it at -7.699032, 9.2e-05 below the threshold of -7.698940, and no other window of the gate lies within 2e-03 of it. Its decision is decided by the last bits of the receiver's estimate. The gate does not read the freeze of Sprint 3.5, so that this is the window of rank 17 follows from its distance and is not proven here. 31 of 34 scorings of that window by `sense_host` in the four Spark runs had one input and that logit. Three had the input of another decode, with -7.699052, -7.699307 and -7.696203, and the last of them lies above the threshold. The three earlier runs passed the check because no two decodes of that window fell on two sides of the threshold, and not because the rule held. [What the run with the lead-in showed](#what-the-run-with-the-lead-in-showed)
+
+**What the rule adds.** The exact half is new and is stricter than the old rule: wherever the sensor was given the same bytes it must give the same score, beside the receiver as alone. That is the statement about the sensor under MPS, and the sensor outputs of the four Spark runs hold it in 3,040 of 3,040 windows. What is left to the tolerance is the receiver's own irreproducibility, which Sprint 5.2 recorded and which no arm of this sprint changes. The tolerance of 0.05 is the declared one and was not fitted: the largest difference that two decodes have shown is 3.68e-03 in 791 windows.
+
+**How it is checked.**
+
+| Where | What |
+|---|---|
+| `test_mps_pacing.py`, `ScoreTests` | The rule on decision lines: the same input with the same score, inside and beyond its bound; two decodes inside and beyond the tolerance; the flip the Spark measured, with its logits, listed and no failure; the same two logits from one input, a flip further apart than the tolerance, a flip the logits do not explain and two thresholds, each a failure |
+| `test_mps_pacing_driver.py` | The driver on a double that rewrites one score of a sensor so that its reader still accepts the output. Another logit for the same input bytes and another decode with a logit 0.2 away fail `concurrent same decisions`. A window 1e-03 above the threshold beside the receiver and 1e-03 below it alone, from two decodes, passes every case and is listed in the check and in the record |
+| `test_accept_s4_1.py` | What the gate script runs on the record, taken from the script: the scores in its line, a window that breaks the rule, a flip away from the threshold, and a record that was not written |
+| `make accept-s4.1` | The check `concurrent same decisions` on the three repetitions, and the same of the record |
+
 ## The record
 
-`mps_pacing.json` (`mps-pacing/v1`, `"graded": false`) holds, per launch of every arm: the label with its proof, the processes with their commands, CPUs, environments and whether they map a Python library, the counts of the pacer, the service times (median, 99th percentile, maximum), the account of each ring, the decisions and latencies of the sensor; and once: the cold start of the receiver, apart (`cold_start`, [the lead-in](#the-lead-in)); the frozen conditions (CPU sets, ring depths, wait modes, order of the arms, package and tool hashes, thermal readings), the contention result, the faults, the time-slicing control and the load: `scripted: true`, and no UE, no 5GC and no PRACH procedure attached.
+`mps_pacing.json` (`mps-pacing/v1`, `"graded": false`) holds, per launch of every arm: the label with its proof, the processes with their commands, CPUs, environments and whether they map a Python library, the counts of the pacer, the service times (median, 99th percentile, maximum), the account of each ring, the decisions and latencies of the sensor; and once: the cold start of the receiver, apart (`cold_start`, [the lead-in](#the-lead-in)); the scores of the sensor beside the receiver against the sensor alone, with the counts by repetition and every flip (`decisions`, [the scores of two decodes](#the-scores-of-two-decodes)); the frozen conditions (CPU sets, ring depths, wait modes, order of the arms, package and tool hashes, thermal readings), the contention result, the faults, the time-slicing control and the load: `scripted: true`, and no UE, no 5GC and no PRACH procedure attached.
 
 The paced receiver fixes the map between the radio clock and the host clock: the slot of an opportunity begins at its release time. Three latencies per window follow from it: from the release of its first slot to its decision, from the release of its last slot, and from the moment the receiver was done with its last slot. They are recorded beside the latency of the cuSense boundary (Sprint 3.6) and are not graded.
 
@@ -134,7 +160,7 @@ The paced receiver fixes the map between the radio clock and the host clock: the
 
 ## Gate
 
-`make accept-s4.1` (`scripts/accept_s4_1.sh`) on the DGX Spark that passed `make accept-s3.6`. It needs the accepted Sprint 3.6 run and the Sprint 3.5 run it names with its episode set, the patched receiver in `build/ocudu-spark-o3`, the environment of `make env-full` and `make core-env`, TensorRT and `nvidia-cuda-mps-control`. It rebuilds the adapter (not OCUDU), verifies the sensing core, and runs the driver in twelve cases: `build`, `control`, `mps`, `schedule`, `dsp_only`, `capture_only`, `ai_only`, `concurrent`, `contention`, `runtime`, `faults`, `records`. With the lead-in of its configuration it grades 45 checks, three more than the accepted run: one `lead-in` per arm with a receiver. It reads validation entries only. No held-out episode is read before S4.6 has frozen the profile.
+`make accept-s4.1` (`scripts/accept_s4_1.sh`) on the DGX Spark that passed `make accept-s3.6`. It needs the accepted Sprint 3.6 run and the Sprint 3.5 run it names with its episode set, the patched receiver in `build/ocudu-spark-o3`, the environment of `make env-full` and `make core-env`, TensorRT and `nvidia-cuda-mps-control`. It rebuilds the adapter (not OCUDU), verifies the sensing core, and runs the driver in twelve cases: `build`, `control`, `mps`, `schedule`, `dsp_only`, `capture_only`, `ai_only`, `concurrent`, `contention`, `runtime`, `faults`, `records`. With the lead-in of its configuration it grades 45 checks, three more than the accepted run: one `lead-in` per arm with a receiver. The check `concurrent same decisions` grades [the scores of two decodes](#the-scores-of-two-decodes). The gate script requires of the record that no window breaks that rule and that every flip lies at the threshold, and it names a record that the driver did not write, which is the case whenever a case before the last one failed. It reads validation entries only. No held-out episode is read before S4.6 has frozen the profile.
 
 ## What the accepted run measured
 
@@ -150,7 +176,7 @@ The paced receiver fixes the map between the radio clock and the host clock: the
 | Decodes | In each of `dsp_only`, `capture_only` and `concurrent`: 2,874 of 2,874 released grids gave the original bytes with a CRC pass on the resident CUDA path, without an anomaly. 6 of 2,880 releases were skipped and stay in the denominator |
 | Schedule | No job started before its release and no offset moved. A start lies 0.01 us after its release in the median and 0.03 us at the 99th percentile |
 | Export | `capture_only`: 2,874 records of each stage published, read and released, none dropped. `concurrent`: 2,874 estimates to `sense_host` and 2,874 O2 records to the delay-Doppler branch on the CPU, none dropped |
-| Decisions | 957 windows scored beside the receiver and, from the buffered records, by the sensor alone: 957 decide alike, and the largest logit difference is 2.26e-03 |
+| Decisions | 957 windows scored beside the receiver and, from the buffered records, by the sensor alone: 957 decide alike, and the largest logit difference is 2.26e-03. Graded by the rule of that run, equal decisions. By [the rule since](#the-scores-of-two-decodes) the same outputs give 450 windows with the same input and the same score bit for bit, and 507 on two decodes that differ |
 | Faults | `sense_host` killed 700 ms into the schedule: the receiver was never signalled, ended by itself and decoded 956 of 956 released grids; 416 estimates published, 540 without a credit dropped and counted, 8 pending at the cutoff. With `obs_tail` taking over: 951 of 951 decoded; 850 published, 101 dropped, 8 reclaimed with the closed epoch, and the new consumer kept 434 records of a new epoch |
 | Records | 43 processes of 17 launches with their command, CPUs, environment, times and status; `mps_pacing.json` with `"graded": false` |
 
@@ -238,7 +264,7 @@ Six decodes and 10 ms are proposed values, as the allowance is. The transient la
 | `test_mps_pacing_driver.py` | The driver on a double whose lead-in has a first decode of 1.3 ms: the cold start in the record and in no statistic. Three faults fail their checks: a tool that runs no lead-in, a release that is still the first use, a lead-in that ends inside its schedule. The same configuration without a lead-in grades none |
 | `make accept-s4.1` | Per arm with a receiver, the check `lead-in`: every decode of the lead-in gave the original bytes and was done before the first release, no release is the first use of its processor, and none of the first six releases of a schedule was skipped. The gate script requires the same of the record and counts the lines of `pacing/lead_in.jsonl` with `grep` |
 
-`pilot_ls.cpp` compiles against the pinned headers with and without the route to the estimate, and its lead-in has not run: the development host has no OCUDU build and no GPU. What the Spark has to show is that a receiver that decoded six grids 4 to 10 ms ago decodes its first release in its steady time, that closing and opening the observer of the receiver around the lead-in leaves the capture as it was, and the figures themselves.
+`pilot_ls.cpp` compiles against the pinned headers with and without the route to the estimate, and the development host has no OCUDU build and no GPU. Three things were open before the lead-in ran on the Spark, and the run `s41-spark-ecf8-20261123T161419Z` settled each: a receiver that decoded six grids 4 to 10 ms ago decodes its first release in its steady time, closing and opening the observer of the receiver around the lead-in leaves the capture as it was, and the figures themselves. [What the run with the lead-in showed](#what-the-run-with-the-lead-in-showed)
 
 ## What the first Spark run showed
 
@@ -261,13 +287,63 @@ Three things of that run are findings and no defects of the gate. They are recor
 - **The proposed tail rule decides inside its own noise.** The 99th percentile of the arm with the tap off, 246.1 us, lies 9.2 us above that of the capture-only arm, 236.9 us, which does more. The concurrent arm lies 27.1 us above capture only, against 25.0 us allowed, so `mps_priority` was applied and gave +11.3 us. The first run, on other cores, gave -13.2 us without a control. With 2,871 decodes per arm the rule of 25 us or 10 percent does not separate the sensor from the scatter between runs.
 - **No submission of the sensor overlapped a decode**, in 957 windows, as the section on the record explains. The 27.1 us are therefore no evidence of two clients on the device at one time.
 
+## What the run with the lead-in showed
+
+`make accept-s4.1` ran on `spark-ecf8` on 2026-11-23 (UTC), run `s41-spark-ecf8-20261123T161419Z` at commit `c00b707`, with the lead-in: 737 unit tests with none skipped, 99 adapter tests without a compiler warning, `pilot_ls` `844aa4be0802`. The driver graded 7 of 12 cases and 33 of 38 checks. One check failed, `concurrent same decisions`. The four cases behind it, `contention`, `runtime`, `faults` and `records`, run only when every arm before them ran clean. They were not run, so the record was not written and the gate was not accepted.
+
+**The lead-in did what it was built for.** Ten launches with a receiver, nine of them graded, each with a lead-in of six decodes.
+
+| What | Without a lead-in (accepted run) | With the lead-in (this run) |
+|---|---|---|
+| Releases skipped, per run of 960 | 2 | 0 |
+| Overruns of the allowance, per run | 1 | 0 |
+| Windows scored, per run of 320 | 319 | 320 |
+| Released grids decoded to the original bytes, per arm | 2,874 of 2,874 | 2,880 of 2,880 |
+| Releases that are the first use of the processor | one per run | none |
+| Samples left out of the service statistics | the first decode of every run | none |
+
+| Decode of the lead-in | Least | Median | Most |
+|---|---|---|---|
+| First | 1,268.3 us | 1,320.7 us | 1,578.4 us |
+| Second | 233.7 us | 242.8 us | 260.0 us |
+| Third | 194.9 us | 209.4 us | 211.1 us |
+| Fourth | 180.6 us | 186.0 us | 203.7 us |
+| Fifth | 180.2 us | 185.5 us | 198.0 us |
+| Sixth | 178.5 us | 183.5 us | 193.5 us |
+
+The lead-in was done 3,805 to 3,820 us before the first release. Behind it the first release of a schedule took 185.0 to 196.4 us, 189.6 us in the median, and the five behind it 190.7, 189.3, 194.6, 189.0 and 191.9 us in the median, against 189.9 us over all 8,640 releases: the transient of four decodes is no longer in the schedule. Of the first decode, 922 to 1,199 us are the decode stage and 327 to 434 us the demodulation. The capture is as it was: 2,880 records of each stage published, read and released in `capture_only`, 2,880 estimates to `sense_host` and 2,880 O2 records to the delay-Doppler branch in `concurrent`, none dropped, and 960 windows scored in each of the two arms with a sensor, without a gap. Five of 8,640 jobs started late, by 39.4 us at most, in the middle of their runs.
+
+Recorded, not graded: the PUSCH service time over 2,880 decodes per arm, with nothing left out, is 187.2 us in the median, 219.5 us at the 99th percentile and 443.4 us at most with the tap off, 186.3, 256.6 and 451.6 us with both stages exported, and 191.2, 259.3 and 448.9 us beside the sensor. The medians lie 7 to 12 us above those of the accepted run. That is a difference between runs of the gate that was there before the lead-in: the medians of single launches of these three arms were 180 to 192 us in the second run, 177 to 182 us in the accepted run and 184 to 192 us in this one.
+
+**The defect: a rule that asked two decodes for equal decisions.**
+
+- **What failed.** 960 windows were scored beside the receiver and alone: 959 decide alike. In the third repetition the window 2 of the episode `387b28319ca93c0d` scored -7.696203 beside the receiver and -7.699032 alone, 2.7e-03 above and 9.2e-05 below the threshold of -7.698940. The two inputs have two digests: two decodes of one grid.
+- **Why that window.** It lies at the threshold, and the threshold was set on a window of this set. The rule of Sprint 3.5 freezes the threshold as the logit of the validation target-absent window of rank 17, and this gate replays validation entries. Of the 320 windows it replays, one lies within 1e-03 of the threshold, two within 3.7e-03, the largest difference two decodes have shown, and four within 0.05.
+- **Why it is no defect of the lead-in, of the sensor or of MPS.** Over the four Spark runs the two arms scored 3,831 windows. 3,040 were given the same input bytes in both arms, and all 3,040 have the same logit and the same map, bit for bit. 791 were given two decodes that differ, and their logits lie within 3.68e-03. One of them is the flip.
+- **What was wrong in the gate.** The check required equal decisions in every window, and it did not grade the logit differences it computed, although the configuration declared a tolerance for them. The first rule cannot hold on these entries, and the second was missing. [The scores of two decodes](#the-scores-of-two-decodes) is the corrected rule. On the sensor outputs of all four runs it passes, with one listed flip.
+- **Why it reached the Spark.** `decision_agreement` had no unit case, and both sensors of the double are given the same records, so no rehearsal had ever compared two decodes. Both are added: four unit cases with the logits the Spark measured, two faults of the double that fail the check, and one condition, a flip at the threshold between two decodes, that the driver must pass and list.
+- **A record that was not written was reported with a traceback.** The gate script now says that the driver writes the record in its last case.
+
+| Run | Windows with the same input in both arms | Same logit and map, bit for bit | Windows with two decodes that differ | Largest logit difference | Flips |
+|---|---|---|---|---|---|
+| First, `013427Z` | 928 | 928 | 29 | 1.74e-03 | 0 |
+| Second, `030415Z` | 890 | 890 | 67 | 3.68e-03 | 0 |
+| Accepted, `140213Z` | 450 | 450 | 507 | 2.26e-03 | 0 |
+| With the lead-in, `161419Z` | 772 | 772 | 188 | 3.49e-03 | 1 |
+
+Two things of this run are findings for S4.6.
+
+- **How often two decodes differ depends on the launch.** Between the two arms of one repetition 7 to 224 of about 320 windows were given two inputs, 2 to 70 percent. A window is the mean of three records, and Sprint 5.2 found 3 of 48 records with other bytes.
+- **A decision within 4e-03 of the threshold is not reproducible on this receiver**, and the validation entries hold a window at the threshold by the rule that set it. Agreement of decisions on validation entries is stated with a tolerance or not at all.
+
 ## What the Spark has shown, and what it has not
 
 Nothing of this sprint could run where it was written, which has no GPU, no MPS and no OCUDU build. The three runs above showed each of these on the GB10.
 
 - **The paced loop of `pilot_ls`**, in 17 launches of the accepted run.
+- **The lead-in**, in ten launches of the run behind the accepted one: no release skipped, none overran, and the first window of every run scored.
 - **MPS on the GB10.** The release on the Spark answers `get_server_list`, `get_client_list`, `get_default_active_thread_percentage` and `get_default_client_priority`. The second run applied `mps_priority` to the sensor, with the variable in the environment of the sensor process; whether the server honours it was not separated from the scatter between runs.
 - **A consumer that takes over**, and a sensor that is killed, 700 ms into the schedule.
 - **Time slicing beside the daemon**: a labeled control, never labeled MPS.
 
-Not shown: `mps_thread_pct` and `release_after_radio` were never applied, because an earlier control or none was in effect. The proposed values, 500 us of allowance, 250 us of latest start, core 4 for the sensor and core 3 for the O2 reader, held in three runs and are still proposed. S4.6 declares them.
+Not shown: `mps_thread_pct` and `release_after_radio` were never applied, because an earlier control or none was in effect. With the lead-in the arms of the cases `contention`, `runtime`, `faults` and `records` have not run: a control arm, the reference sensor, both faults and time slicing. They are the paced loop of the arms that did run, with the lead-in ahead of it. The proposed values, 500 us of allowance, 250 us of latest start, core 4 for the sensor and core 3 for the O2 reader, held in three runs and are still proposed. S4.6 declares them.

@@ -134,7 +134,7 @@
     "published_live_inference_us": 241,
     "min_windows": 150,
     "max_skipped_releases": 10,
-    "min_decision_agreement": 1.0,
-    "logit_tolerance": 0.05
+    "logit_tolerance": 0.05,
+    "same_input_logit_tolerance": 1e-06
   }
 }
