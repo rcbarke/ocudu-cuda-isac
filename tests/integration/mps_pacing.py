@@ -944,12 +944,12 @@ def run_faults(setup, grader, readers):
         producer = [entry for entry in item.launch["processes"] if entry["role"] == "producer"][0]
         lost = state["dropped"] + state.get("reclaimed", 0) + state.get("pending", 0)
         whole = summary["decoded"] == released and producer["ended_by"] == "itself" and note["producer_alive_after"] \
-            and state["balanced"] and state["published"] + state["dropped"] == released
+            and note.get("clock") == "schedule_start" and state["balanced"] and state["published"] + state["dropped"] == released
         taken = len(item.archives["takeover"].records) if "takeover" in item.archives else None
         if kind == "consumer_restart":
             whole = whole and taken is not None and (taken >= 1 or setup.rehearsal)
         grader.check(name, kind, whole,
-                     f"sense_host {said} {note['after_ms']} ms after the receiver started: the receiver was never "
+                     f"sense_host {said} {note['after_ms']} ms after the start of the offered schedule: the receiver was never "
                      f"signalled, ended by itself and decoded {summary['decoded']} of {released} released grids with the "
                      f"original bytes; of the {state['eligible']} estimates {state['published']} were published and "
                      f"{state['dropped']} found no credit and were dropped and counted, {state.get('reclaimed', 0)} were "

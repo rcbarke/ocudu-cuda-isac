@@ -298,6 +298,7 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
         ended(killed, -9, "fault")
         statuses.pop(note["role"])
         record["fault"] = {"kind": note["kind"], "role": note["role"], "after_ms": note["after_ms"],
+                           "clock": "schedule_start", "clock_start_ns": killed["ended_ns"] - note["after_ms"] * 1_000_000,
                            "applied_ns": killed["ended_ns"], "pid": killed["pid"], "restarted": None,
                            "producer_alive_after": True}
         if note["restart"] is not None:

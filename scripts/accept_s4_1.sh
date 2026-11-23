@@ -315,9 +315,9 @@ print("mps_pacing.json holds %d launches; PUSCH service time, median / 99th perc
     arm=$(ls -d "$out"/arms/r0-concurrent 2>/dev/null | head -n 1)
     if [[ -n "$arm" ]] && "$python" -m ocudu_cuda_isac.sensing.cusense show "$arm/sensor" --window 0 \
             > "$run_dir/recovered.json" 2> "$run_dir/recovered.log"; then
-        releases=$(grep -c '"schema": "pace-release/v1"' "$arm/native/pacing/releases.jsonl" 2>> "$run_dir/recovered.log")
-        radio=$(grep -c '"outcome": "decoded"' "$arm/native/radio/radio.jsonl" 2>> "$run_dir/recovered.log")
-        skipped=$(grep -c '"outcome": "skipped"' "$arm/native/pacing/releases.jsonl" 2>> "$run_dir/recovered.log")
+        releases=$(grep -cE '"schema": ?"pace-release/v1"' "$arm/native/pacing/releases.jsonl" 2>> "$run_dir/recovered.log")
+        radio=$(grep -cE '"outcome": ?"decoded"' "$arm/native/radio/radio.jsonl" 2>> "$run_dir/recovered.log")
+        skipped=$(grep -cE '"outcome": ?"skipped"' "$arm/native/pacing/releases.jsonl" 2>> "$run_dir/recovered.log")
         shown=$("$python" -c 'import json, sys
 shown = json.load(open(sys.argv[1], encoding="utf-8"))
 window = shown["window"]

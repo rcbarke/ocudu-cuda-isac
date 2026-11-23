@@ -2419,7 +2419,13 @@ int run(int argc, char** argv)
     };
     // The offered schedule is fixed here, after every consumer attached and everything was
     // prepared, and nothing that happens below moves it.
-    pace->begin(isac_pacing::monotonic_ns() + static_cast<std::int64_t>(tap.pacing.start_delay_us) * 1000);
+    const std::int64_t schedule_start =
+        isac_pacing::monotonic_ns() + static_cast<std::int64_t>(tap.pacing.start_delay_us) * 1000;
+    // Said once, before the schedule exists and outside every timed interval: a launcher that injects
+    // a fault at a time of the schedule reads the start here (scripts/run_m1.py).
+    std::cout << "pilot_ls: schedule start " << schedule_start << " ns on the host monotonic clock, " << chosen.size()
+              << " releases" << std::endl;
+    pace->begin(schedule_start);
     for (std::size_t n = 0; n != chosen.size(); ++n) {
       const std::size_t  sequence = chosen[n];
       const allocation&  bound    = replay.scheduled(sequence);

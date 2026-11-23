@@ -13,8 +13,10 @@ releases every record and infers nothing. The launcher
   when one reading names every CUDA process of the arm as a client of the one server on the one
   device. A refusal carries the client list. The readings while the producer runs are two
   commands of the control interface each, and they stop with the first one that proves the label;
-  injects at most one fault: it ends a consumer at a given time after the producer started, and
-  may start another one in its place. It never signals the producer;
+  injects at most one fault: it ends a consumer at a given time after the start of the offered
+  schedule, which pilot_ls announces in its log after its preparation, and may start another
+  one in its place. A producer without a schedule is timed from its start. It never signals
+  the producer;
   ends nothing else before the producer has ended, and records what every process was: its
   command, its CPUs, what it added to its environment, its status, its times and whether it
   maps a Python library.
@@ -33,6 +35,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import signal
 import subprocess
@@ -50,6 +53,8 @@ MPS_CONTROL = "nvidia-cuda-mps-control"
 DEFAULT_MPS_DIR = ROOT / "build" / "mps"
 KINDS = ("pilot_ls", "sense_feed", "sense_host", "obs_tail", "presence", "cusense")
 FAULTS = ("consumer_exit", "consumer_restart")
+# What pilot_ls writes when its offered schedule is fixed: the start, on the host's monotonic clock.
+SCHEDULE_MARK = re.compile(r"^pilot_ls: schedule start (\d+) ns", re.MULTILINE)
 SPEC_FIELDS = {"schema", "arm", "label", "sharing", "producer", "consumers", "fault", "timeouts", "inventory_period_ms",
                "extra_clients"}
 PROCESS_FIELDS = {"role", "kind", "command", "cpus", "env", "cuda", "ready_file", "log", "python_path"}
@@ -91,7 +96,27 @@ class Host:
         time.sleep(seconds)
 
     def cpus(self):
-        return sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
+        """The CPUs of the machine that are online. Not the CPUs this process may run on: a
+        launcher that was itself moved to the tool cores still places a process on any core."""
+        try:
+            return parse_cpus(Path("/sys/devices/system/cpu/online").read_text().strip())
+        except (OSError, LaunchError):
+            return list(range(os.cpu_count() or 1))
+
+    def affinity(self, process):
+        """The CPUs a started process may run on, read back from the kernel, or None."""
+        try:
+            return sorted(os.sched_getaffinity(process.pid))
+        except (AttributeError, OSError):
+            return None
+
+    def schedule_start(self, log):
+        """The start of the offered schedule that a producer announced in its log, or None so far."""
+        try:
+            found = SCHEDULE_MARK.search(Path(log).read_text(errors="replace"))
+        except OSError:
+            return None
+        return int(found.group(1)) if found else None
 
     def spawn(self, command, log, env, cpus):
         """Start one process with its output in a log. cpus is the list it may run on, or an empty list."""
@@ -389,8 +414,13 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
         cpus = [cpu for cpu in parse_cpus(item["cpus"]) if cpu in available]
         log = directory / (item["log"] or f"{item['role']}.log")
         process = host.spawn(item["command"], log, _environment(base_env, spec, item, mps), cpus)
+        wanted = parse_cpus(item["cpus"])
+        applied = (host.affinity(process) or cpus) if cpus else None
+        if wanted and applied != wanted:
+            record["problems"].append(f"the {item['role']} process was asked for the CPUs {item['cpus']} and runs on "
+                                      f"{applied if applied else 'the CPUs of the launcher'}")
         entry = {"role": item["role"], "kind": item["kind"], "command": item["command"], "pid": process.pid,
-                 "cpus": {"requested": item["cpus"], "applied": cpus or None},
+                 "cpus": {"requested": item["cpus"], "applied": applied},
                  "env": dict(item["env"]), "cuda": item["cuda"], "log": log.name, "status": None,
                  "started_ns": host.now_ns(), "ready_ns": None, "ended_ns": None, "ended_by": None, "maps_python": None}
         record["processes"].append(entry)
@@ -464,6 +494,12 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
         producer, produced = start(spec["producer"])
         fault, applied = spec["fault"], False
         began = produced["started_ns"]
+        # The clock of a fault. A paced receiver prepares for seconds before its schedule starts,
+        # and a consumer that is ended in that time never attached: the fault is timed from the
+        # start of the offered schedule, which the producer announces. Another producer has none.
+        scheduled = spec["producer"]["kind"] == "pilot_ls"
+        producer_log = directory / (spec["producer"]["log"] or "producer.log")
+        fault_from = None if scheduled else began
         next_reading = began
         deadline = began + int(timeouts["run_s"] * 1e9)
         best, last_refusal = None, record["sharing"]["reason"]
@@ -477,10 +513,14 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
                     best = dict(made, t_monotonic_ns=found["t_monotonic_ns"])
                 else:
                     last_refusal = refused
-            if fault is not None and not applied and now >= began + fault["after_ms"] * 1_000_000:
+            if fault is not None and fault_from is None:
+                fault_from = host.schedule_start(producer_log)
+            if fault is not None and not applied and fault_from is not None \
+                    and now >= fault_from + fault["after_ms"] * 1_000_000:
                 applied = True
                 end(fault["role"], "fault")
                 note = {"kind": fault["kind"], "role": fault["role"], "after_ms": fault["after_ms"],
+                        "clock": "schedule_start" if scheduled else "producer_start", "clock_start_ns": fault_from,
                         "applied_ns": host.now_ns(), "pid": running[fault["role"]][1]["pid"], "restarted": None,
                         "producer_alive_after": producer.poll() is None}
                 if fault["restart"] is not None:
@@ -496,7 +536,9 @@ def launch(spec, directory, host=None, mps=None, base_env=None):
             host.sleep(min(0.01, spec["inventory_period_ms"] / 1000.0))
         reap("producer")
         if fault is not None and not applied:
-            record["problems"].append(f"the fault after {fault['after_ms']} ms was never applied: the producer ended first")
+            record["problems"].append(
+                f"the fault after {fault['after_ms']} ms was never applied: the producer ended first"
+                + ("" if fault_from is not None else ", and it announced no start of its schedule"))
 
         # ---- The consumers end on their own when the producer said that no record follows.
         deadline = host.now_ns() + int(timeouts["grace_s"] * 1e9)

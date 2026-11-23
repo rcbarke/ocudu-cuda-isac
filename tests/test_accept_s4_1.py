@@ -85,6 +85,16 @@ class AcceptS41Tests(unittest.TestCase):
         # A rehearsal cannot close the gate: the script requires a closed hardware gate of a run that was none.
         self.assertIn('grade["hardware_gate"] == "closed" and grade["rehearsal"] is False', text)
         self.assertIn('record["graded"] is not False', text)
+        # The second reader counts lines that the native tool writes without a space after the colon, and
+        # lines that a Python writer puts one in.
+        for pattern in ("""grep -cE '"schema": ?"pace-release/v1"'""", """grep -cE '"outcome": ?"decoded"'""",
+                        """grep -cE '"outcome": ?"skipped"'"""):
+            self.assertIn(pattern, text)
+        line = self.root / "line.jsonl"
+        line.write_text('{"outcome":"on_time","schema":"pace-release/v1"}\n{"outcome": "skipped", "schema": '
+                        '"pace-release/v1"}\n')
+        counted = subprocess.run(["grep", "-cE", '"schema": ?"pace-release/v1"', str(line)], capture_output=True, text=True)
+        self.assertEqual(counted.stdout.strip(), "2")
 
 
 if __name__ == "__main__":

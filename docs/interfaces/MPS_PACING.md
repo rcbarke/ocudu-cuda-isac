@@ -2,7 +2,7 @@
 
 The contract of Sprint 4.1 (`mps_pacing`): the paced plan of the staged harness, the release rule, the files a paced run writes, the launcher `scripts/run_m1.py` with its arms, the proof of the label MPS, the contention controls and the record `mps_pacing.json`. [Process layout and contention](../architecture/RUNTIME.md#process-layout) | [observation contract](OBSERVATION.md) | [ring](SNAPSHOT_RING.md) | [native sensing core](SENSE_CORE.md) | [sprint card](../dev/DEVELOPMENT.md#phase-s4)
 
-**Status.** Built, and not yet accepted. The portable half is graded here: the release rule in two languages, the paced book against the ledger of Sprint 2.4, the launcher on a fake host, and the driver as a rehearsal on a stand-in control (12 of 12 cases, 39 of 39 checks, hardware gate open). `make accept-s4.1` on the DGX Spark is the gate. [What only the Spark can show](#what-only-the-spark-can-show)
+**Status.** Built, and not yet accepted: the first run on the Spark passed 11 of 12 cases and showed three defects of the tooling, which are corrected. [What the first Spark run showed](#what-the-first-spark-run-showed) The portable half is graded here: the release rule in two languages, the paced book against the ledger of Sprint 2.4, the launcher on a fake host, and the driver as a rehearsal on a stand-in control (12 of 12 cases, 39 of 39 checks, hardware gate open). `make accept-s4.1` on the DGX Spark is the gate. [What only the Spark can show](#what-only-the-spark-can-show)
 
 ## What the sprint adds
 
@@ -89,11 +89,11 @@ The MPS control daemon of this checkout keeps its pipe and its log under `build/
 | `concurrent` | `pilot_ls`, paced, O2 and O3 on their rings | `sense_host` on O3; the reference sensor of Sprint 3.4 on O2, on the CPU, outside the PHY CPU set | receiver, sensor |
 | `concurrent_reference` | as `concurrent` | the cuSense-like branch on the reference sensor in the interpreter | receiver, reference sensor |
 
-Order of a launch. Every consumer is started first and must say that it is ready: a sensor loads its artifact, creates its CUDA context and warms its engine before the receiver exists. Then the producer starts, waits for the consumers of its rings and runs its schedule. Nothing is ended before the producer has ended. The receiver runs on the CPUs 5-9 and 15-19, `sense_host` on one core outside them, and no process is started with a shell.
+Order of a launch. Every consumer is started first and must say that it is ready: a sensor loads its artifact, creates its CUDA context and warms its engine before the receiver exists. Then the producer starts, waits for the consumers of its rings and runs its schedule. Nothing is ended before the producer has ended. The receiver runs on the CPUs 5-9 and 15-19, `sense_host` on one core outside them, and no process is started with a shell. The launcher places a process on any online CPU of the machine, whatever CPUs the launcher itself may run on, reads the affinity back from the kernel into the record, and names a process that does not run where it was asked as a problem of the arm.
 
 **The label MPS.** While the processes run, the launcher reads the server list and the client list of the control interface. An arm is labeled `mps` only when one reading names every CUDA process of the arm as a client of the one server on the one device. A refusal carries the list: `the sensor process 4242 is not a client of the MPS server 900: it shares the device by time slicing. Client list of the server 900: 4100`. A second server, a client that is no process of the arm and a device other than the daemon's are refused as well. An arm outside the daemon carries the label `time_slicing`, and the driver runs one as its own labeled control.
 
-**Faults.** One per arm at most: `consumer_exit` ends `sense_host` with SIGKILL at a given time after the producer started; `consumer_restart` then starts `obs_tail` in its place. The launcher never signals the producer. The gate requires that the receiver decodes every released grid and that what the ring lost is counted.
+**Faults.** One per arm at most: `consumer_exit` ends `sense_host` with SIGKILL at a given time after the start of the offered schedule; `consumer_restart` then starts `obs_tail` in its place. `pilot_ls` announces that start once, in its log, when its preparation is done and before the schedule exists (`pilot_ls: schedule start N ns on the host monotonic clock`), and the launcher reads it there. A producer without a schedule, `sense_feed`, is timed from its start. The record of the fault names its clock. The launcher never signals the producer. The gate requires that the receiver decodes every released grid and that what the ring lost is counted.
 
 ## Contention
 
@@ -119,6 +119,14 @@ The paced receiver fixes the map between the radio clock and the host clock: the
 ## Gate
 
 `make accept-s4.1` (`scripts/accept_s4_1.sh`) on the DGX Spark that passed `make accept-s3.6`. It needs the accepted Sprint 3.6 run and the Sprint 3.5 run it names with its episode set, the patched receiver in `build/ocudu-spark-o3`, the environment of `make env-full` and `make core-env`, TensorRT and `nvidia-cuda-mps-control`. It rebuilds the adapter (not OCUDU), verifies the sensing core, and runs the driver in twelve cases: `build`, `control`, `mps`, `schedule`, `dsp_only`, `capture_only`, `ai_only`, `concurrent`, `contention`, `runtime`, `faults`, `records`. It reads validation entries only. No held-out episode is read before S4.6 has frozen the profile.
+
+## What the first Spark run showed
+
+`make accept-s4.1` ran on `spark-ecf8` on 2026-11-23 (UTC), run `s41-spark-ecf8-20261123T013427Z` at commit `0799d7a`: 11 of 12 cases and 40 of 42 checks. The paced loop, MPS on the GB10, the engine beside the receiver, the takeover by `obs_tail` and the time-slicing control all ran. Three defects of this sprint's tooling showed, and none of the receiver, the ring or the sensor.
+
+- **The fault was timed from the start of the producer.** `pilot_ls` prepares for about eight seconds before its schedule starts, so a sensor that was ended 700 ms after the receiver started had never attached. In `consumer_exit` the receiver then waited 120 s for a consumer and ended with status 1; in both arms the sensor was gone before the receiver had a CUDA context, so no reading could name both and the label was refused. The fault is now timed from the announced start of the schedule.
+- **No process ran where it was asked.** The driver moves itself to the tool cores, and the launcher took the CPUs it may itself run on for the CPUs of the machine: every requested core was outside that set, no affinity was applied, and the receiver and the sensor inherited the tool cores 0-2 and 10-14. The record said so (`"applied": null`), and nothing graded it. The service times and latencies of that run are therefore those of the Cortex-A725 cores and are not the figures of this sprint. The launcher now places on any online CPU, reads the affinity back and fails an arm that is not placed.
+- **The second reader counted nothing.** The gate runner looked for `"schema": "pace-release/v1"` with a space, and the native tool writes none. The files held 960 releases, 2 skipped and 958 decoded radio records.
 
 ## What only the Spark can show
 

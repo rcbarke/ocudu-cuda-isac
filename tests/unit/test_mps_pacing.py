@@ -302,6 +302,8 @@ class FakeProcess:
         self.ready_at = None if behaviour.get("ready_ms") is None else host.now + behaviour["ready_ms"] * MS
         self.client_at = None if behaviour.get("client_ms") is None else host.now + behaviour["client_ms"] * MS
         self.ready_file = command[command.index("--ready-file") + 1] if "--ready-file" in command else None
+        # A paced receiver announces the start of its schedule when its preparation is done.
+        self.schedule_at = None if behaviour.get("schedule_ms") is None else host.now + behaviour["schedule_ms"] * MS
 
     def poll(self):
         return self.status if self.end is not None and self.host.now >= self.end else None
@@ -334,6 +336,16 @@ class FakeHost(run_m1.Host):
 
     def cpus(self):
         return list(range(20))
+
+    def affinity(self, process):
+        return list(process.cpus)
+
+    def schedule_start(self, log):
+        for process in self.processes:
+            if Path(process.command[0]).name == "pilot_ls" and process.schedule_at is not None \
+                    and self.now >= process.schedule_at - 50 * MS:
+                return process.schedule_at
+        return None
 
     def spawn(self, command, log, env, cpus):
         process = FakeProcess(self, self.next_pid, list(command), dict(env), list(cpus),
@@ -387,7 +399,7 @@ def concurrent_spec(fault=None, sensor_env=None, producer_env=None, sharing="mps
                            {"ready_s": 5, "run_s": 60, "grace_s": 5}, 100)
 
 
-BEHAVIOUR = {"pilot_ls": {"life_ms": 3000, "client_ms": 250}, "sense_host": {"life_ms": 3400, "ready_ms": 700,
+BEHAVIOUR = {"pilot_ls": {"life_ms": 3000, "client_ms": 250, "schedule_ms": 400}, "sense_host": {"life_ms": 3400, "ready_ms": 700,
                                                                             "client_ms": 300},
              "obs_tail": {"life_ms": 3350}, "sense_feed": {"life_ms": 2000}, "python": {"life_ms": 3400, "ready_ms": 900,
                                                                                          "client_ms": 500}}
@@ -459,7 +471,9 @@ class LauncherTests(unittest.TestCase):
         note = record["fault"]
         self.assertEqual((note["kind"], note["role"], note["producer_alive_after"]), ("consumer_restart", "sensor", True))
         self.assertEqual((by_role["sensor"]["ended_by"], by_role["sensor"]["status"]), ("fault", -9))
-        self.assertGreaterEqual(note["applied_ns"], by_role["producer"]["started_ns"] + 1000 * MS)
+        # The fault is timed from the start of the schedule that the receiver announced, not from its start.
+        self.assertEqual((note["clock"], note["clock_start_ns"]), ("schedule_start", by_role["producer"]["started_ns"] + 400 * MS))
+        self.assertGreaterEqual(note["applied_ns"], note["clock_start_ns"] + 1000 * MS)
         # The producer was never signalled: it ended by itself, with its own status, after its whole life.
         producer = [process for process in self.host.processes if Path(process.command[0]).name == "pilot_ls"][0]
         self.assertFalse(producer.killed)
@@ -473,6 +487,24 @@ class LauncherTests(unittest.TestCase):
         record = self.launch(concurrent_spec({"kind": "consumer_exit", "role": "sensor", "after_ms": 1500, "restart": None}))
         self.assertEqual((record["fault"]["restarted"], record["fault"]["producer_alive_after"]), (None, True))
         self.assertEqual([entry["status"] for entry in record["processes"] if entry["role"] == "producer"], [0])
+        # A receiver that prepares for eight seconds: the sensor is not ended while it prepares, so it is attached
+        # and both are clients in one reading before the fault, which comes 700 ms into the schedule.
+        slow = dict(BEHAVIOUR, pilot_ls={"life_ms": 10000, "client_ms": 1200, "schedule_ms": 8000},
+                    sense_host={"life_ms": 11000, "ready_ms": 700, "client_ms": 300}, obs_tail={"life_ms": 10500})
+        record = self.launch(concurrent_spec({"kind": "consumer_exit", "role": "sensor", "after_ms": 700, "restart": None}),
+                             slow)
+        by_role = {entry["role"]: entry for entry in record["processes"]}
+        self.assertGreaterEqual(record["fault"]["applied_ns"], by_role["producer"]["started_ns"] + 8700 * MS)
+        self.assertEqual((record["sharing"]["label"], sorted(record["sharing"]["proof"]["roles"])),
+                         ("mps", ["producer", "sensor"]))
+        self.assertLess(record["sharing"]["proof"]["t_monotonic_ns"], record["fault"]["applied_ns"])
+        self.assertTrue(run_m1.clean(record, allow=("sensor",)))
+        # A producer that announces no schedule: the fault is not applied, and the record says why.
+        silent = dict(BEHAVIOUR, pilot_ls={"life_ms": 3000, "client_ms": 250})
+        record = self.launch(concurrent_spec({"kind": "consumer_exit", "role": "sensor", "after_ms": 700, "restart": None}),
+                             silent)
+        self.assertIsNone(record["fault"])
+        self.assertIn("it announced no start of its schedule", record["problems"][0])
         # A fault that would come after the end of the producer is a problem, not a silent pass.
         record = self.launch(concurrent_spec({"kind": "consumer_exit", "role": "sensor", "after_ms": 9000, "restart": None}))
         self.assertIn("was never applied", record["problems"][0])

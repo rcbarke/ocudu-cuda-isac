@@ -160,7 +160,7 @@ class DriverTests(unittest.TestCase):
         for text in ("12 opportunities, one release each, over 17.0 ms of offered schedule with distances of 500, 4000, "
                      "5000 us", "24 of 24 released grids gave the original bytes", "0 of 24 offered releases were skipped",
                      "8 decide alike, 0 flip(s)", "the control in effect is mps_default",
-                     "sense_host is killed 700 ms after the receiver started: the receiver was never signalled",
+                     "sense_host is killed 700 ms after the start of the offered schedule: the receiver was never signalled",
                      "carries the label time_slicing and never MPS", "is no client of the server, and the label is refused",
                      "1 held-out pairs of the set are not read by this gate"):
             self.assertIn(text, lines, text)
