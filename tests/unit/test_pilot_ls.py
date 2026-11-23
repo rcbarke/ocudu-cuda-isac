@@ -779,7 +779,26 @@ class TreeTests(unittest.TestCase):
         control = (ROOT / "native/ocudu_adapter/receiver/replay_pusch.cpp").read_text()
         start = "/// One PUSCH processor of the pinned source, created as the pinned test creates it."
         end = "/// What the decoder itself said about one decode, for the radio record."
-        self.assertEqual(tool[tool.index(start):tool.index(end)], control[control.index(start):control.index(end)])
+        mine, theirs = tool[tool.index(start):tool.index(end)], control[control.index(start):control.index(end)]
+        # Sprint 4.1 changed one thing in the wrapper of this tool: the notifier of a decode may be arranged before
+        # a paced run, so that its start allocates nothing. Without those lines the wrapper is that of the control.
+        arrange = mine[mine.index("  /// Before a paced run: the notifier of a decode"):mine.index("  void start(const request& job")]
+        self.assertIn("void arrange(std::uint64_t token, completion_sink& sink)", arrange)
+        mine = mine.replace(arrange, "")
+        for paced, plain in (
+                ("    // A paced run arranged the notifier of this decode before its first fill. Every other run makes it "
+                 "here.\n"
+                 "    auto known = notifiers.find(job.token);\n"
+                 "    if (known == notifiers.end()) {\n"
+                 "      known = notifiers.emplace(job.token, std::make_unique<job_notifier>(job.token, sink)).first;\n"
+                 "    }\n"
+                 "    if (!known->second->claim()) {\n",
+                 "    const auto inserted = notifiers.emplace(job.token, std::make_unique<job_notifier>(job.token, sink));\n"
+                 "    if (!inserted.second) {\n"),
+                ("                       *known->second,\n", "                       *inserted.first->second,\n")):
+            self.assertEqual(mine.count(paced), 1, paced)
+            mine = mine.replace(paced, plain)
+        self.assertEqual(mine, theirs)
         self.assertIn('name == "cuda" ? "gpu" : "auto"', tool)
         self.assertEqual(tool.count("const joined_workers "), 3)
         # The tap is named in every radio record and the replay plan stays the control plan.

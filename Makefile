@@ -1,5 +1,5 @@
 PYTHON ?= python3
-.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 accept-s3.5 accept-s3.6 accept-s5.2 native-deps native-build native-build-o3 adapter-build adapter-build-o3 core-env core-env-tensorrt core-probe core-build core-build-host episode-pair episode-set paper-baseline spark-baseline
+.PHONY: help env pins hydrate test smoke check env-full accept-s0 accept-s1 accept-s1.1 accept-s1.2 accept-s2 accept-s2.1 accept-s2.2 accept-s2.3 accept-s2.4 accept-s3.1 accept-s3.2 accept-s3.3 accept-s3.4 accept-s3.5 accept-s3.6 accept-s4.1 accept-s5.2 mps-start mps-status mps-stop native-deps native-build native-build-o3 adapter-build adapter-build-o3 core-env core-env-tensorrt core-probe core-build core-build-host episode-pair episode-set paper-baseline spark-baseline
 
 help:
 	@echo "make env             Create the local isac virtual environment"
@@ -25,6 +25,8 @@ help:
 	@echo "make accept-s5.2     Build the patched receiver from its own tree and the adapter with the O3 route, export the receiver's CUDA channel estimate on the plans of the accepted Sprint 3.1 run, compare it with the matched estimator and the decodes with the unpatched build, grade and archive (S31_RUN=, JOBS=8)"
 	@echo "make accept-s3.5     Run the cuSense-like branch on the receiver's own estimate: fit the background template and the z-score on the training trajectories of the episode set of the accepted Sprint 3.4 run, train the location map and the presence logit, freeze one artifact per input entry, score held-out records in a second CUDA process and offline, grade and archive (S34_RUN=, S52_RUN=, EPISODE_SET=)"
 	@echo "make accept-s3.6     Build the native sensing core with its CUDA kernels and its TensorRT engine, run it beside the reference on the held-out records of the accepted Sprint 3.5 run, record parity and latency, grade and archive (S35_RUN=)"
+	@echo "make accept-s4.1     Run the receiver and the sensor as two MPS clients on one GPU: rebuild the adapter with the pacing core, pace the staged harness on absolute release times, launch the arms tap off, capture only, buffered records and concurrent with scripts/run_m1.py on validation entries, record service times and tails, grade and archive (S36_RUN=, S35_RUN=)"
+	@echo "make mps-start       Start the MPS control daemon of this checkout under build/mps (mps-status reads it, mps-stop ends it)"
 	@echo "make core-env        Install ONNX, ONNX Runtime and pybind11 in isac for the export and the binding of the sensing core (pins: environments/sense-core-constraints.txt)"
 	@echo "make core-env-tensorrt Install the TensorRT wheel for CUDA 13 in isac and fetch the headers of its release: for a host without a package installation of TensorRT"
 	@echo "make core-probe      Checkpoint D0: find TensorRT and build and run a one-layer engine on this GPU"
@@ -151,6 +153,27 @@ accept-s3.5:
 # twin with core-build-host and rehearses the driver: docs/interfaces/SENSE_CORE.md.
 accept-s3.6:
 	bash scripts/accept_s3_6.sh $(if $(S35_RUN),--s35-run $(S35_RUN))
+
+# Sprint 4.1 gate: the receiver and the sensor as two processes and two MPS clients on one GPU. It
+# rebuilds the adapter with the O3 route and the pacing core against the patched receiver in
+# build/ocudu-spark-o3, which it never rebuilds, verifies the sensing core of Sprint 3.6, starts
+# an MPS control daemon of its own under build/mps and ends it again. The controls are the
+# accepted Sprint 3.6 run, the newest or S36_RUN, and the Sprint 3.5 run it names, or S35_RUN.
+# There is no rehearsal target: tests/unit/test_mps_pacing_driver.py rehearses the driver on a
+# host without a GPU.
+accept-s4.1:
+	bash scripts/accept_s4_1.sh $(if $(S36_RUN),--s36-run $(S36_RUN)) $(if $(S35_RUN),--s35-run $(S35_RUN))
+
+# The MPS control daemon that the launcher of Sprint 4.1 uses: its pipe and its log lie under
+# build/mps, apart from any daemon of the system.
+mps-start:
+	$(PYTHON) scripts/run_m1.py mps start
+
+mps-status:
+	$(PYTHON) scripts/run_m1.py mps status
+
+mps-stop:
+	$(PYTHON) scripts/run_m1.py mps stop
 
 # What the sensing core adds to isac. Both use the interpreter of isac, and both honour
 # PIP_CONSTRAINT: environments/sense-core-constraints.txt names the versions that were exercised.

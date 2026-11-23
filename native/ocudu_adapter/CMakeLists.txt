@@ -49,6 +49,9 @@ enable_testing()
 add_subdirectory(fixtures)
 add_subdirectory(replay)
 add_subdirectory(receiver)
+# Sprint 4.1: the pacing core, C++17 on the CPU with no OCUDU include. It reads the outcome rule and
+# the job record of receiver/ and leaves that core as it was accepted. pilot_ls links it.
+add_subdirectory(pacing)
 # The observation ring is a library of its own, outside this directory: C++17 on the CPU with no
 # OCUDU include. It is built here with its own flags, so that the producer glue links the library
 # that its unit cases ran against.

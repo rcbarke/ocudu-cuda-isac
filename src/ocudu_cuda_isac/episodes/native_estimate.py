@@ -252,8 +252,11 @@ def capture_violations(line):
     return found
 
 
-def open_output(directory):
+def open_output(directory, schema=NATIVE_SCHEMA):
     """Verify a native output of a plan of version 3 and return it.
+
+    schema is the report schema of this ticket unless a later plan version names its own (a run
+    of Sprint 4.1 writes the same files under the schema of its plan version).
 
     Everything a plan of version 2 writes is verified as Sprint 3.2 verifies it. With an estimate,
     estimate/ holds one account line per decode of the producing backend that was started, in the
@@ -265,7 +268,7 @@ def open_output(directory):
     """
     directory = Path(directory)
     try:
-        base = sr.open_output(directory, schema=NATIVE_SCHEMA)
+        base = sr.open_output(directory, schema=schema)
         report = base.report
         estimate, route = report["estimate"], report["o3_route"]
     except SnapshotRingError as error:

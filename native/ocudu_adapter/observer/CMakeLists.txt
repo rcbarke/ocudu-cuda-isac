@@ -59,6 +59,9 @@ if(TARGET ocudu_pin_fixture)
   # Sprint 5.2: the host-free capture core of estimate/. Every build links it and reads a plan of
   # version 3 with it. The device side, estimate_tap.h, is compiled only with ISAC_O3_ROUTE.
   target_link_libraries(pilot_ls PRIVATE estimate_core)
+  # Sprint 4.1: the host-free pacing core of pacing/. Every build links it and reads a plan of
+  # version 4 with it.
+  target_link_libraries(pilot_ls PRIVATE pacing_core)
   if(ISAC_O3_ROUTE)
     if(NOT "ENABLE_CUDA" IN_LIST OCUDU_PIN_CXX_DEFINES)
       message(FATAL_ERROR "ISAC_O3_ROUTE needs an OCUDU build with ENABLE_CUDA: the estimate is produced on the device.")
@@ -97,6 +100,10 @@ if(TARGET ocudu_pin_fixture)
   # Which receiver the tool is linked against. With the route it calls the accessor of the
   # receiver patch, so the test also shows that the patched objects are the linked ones. It starts
   # no work on a device.
+  # The plan version with an offered schedule that this build reads. It starts no work on a device.
+  add_test(NAME pilot_ls_pacing COMMAND pilot_ls --pacing)
+  set_tests_properties(pilot_ls_pacing PROPERTIES
+    PASS_REGULAR_EXPRESSION "pilot_ls pacing: pilot-ls-plan/v4, absolute releases on the host monotonic clock")
   add_test(NAME pilot_ls_o3_route COMMAND pilot_ls --route)
   if(ISAC_O3_ROUTE)
     set_tests_properties(pilot_ls_o3_route PROPERTIES

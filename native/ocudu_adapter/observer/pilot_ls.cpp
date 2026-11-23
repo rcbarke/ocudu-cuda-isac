@@ -60,6 +60,19 @@
 // the host-free core of estimate/ (estimate_core.h) and its device calls in estimate_tap.h, which
 // exists only in the build against the patched receiver (ISAC_O3_ROUTE). Every other build
 // refuses a plan that names an estimate.
+//
+// Sprint 4.1 (mps_pacing) adds the plan version pilot-ls-plan/v4, with one object, pacing. It
+// names the offered schedule of a paced run: one absolute release time per opportunity on the
+// host's monotonic clock, a processing allowance and a latest start. A paced run is a timed run
+// in which the harness behaves as a scripted receiver. The grid of an opportunity is filled
+// ahead of its slot, the tap and the decodes start at the release time and never before it, a
+// release the harness could not start in time is skipped, recorded under its key and counted,
+// and no release time ever moves. From the admission of a ready grid to the decoder's callback
+// the harness itself allocates nothing and takes no lock: every decode is named before the first
+// fill in the paced book of the host-free pacing core (pacing/pacing_core.h), the notifier of
+// every decode exists before the run, and the dispatch thread asks an atomic flag for the
+// completion. The ledger of Sprint 2.4 is not used by a paced run and is not edited. The run
+// writes DIR/pacing/releases.jsonl, one pace-release/v1 line per opportunity, after its drain.
 // Built out of the OCUDU tree against the accepted Sprint 1.1 build, and a second time against
 // the patched build of Sprint 5.2. ASCII only.
 
@@ -68,6 +81,7 @@
 #include "grant_pdu.h"
 #include "obs/ring.h"
 #include "obs_publisher.h"
+#include "pacing_core.h"
 #include "observer_core.h"
 #include "observer_plan.h"
 #include "pinned_grid.h"
@@ -141,6 +155,11 @@ namespace {
 constexpr const char* NATIVE_SCHEMA  = "pilot-ls-native/v1";
 constexpr const char* NATIVE_SCHEMA_2 = "pilot-ls-native/v2"; // of a pilot-ls-plan/v2 run
 constexpr const char* NATIVE_SCHEMA_3 = "pilot-ls-native/v3"; // of a pilot-ls-plan/v3 run
+constexpr const char* NATIVE_SCHEMA_4 = "pilot-ls-native/v4"; // of a pilot-ls-plan/v4 run
+constexpr const char* RELEASE_SCHEMA  = "pace-release/v1";
+constexpr const char* PACING_SCHEMA   = "pace-report/v1";
+constexpr const char* PACING_DIR      = "pacing";
+constexpr const char* RELEASES_FILE   = "releases.jsonl";
 constexpr const char* ESTIMATE_DIR    = "estimate";
 constexpr const char* CAPTURE_SCHEMA  = "o3-capture/v1";
 constexpr const char* RING_DIR        = "ring";
@@ -510,7 +529,8 @@ void usage()
                "                [--phy-debug]\n"
                "       pilot_ls --self-test\n"
                "       pilot_ls --route\n"
-               "Decodes the receiver replay that a pilot-ls-plan/v1, v2 or v3 file names, as replay_pusch does, and with\n"
+               "       pilot_ls --pacing\n"
+               "Decodes the receiver replay that a pilot-ls-plan/v1, v2, v3 or v4 file names, as replay_pusch does, and with\n"
                "the tap \"pilot_ls\" exports the stage O2 from every ready grid before it is decoded:\n"
                "" << isac_observer::RULE << " on the pilots of the grant's sensing source. It writes\n"
                "  DIR/ingress/ingress.jsonl  one o1-grid/v1 descriptor per opportunity\n"
@@ -536,11 +556,17 @@ void usage()
                "                              device holds it (mode audit)\n"
                "  DIR/estimate/NNNN.o3.mask   its validity bits (mode audit)\n"
                "  DIR/estimate/ring.json      the ring of the O3 stream, DIR/estimate/STREAM.sock, when the plan names one\n"
+               "A pilot-ls-plan/v4 file may name the offered schedule of a paced run, in the mode timed: the grid of\n"
+               "an opportunity is filled ahead of its slot, the tap and the decodes start at its absolute release\n"
+               "time, a release that could not start within its latest start is skipped and counted, and no release\n"
+               "time moves:\n"
+               "  DIR/pacing/releases.jsonl   one pace-release/v1 line per opportunity: released, started, done\n"
                "DIR must exist and must not hold a result. --only repeats named opportunities of the plan exactly.\n"
                "--phy-debug prints the path decision of the pinned processor for every PDU.\n"
                "--self-test decodes a two-block grant through the host processor with the tap off and on, and once\n"
                "more in the mode timed through a ring.\n"
                "--route prints whether this build has the route to the estimate of the patched receiver.\n"
+               "--pacing prints the plan version with the offered schedule that this build reads.\n"
                "Exit status 2 for a refused plan, 1 for a decode without a completion or any other error.\n";
 }
 
@@ -557,6 +583,14 @@ class job_notifier final : public ocudu::pusch_processor_result_notifier
 {
 public:
   job_notifier(std::uint64_t token_, completion_sink& sink_) : token(token_), sink(sink_) {}
+
+  /// True for the one start of the decode this notifier belongs to. Dispatch thread only.
+  bool claim()
+  {
+    const bool first = !claimed;
+    claimed          = true;
+    return first;
+  }
 
   void on_uci(const ocudu::pusch_processor_result_control& /*uci*/) override {}
 
@@ -586,6 +620,7 @@ private:
   completion_sink&                   sink;
   mutable std::mutex                 mutex;
   bool                               reported = false;
+  bool                               claimed  = false;
   ocudu::pusch_processor_result_data sch;
 };
 
@@ -637,6 +672,15 @@ public:
   /// Names the PDU of the next decode of an opportunity. Called by the dispatch thread before the start.
   void expect(const std::string& opportunity_id, const decode_setup& setup) { setups[opportunity_id] = setup; }
 
+  /// Before a paced run: the notifier of a decode that is started later, so that its start
+  /// allocates nothing. sink is where every completion of that decode is reported.
+  void arrange(std::uint64_t token, completion_sink& sink)
+  {
+    if (!notifiers.emplace(token, std::make_unique<job_notifier>(token, sink)).second) {
+      throw std::runtime_error("the decode " + std::to_string(token) + " of " + label + " was arranged before");
+    }
+  }
+
   void start(const request& job, completion_sink& sink) override
   {
     const auto found = setups.find(job.key.opportunity_id);
@@ -649,14 +693,18 @@ public:
     if (!buffer.is_valid()) {
       throw std::runtime_error("the receive buffer pool has no buffer for " + job.key.text());
     }
-    const auto inserted = notifiers.emplace(job.token, std::make_unique<job_notifier>(job.token, sink));
-    if (!inserted.second) {
+    // A paced run arranged the notifier of this decode before its first fill. Every other run makes it here.
+    auto known = notifiers.find(job.token);
+    if (known == notifiers.end()) {
+      known = notifiers.emplace(job.token, std::make_unique<job_notifier>(job.token, sink)).first;
+    }
+    if (!known->second->claim()) {
       throw std::runtime_error("the decode " + job.key.text() + " was started before");
     }
     // The same owned grid for every backend: the reader of the pinned resource grid of this ticket.
     processor->process(ocudu::span<std::uint8_t>(job.output, job.output_bytes),
                        std::move(buffer),
-                       *inserted.first->second,
+                       *known->second,
                        grids.at(job.grid.grid)->ocudu_grid().get_reader(),
                        setup.pdu);
   }
@@ -1242,6 +1290,12 @@ int run(int argc, char** argv)
       self_check = true;
     } else if (arg == "--phy-debug") {
       phy_debug = true;
+    } else if (arg == "--pacing") {
+      // What a launcher asks before it writes a plan with an offered schedule. No device is touched.
+      std::cout << "pilot_ls pacing: " << isac_observer::TAP_PLAN_SCHEMA_V4
+                << ", absolute releases on the host monotonic clock, paced book without an allocation per decode"
+                << std::endl;
+      return 0;
     } else if (arg == "--route") {
 #ifdef ISAC_O3_ROUTE
       // The accessor is defined by the receiver patch: this line links only against the patched objects.
@@ -1282,8 +1336,9 @@ int run(int argc, char** argv)
   const std::string observer_path = output_dir + "/" + OBSERVER_DIR;
   const std::string ring_path     = output_dir + "/" + RING_DIR;
   const std::string estimate_path = output_dir + "/" + ESTIMATE_DIR;
+  const std::string pacing_path   = output_dir + "/" + PACING_DIR;
   if (exists(report_path) || exists(ingress_path) || exists(radio_path) || exists(observer_path) || exists(ring_path) ||
-      exists(estimate_path)) {
+      exists(estimate_path) || exists(pacing_path)) {
     throw input_error("the output directory already holds a result. Evidence is never overwritten.");
   }
 
@@ -1388,6 +1443,26 @@ int run(int argc, char** argv)
                       "adapter build against the patched receiver (python scripts/native_adapter.py build --o3)");
 #endif
   }
+  // ---- The offered schedule of a plan of version 4. Its length is checked once the replay is read. ----
+  const bool            paced = tap.pacing.present;
+  isac_pacing::schedule offered;
+  if (paced) {
+    if (!timed) {
+      throw input_error("a paced run is a timed run: the plan names an offered schedule and the evidence mode audit");
+    }
+    if (tap.pacing.clock != isac_observer::PACING_CLOCK) {
+      throw input_error(std::string("pacing.clock is \"") + isac_observer::PACING_CLOCK + "\"");
+    }
+    if (!only.empty()) {
+      throw input_error("--only selects opportunities, and a paced run offers every release of its schedule");
+    }
+    offered.allowance_ns    = static_cast<std::int64_t>(tap.pacing.allowance_us) * 1000;
+    offered.latest_start_ns = static_cast<std::int64_t>(tap.pacing.latest_start_us) * 1000;
+    for (const std::uint64_t offset : tap.pacing.release_us) {
+      offered.release_ns.push_back(static_cast<std::int64_t>(offset) * 1000);
+    }
+    isac_pacing::check(offered);
+  }
   if (tap.replay_plan.sha256.empty()) {
     throw input_error("the replay plan is bound by no hash");
   }
@@ -1441,6 +1516,10 @@ int run(int argc, char** argv)
     throw input_error("the carrier grid of the channel plan is not one the pinned receiver decodes (at most " +
                       std::to_string(ocudu::MAX_PORTS) + " ports, " + std::to_string(ocudu::MAX_NSYMB_PER_SLOT) +
                       " symbols, at most " + std::to_string(ocudu::MAX_NOF_SUBCARRIERS) + " subcarriers)");
+  }
+  if (paced && offered.release_ns.size() != spec.opportunities.size()) {
+    throw input_error("pacing.release_us names " + std::to_string(offered.release_ns.size()) + " releases, and the replay "
+                      "holds " + std::to_string(spec.opportunities.size()) + " opportunities: one release each");
   }
   // The channel rules of Sprint 2.3: the gain, every array against its hash, every binding.
   const session     replay(spec);
@@ -1615,6 +1694,17 @@ int run(int argc, char** argv)
   pinned_grid second(*factory, shape.rx_ports, ocudu::MAX_NSYMB_PER_SLOT, ocudu::MAX_NOF_SUBCARRIERS);
   o1_pool     pool({&first, &second});
   ledger      book(pool, mode);
+  // A paced run keeps its decodes in the paced book of Sprint 4.1 and never uses the ledger. The
+  // evaluator side below reads the decodes of a run through these four, whichever book holds them.
+  std::unique_ptr<isac_pacing::paced_book> paced_jobs;
+  if (paced) {
+    paced_jobs = std::make_unique<isac_pacing::paced_book>(pool);
+  }
+  auto job_of   = [&](std::uint64_t token) { return paced_jobs ? paced_jobs->snapshot(token) : book.snapshot(token); };
+  auto bytes_of = [&](std::uint64_t token) { return paced_jobs ? paced_jobs->decoded(token) : book.decoded(token); };
+  auto count_of = [&](outcome value, const std::string& backend = std::string()) {
+    return paced_jobs ? paced_jobs->count(value, backend) : book.count(value, backend);
+  };
 
 #ifdef ENABLE_CUDA
   const bool built_with_cuda = true;
@@ -1644,6 +1734,9 @@ int run(int argc, char** argv)
   }
   if (estimating) {
     make_directory(estimate_path);
+  }
+  if (paced) {
+    make_directory(pacing_path);
   }
 
   // ---- The opportunities of this run, in the order of the plan, and what a slot must not look up. ----
@@ -1943,7 +2036,7 @@ int run(int argc, char** argv)
                  {"tap", tap.tap}};
     radio_lines += line.dump() + "\n";
     if (crc_pass) {
-      const std::vector<std::uint8_t> bytes = book.decoded(record.token);
+      const std::vector<std::uint8_t> bytes = bytes_of(record.token);
       write_bytes(radio_path + "/" + file, bytes.data(), bytes.size());
     }
     if (line["timing"]["service_us"].is_number() && !first_use) {
@@ -2165,7 +2258,7 @@ int run(int argc, char** argv)
   std::vector<timed_slot> kept(timed ? chosen.size() : 0);
   const std::size_t       grid_values = static_cast<std::size_t>(shape.rx_ports) * shape.plane();
   std::vector<cf32>       arena(timed && keep_grids ? chosen.size() * grid_values : 0);
-  if (timed) {
+  if (timed && !paced) {
     std::vector<job_key> names(chosen.size() * backends.size());
     std::vector<const grant_entry*> grant_of(chosen.size());
     for (std::size_t n = 0; n != chosen.size(); ++n) {
@@ -2285,6 +2378,154 @@ int run(int argc, char** argv)
     }
   }
 
+  // ---- The paced run (Sprint 4.1). The harness is a scripted receiver on the offered schedule:
+  // the grid of an opportunity is filled ahead of its slot, the tap and the decodes start at the
+  // absolute release time of the slot, and a release that the harness could not start within its
+  // latest start is skipped, recorded under its key and counted. No release time moves. Between
+  // the release and the last decoder callback this loop takes no digest, reads no grid back,
+  // writes no file, builds no record, allocates nothing and takes no lock of its own. ----
+  std::unique_ptr<isac_pacing::pacer> pace;
+  if (paced) {
+    pace = std::make_unique<isac_pacing::pacer>(offered);
+    // Every decode is named before the first fill: its key, its original block, its output
+    // buffer, the request its decoder is handed and the notifier of its callback.
+    for (std::size_t n = 0; n != chosen.size(); ++n) {
+      const opportunity_spec& item  = spec.opportunities[chosen[n]];
+      const allocation&       bound = replay.scheduled(chosen[n]);
+      kept[n].sequence = chosen[n];
+      kept[n].decodes.resize(backends.size());
+      for (std::size_t b = 0; b != backends.size(); ++b) {
+        job_key name;
+        name.opportunity_id   = item.opportunity_id;
+        name.backend          = backends[b]->name();
+        const std::uint64_t t = paced_jobs->prepare(name, bound.grant_id, bound.record_sha256,
+                                                    grants.at(bound.grant_id).original);
+        kept[n].decodes[b].token = t;
+        backends[b]->expect(item.opportunity_id, setups[chosen[n]]);
+        backends[b]->arrange(t, *paced_jobs);
+      }
+    }
+    std::vector<char>  halted(backends.size(), 0), started(backends.size(), 0);
+    const std::int64_t limit_ns = static_cast<std::int64_t>(plan.receiver.timeout_ms) * 1000000;
+    std::size_t        last     = 0;
+    bool               any      = false;
+    auto               retire_paced = [&](timed_slot& old) {
+      // Ownership by generation: the grid is still ready under the ticket of its fill.
+      old.retained = pool.state(old.key.grid) == isac_replay::grid_state::ready &&
+                     pool.generation(old.key.grid) == old.key.generation;
+      old.released = paced_jobs->release_grid(old.key);
+      all_retained = all_retained && old.retained;
+      unreleased += old.released ? 0 : 1;
+    };
+    // The offered schedule is fixed here, after every consumer attached and everything was
+    // prepared, and nothing that happens below moves it.
+    pace->begin(isac_pacing::monotonic_ns() + static_cast<std::int64_t>(tap.pacing.start_delay_us) * 1000);
+    for (std::size_t n = 0; n != chosen.size(); ++n) {
+      const std::size_t  sequence = chosen[n];
+      const allocation&  bound    = replay.scheduled(sequence);
+      timed_slot&        now      = kept[n];
+      const std::int64_t free_ns  = isac_pacing::monotonic_ns();
+      if (!pace->take(n, free_ns)) {
+        // A skipped release: the job keeps its key and its place in every denominator.
+        for (std::size_t b = 0; b != backends.size(); ++b) {
+          paced_jobs->skip(now.decodes[b].token, isac_pacing::skip_reason::missed_release, free_ns - pace->release_time(n));
+        }
+        continue;
+      }
+      // The fill, ahead of the slot. It is stimulus: a receiver is handed a grid, it does not make one.
+      const auto filling = std::chrono::steady_clock::now();
+      ticket     key;
+      now.delivered = pool.try_acquire(key);
+      if (!now.delivered) {
+        for (std::size_t b = 0; b != backends.size(); ++b) {
+          paced_jobs->skip(now.decodes[b].token, isac_pacing::skip_reason::no_free_grid);
+        }
+        pace->give_up(n, isac_pacing::monotonic_ns());
+        continue;
+      }
+      try {
+        isac_replay::grid_sink& sink = pool.writer(key);
+        sink.clear();
+        replay.fill(sequence, sink);
+        pool.commit(key, replay.describe(sequence, bound, sink), isac_replay::evidence::timed);
+      } catch (...) {
+        pool.abort(key);
+        throw;
+      }
+      now.key     = key;
+      now.fill_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - filling).count();
+      const o1_view ready = pool.view(key, bound.record_sha256);
+      pace->ready(n, isac_pacing::monotonic_ns());
+
+      // The release. The grid arrives at the receiver now, and never before the offered time.
+      pace->start(n, isac_pacing::spin_until(pace->release_time(n)));
+      if (tapped) {
+        now.line = out->account().size();
+        out->publish(handle_of[sequence], ready);
+        now.observed = true;
+      }
+      for (std::size_t b = 0; b != backends.size(); ++b) {
+        processor_backend& backend = *backends[b];
+        if (halted[b] != 0) {
+          paced_jobs->skip(now.decodes[b].token, isac_pacing::skip_reason::backend_stopped);
+          continue;
+        }
+        now.decodes[b].first_use = started[b] == 0;
+        // The receiver's estimate: the admission before the decode, the completion after it.
+        const bool captured = taker != nullptr && b == estimate_backend;
+        if (captured) {
+          now.capture = taker->account().size();
+          taker->expect(estimate_handle[sequence], key);
+        }
+        std::string                     refusal;
+        const isac_pacing::paced_result result =
+            isac_pacing::paced_dispatch(*paced_jobs, backend, now.decodes[b].token, key, limit_ns, &refusal);
+        if (captured) {
+          taker->resolve();
+          now.captured = true;
+        }
+        if (result.admitted != admission::admitted) {
+          throw std::runtime_error("the grid of opportunity " + spec.opportunities[sequence].opportunity_id +
+                                   " was not admitted for " + backend.name() + ": " + refusal);
+        }
+        started[b] = 1;
+        if (result.result == outcome::timeout) {
+          halted[b]               = 1;
+          stopped[backend.name()] = "the " + backend.name() + " processor did not complete " +
+                                    spec.opportunities[sequence].opportunity_id + " within " +
+                                    std::to_string(plan.receiver.timeout_ms) + " ms";
+        }
+      }
+      // Every decoder of this grid has called back: the job of this release is done.
+      pace->done(n, isac_pacing::monotonic_ns());
+      // Only now is the grid read in full, into memory that exists, for the evaluator. A paced
+      // run that keeps its grids pays for this copy out of the time ahead of the next slot.
+      if (keep_grids) {
+        for (unsigned rx = 0; rx != shape.rx_ports; ++rx) {
+          for (unsigned symbol = 0; symbol != shape.symbols; ++symbol) {
+            ready.get(rx, symbol,
+                      arena.data() + n * grid_values + (static_cast<std::size_t>(rx) * shape.symbols + symbol) * shape.subcarriers,
+                      shape.subcarriers);
+          }
+        }
+      }
+      if (any) {
+        retire_paced(kept[last]);
+      }
+      last = n;
+      any  = true;
+      if (ring) {
+        ring->service(); // the control channel, after the decodes of this opportunity
+      }
+      if (estimate_ring) {
+        estimate_ring->service();
+      }
+    }
+    if (any) {
+      retire_paced(kept[last]);
+    }
+  }
+
   // ---- The drain: the consumer gets the declared time to release what it holds, then it is told
   // that no record follows. Every observation is published and released, dropped, reclaimed with
   // a closed epoch, or pending at this cutoff. ----
@@ -2398,9 +2639,9 @@ int run(int argc, char** argv)
       }
     }
     for (std::size_t b = 0; b != backends.size(); ++b) {
-      job record = book.snapshot(now.decodes[b].token);
+      job record = job_of(now.decodes[b].token);
       if (record.completed && record.crc_ok && record.result != outcome::timeout && record.decoded_sha256.empty()) {
-        const std::vector<std::uint8_t> bytes = book.decoded(record.token);
+        const std::vector<std::uint8_t> bytes = bytes_of(record.token);
         record.decoded_sha256                 = sha256_hex(bytes.data(), bytes.size());
       }
       json ingress_now = ingress;
@@ -2523,7 +2764,7 @@ int run(int argc, char** argv)
   }
 
   // ---- The report of the evaluator side. ----
-  const std::vector<job> jobs = book.jobs();
+  const std::vector<job> jobs = paced_jobs ? paced_jobs->jobs() : book.jobs();
   json                   file_list = json::array();
   for (const verified_file& file : files) {
     file_list.push_back({{"role", file.role}, {"path", file.path}, {"sha256", file.sha256}, {"bytes", file.bytes}});
@@ -2553,15 +2794,15 @@ int run(int argc, char** argv)
   json          backend_list  = json::array();
   json          total_outcome = json::object();
   for (outcome value : every) {
-    total_outcome[to_string(value)] = book.count(value);
+    total_outcome[to_string(value)] = count_of(value);
   }
   bool incomplete = false;
   for (const std::unique_ptr<processor_backend>& backend : backends) {
     json        outcomes = json::object();
     std::size_t planned  = 0;
     for (outcome value : every) {
-      outcomes[to_string(value)] = book.count(value, backend->name());
-      planned += book.count(value, backend->name());
+      outcomes[to_string(value)] = count_of(value, backend->name());
+      planned += count_of(value, backend->name());
     }
     std::size_t resident = 0;
     std::size_t host     = 0;
@@ -2584,7 +2825,7 @@ int run(int argc, char** argv)
       stats["min"]  = least;
       stats["max"]  = most;
     }
-    incomplete = incomplete || book.count(outcome::timeout, backend->name()) != 0;
+    incomplete = incomplete || count_of(outcome::timeout, backend->name()) != 0;
     backend_list.push_back({{"name", backend->name()},
                             {"factory", backend->factory_type()},
                             {"harq_id", backend->harq_id()},
@@ -2598,7 +2839,7 @@ int run(int argc, char** argv)
                             {"service_us", stats}});
   }
   json anomaly_list = json::array();
-  for (const anomaly& item : book.anomalies()) {
+  for (const anomaly& item : paced_jobs ? paced_jobs->anomalies() : book.anomalies()) {
     anomaly_list.push_back({{"kind", item.kind}, {"key", item.key}, {"detail", item.detail}});
   }
   json gain = {{"value", spec.gain.value}, {"source", spec.gain.source}, {"convention", RULE}};
@@ -2829,9 +3070,90 @@ int run(int argc, char** argv)
       {"service_us", tap_stats},
       {"sources", source_list}};
 
+  // ---- The offered schedule of a paced run and what became of every release. Written here,
+  // after the drain: nothing of it was text while the run was paced. ----
+  json pacing_report = nullptr;
+  if (paced) {
+    std::string                     lines;
+    const isac_pacing::pace_counts  counts = pace->counts();
+    std::vector<double>             lateness, busy;
+    for (std::size_t n = 0; n != kept.size(); ++n) {
+      const isac_pacing::release_mark& mark = pace->marks()[n];
+      const opportunity_spec&          item = spec.opportunities[kept[n].sequence];
+      const bool ran = mark.outcome == isac_pacing::release_outcome::on_time ||
+                       mark.outcome == isac_pacing::release_outcome::late;
+      json decodes = json::array();
+      for (std::size_t b = 0; b != backends.size(); ++b) {
+        const std::uint64_t token  = kept[n].decodes[b].token;
+        const job           record = paced_jobs->snapshot(token);
+        const bool          called = record.completed && record.result != outcome::timeout;
+        decodes.push_back({{"backend", backends[b]->name()},
+                           {"key", record.key.text()},
+                           {"outcome", to_string(record.result)},
+                           {"skip", record.result == outcome::not_dispatched
+                                        ? json(isac_pacing::to_string(paced_jobs->skipped(token)))
+                                        : json(nullptr)},
+                           {"t_start_ns", record.started ? json(paced_jobs->started_ns(token)) : json(nullptr)},
+                           {"t_callback_ns", called ? json(paced_jobs->completed_ns(token)) : json(nullptr)},
+                           {"service_us", called ? json(record.service_us) : json(nullptr)}});
+      }
+      const json line = {{"schema", RELEASE_SCHEMA},
+                         {"run_id", tap.run_id},
+                         {"sequence", kept[n].sequence},
+                         {"opportunity_id", item.opportunity_id},
+                         {"sfn", item.sfn},
+                         {"slot", item.slot},
+                         {"offset_us", tap.pacing.release_us[kept[n].sequence]},
+                         {"outcome", isac_pacing::to_string(mark.outcome)},
+                         {"overrun", mark.overrun},
+                         {"t_release_ns", mark.release_ns},
+                         {"t_free_ns", mark.free_ns},
+                         {"t_ready_ns", ran ? json(mark.ready_ns) : json(nullptr)},
+                         {"t_start_ns", ran ? json(mark.start_ns) : json(nullptr)},
+                         {"t_done_ns", ran ? json(mark.done_ns) : json(nullptr)},
+                         {"fill_us", ran ? json(kept[n].fill_us) : json(nullptr)},
+                         {"decodes", decodes}};
+      lines += line.dump() + "\n";
+      if (ran) {
+        lateness.push_back(static_cast<double>(mark.start_ns - mark.release_ns) / 1000.0);
+        busy.push_back(static_cast<double>(mark.done_ns - mark.start_ns) / 1000.0);
+      }
+    }
+    write_bytes(pacing_path + "/" + RELEASES_FILE, lines.data(), lines.size());
+    pacing_report = {
+        {"schema", PACING_SCHEMA},
+        {"file", std::string(PACING_DIR) + "/" + RELEASES_FILE},
+        {"clock", tap.pacing.clock},
+        {"clock_source", "CLOCK_MONOTONIC, the clock of the observation ring, read without a system call where the host "
+                         "has a vDSO clock"},
+        {"rule", "release(n) = start + offset(n), never shifted; a job runs when the receiver is free within the latest "
+                 "start of its release, and is a skipped release otherwise; done later than release + allowance is an "
+                 "overrun"},
+        {"wait", "spin"},
+        {"t_start_ns", pace->release_time(0) - offered.release_ns.front()},
+        {"start_delay_us", tap.pacing.start_delay_us},
+        {"allowance_us", tap.pacing.allowance_us},
+        {"latest_start_us", tap.pacing.latest_start_us},
+        {"first_offset_us", tap.pacing.release_us.front()},
+        {"last_offset_us", tap.pacing.release_us.back()},
+        {"counts",
+         {{"offered", counts.offered},
+          {"taken", counts.taken},
+          {"on_time", counts.on_time},
+          {"late", counts.late},
+          {"skipped", counts.skipped},
+          {"overruns", counts.overruns},
+          {"max_lateness_ns", counts.max_lateness_ns},
+          {"max_excess_ns", counts.max_excess_ns}}},
+        {"lateness_us", time_stats(lateness, "nothing")},
+        {"busy_us", time_stats(busy, "nothing")},
+        {"book", "paced: every decode named before the first fill, no allocation and no lock of the harness from the "
+                 "admission of a ready grid to its release, the completion asked for and never slept on"}};
+  }
+
   const std::uint16_t endian = 1;
   json                report = {
-      {"schema", tap.version == 3 ? NATIVE_SCHEMA_3 : tap.version == 2 ? NATIVE_SCHEMA_2 : NATIVE_SCHEMA},
+      {"schema", tap.version == 4 ? NATIVE_SCHEMA_4 : tap.version == 3 ? NATIVE_SCHEMA_3 : tap.version == 2 ? NATIVE_SCHEMA_2 : NATIVE_SCHEMA},
       {"run_id", tap.run_id},
       {"plan", {{"file", plan_path}, {"sha256", plan_sha256}}},
       {"evidence", evidence_report},
@@ -2911,6 +3233,13 @@ int run(int argc, char** argv)
         "obs-descriptor/v1 record, one payload and one validity mask per captured estimate of the receiver, and "
         "nothing else";
   }
+  if (tap.version >= 4) {
+    // A report of version 4 names the offered schedule of the run, or null.
+    report["pacing"] = pacing_report;
+    report["access"]["pacing"] =
+        "pacing/ holds one pace-release/v1 line per opportunity of a paced run: the offered release time and the times "
+        "the harness took, and nothing of a grid, a transport block or a label";
+  }
   const std::string text = report.dump(2) + "\n";
   write_bytes(report_path, text.data(), text.size());
 
@@ -2929,6 +3258,11 @@ int run(int argc, char** argv)
   for (const json& backend : backend_list) {
     std::cout << ", " << backend["name"].get<std::string>() << " " << backend["outcomes"]["decoded"] << " of "
               << backend["planned"] << " decoded (" << backend["resident"] << " resident)";
+  }
+  if (paced) {
+    const isac_pacing::pace_counts counts = pace->counts();
+    std::cout << ", paced " << counts.offered << " releases: " << counts.on_time << " on time, " << counts.late
+              << " late, " << counts.skipped << " skipped, " << counts.overruns << " overruns";
   }
   std::cout << ", report " << report_path << std::endl;
   if (incomplete) {

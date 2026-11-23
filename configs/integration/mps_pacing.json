@@ -1,0 +1,115 @@
+{
+  "schema": "integration-config/mps_pacing/v1",
+  "selector": "mps_pacing",
+  "adapter_build": "build/ocudu-adapter-o3",
+  "core_build": "build/sense-core",
+  "control": {
+    "sense_core": "sense_core",
+    "cusense_frontend": "cusense_frontend",
+    "presence_head": "presence_head"
+  },
+  "episodes": {
+    "group": "validation",
+    "pairs": 20
+  },
+  "repetitions": 3,
+  "warmup": 1,
+  "pacing": {
+    "status": "proposed",
+    "slot_us": 500,
+    "gap_slots": 10,
+    "allowance_us": 500,
+    "latest_start_us": 250,
+    "start_delay_us": 50000
+  },
+  "rings": {
+    "o2": {
+      "stream": "o2",
+      "window_records": 3,
+      "burst_records": 3,
+      "slots": 8,
+      "wait": "spin",
+      "attach_timeout_ms": 120000,
+      "drain_ms": 5000
+    },
+    "o3": {
+      "stream": "o3",
+      "window_records": 3,
+      "burst_records": 3,
+      "slots": 8,
+      "wait": "spin",
+      "attach_timeout_ms": 120000,
+      "drain_ms": 5000
+    }
+  },
+  "estimate": {
+    "copy_stream": "producer",
+    "landing": "slot",
+    "timeout_us": 2000
+  },
+  "receiver": {
+    "backends": [
+      "cuda"
+    ],
+    "keep_grids": false
+  },
+  "sensor": {
+    "wait": "spin",
+    "budget_us": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "ready_timeout_ms": 180000,
+    "o2_consumer": "presence",
+    "reference_device": "cuda"
+  },
+  "cpus": {
+    "receiver": "5-9,15-19",
+    "sensor": "4",
+    "o2": "3",
+    "tools": "0-2,10-14"
+  },
+  "mps": {
+    "pipe_dir": "build/mps/pipe",
+    "log_dir": "build/mps/log",
+    "inventory_period_ms": 100,
+    "thread_pct": 50
+  },
+  "contention": {
+    "rule": {
+      "schema": "tail-shift-rule/v1",
+      "status": "proposed",
+      "quantile": "p99",
+      "min_samples": 1000,
+      "allowed_shift_us": 25.0,
+      "allowed_shift_fraction": 0.1
+    },
+    "order": [
+      "mps_default",
+      "mps_priority",
+      "mps_thread_pct",
+      "release_after_radio"
+    ],
+    "control_repetitions": 3,
+    "after_radio_quantile": "p99"
+  },
+  "faults": {
+    "after_ms": 700
+  },
+  "time_slicing_control": true,
+  "timeouts": {
+    "ready_s": 180,
+    "run_s": 900,
+    "grace_s": 120
+  },
+  "expect": {
+    "cuda_architecture": 121,
+    "published_live_inference_us": 241,
+    "min_windows": 150,
+    "max_skipped_releases": 10,
+    "min_decision_agreement": 1.0,
+    "logit_tolerance": 0.05
+  }
+}

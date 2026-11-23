@@ -1,7 +1,8 @@
 // Reader of a pilot-ls-plan file and of the sensing-source records it binds (Sprint 3.1, selector
-// pilot_ls, Sprint 3.2, selector snapshot_ring, and Sprint 5.2, selector native_estimate).
+// pilot_ls, Sprint 3.2, selector snapshot_ring, Sprint 5.2, selector native_estimate, and Sprint
+// 4.1, selector mps_pacing).
 //
-// Three versions. pilot-ls-plan/v1 is the plan of Sprint 3.1: evidence mode audit, no ring.
+// Four versions. pilot-ls-plan/v1 is the plan of Sprint 3.1: evidence mode audit, no ring.
 // pilot-ls-plan/v2 adds two objects: evidence, with the mode audit or timed, and ring, which is
 // null or names the observation ring that the run publishes on: the records a window holds in
 // place, the records of one uplink burst, the slot count that follows from the two, the wait mode
@@ -12,6 +13,11 @@
 // that produces the estimate, the stream the copy is enqueued on, where the copy lands, how long
 // a capture may ask for its completion, and the ring of the O3 stream or null. With estimate null
 // a plan of version 3 runs what the same plan of version 2 runs.
+// pilot-ls-plan/v4 adds one object, pacing, which is null or names the offered schedule of a paced
+// run: the clock, the delay between the last preparation and the first release, the processing
+// allowance of one job, the latest start of a job after its release, and the release offset of
+// every opportunity of the replay, in its order, in microseconds from the start of the schedule.
+// With pacing null a plan of version 4 runs what the same plan of version 3 runs.
 //
 // The plan is written offline by src/ocudu_cuda_isac/episodes/pilot_ls.py. It names the receiver
 // replay plan of Sprint 2.4 that the run decodes, by the hash that binds it, and what the
@@ -40,6 +46,8 @@ namespace isac_observer {
 constexpr const char* TAP_PLAN_SCHEMA    = "pilot-ls-plan/v1";
 constexpr const char* TAP_PLAN_SCHEMA_V2 = "pilot-ls-plan/v2";
 constexpr const char* TAP_PLAN_SCHEMA_V3 = "pilot-ls-plan/v3";
+constexpr const char* TAP_PLAN_SCHEMA_V4 = "pilot-ls-plan/v4";
+constexpr const char* PACING_CLOCK       = "host_monotonic";
 constexpr const char* EVIDENCE_AUDIT     = "audit";
 constexpr const char* EVIDENCE_TIMED     = "timed";
 constexpr const char* ATTACH_REQUIRED    = "required";
@@ -86,11 +94,22 @@ struct plan_estimate {
   plan_ring     ring;        ///< The ring of the O3 stream, in DIR/estimate/. Not present: captured, not published.
 };
 
+/// The offered schedule of a paced run (plan version 4). The rules are in the pacing core and in the tool.
+struct plan_pacing {
+  bool                       present = false;
+  std::string                clock;               ///< "host_monotonic".
+  std::uint64_t              start_delay_us  = 0; ///< From the end of the preparation to the start of the schedule.
+  std::uint64_t              allowance_us    = 0; ///< The processing allowance of one job.
+  std::uint64_t              latest_start_us = 0; ///< A job that cannot start within this of its release is skipped.
+  std::vector<std::uint64_t> release_us;          ///< One offset per opportunity of the replay, in its order.
+};
+
 struct tap_plan {
   unsigned                 version = 1;
   std::string              evidence = EVIDENCE_AUDIT; ///< "audit" or "timed".
   plan_ring                ring;
   plan_estimate            estimate;
+  plan_pacing              pacing;
   std::string              run_id;
   isac_replay::file_ref    replay_plan;
   std::string              tap;    ///< "none" or "pilot_ls".
@@ -124,13 +143,18 @@ inline tap_plan load_tap_plan(const std::string& path, std::string* plan_sha256 
     throw input_error("the plan has no field 'schema'");
   }
   const std::string schema = text(plan, "schema", "the plan");
-  if (schema != TAP_PLAN_SCHEMA && schema != TAP_PLAN_SCHEMA_V2 && schema != TAP_PLAN_SCHEMA_V3) {
-    throw input_error(std::string("the plan schema is not ") + TAP_PLAN_SCHEMA + ", " + TAP_PLAN_SCHEMA_V2 + " or " +
-                      TAP_PLAN_SCHEMA_V3);
+  if (schema != TAP_PLAN_SCHEMA && schema != TAP_PLAN_SCHEMA_V2 && schema != TAP_PLAN_SCHEMA_V3 &&
+      schema != TAP_PLAN_SCHEMA_V4) {
+    throw input_error(std::string("the plan schema is not ") + TAP_PLAN_SCHEMA + ", " + TAP_PLAN_SCHEMA_V2 + ", " +
+                      TAP_PLAN_SCHEMA_V3 + " or " + TAP_PLAN_SCHEMA_V4);
   }
-  const bool third  = schema == TAP_PLAN_SCHEMA_V3;
+  const bool fourth = schema == TAP_PLAN_SCHEMA_V4;
+  const bool third  = fourth || schema == TAP_PLAN_SCHEMA_V3;
   const bool second = third || schema == TAP_PLAN_SCHEMA_V2;
-  if (third) {
+  if (fourth) {
+    keys(plan, "the plan",
+         {"schema", "run_id", "access", "replay_plan", "observer", "sources", "evidence", "ring", "estimate", "pacing"});
+  } else if (third) {
     keys(plan, "the plan",
          {"schema", "run_id", "access", "replay_plan", "observer", "sources", "evidence", "ring", "estimate"});
   } else if (second) {
@@ -142,7 +166,7 @@ inline tap_plan load_tap_plan(const std::string& path, std::string* plan_sha256 
     throw input_error(std::string("the plan access must be ") + TAP_PLAN_ACCESS);
   }
   tap_plan spec;
-  spec.version = third ? 3 : second ? 2 : 1;
+  spec.version = fourth ? 4 : third ? 3 : second ? 2 : 1;
   // A ring object of the plan, or of its estimate. Null: no ring.
   const auto read_ring = [](const json& ring, const std::string& where) {
     plan_ring out;
@@ -182,6 +206,26 @@ inline tap_plan load_tap_plan(const std::string& path, std::string* plan_sha256 
     spec.estimate.landing     = text(estimate, "landing", "estimate");
     spec.estimate.timeout_us  = static_cast<std::uint32_t>(count(estimate, "timeout_us", "estimate", 60000000));
     spec.estimate.ring        = read_ring(estimate.at("ring"), "estimate.ring");
+  }
+  if (fourth && !plan.at("pacing").is_null()) {
+    const json& pacing = plan.at("pacing");
+    keys(pacing, "pacing", {"clock", "start_delay_us", "allowance_us", "latest_start_us", "release_us"});
+    spec.pacing.present         = true;
+    spec.pacing.clock           = text(pacing, "clock", "pacing");
+    spec.pacing.start_delay_us  = count(pacing, "start_delay_us", "pacing", 60000000);
+    spec.pacing.allowance_us    = count(pacing, "allowance_us", "pacing", 60000000);
+    spec.pacing.latest_start_us = count(pacing, "latest_start_us", "pacing", 60000000);
+    const json& releases        = pacing.at("release_us");
+    if (!releases.is_array()) {
+      throw input_error("pacing.release_us must be an array");
+    }
+    for (const json& offset : releases) {
+      // One hour of offered schedule at most: the offsets stay exact in a double of the report.
+      if (!offset.is_number_integer() || offset.get<long long>() < 0 || offset.get<long long>() > 3600000000LL) {
+        throw input_error("pacing.release_us holds integers from 0 to 3600000000");
+      }
+      spec.pacing.release_us.push_back(static_cast<std::uint64_t>(offset.get<long long>()));
+    }
   }
   spec.run_id      = text(plan, "run_id", "the plan");
   spec.replay_plan = file(plan.at("replay_plan"), "the replay plan");
